@@ -1,112 +1,121 @@
 # OSINT NEXUS
 
-OSINT NEXUS is a real-time intelligence dashboard that aggregates open-source signals (air traffic, conflict-related news, and alert feeds), geolocates events, and produces AI-generated situational summaries.
+OSINT NEXUS is a real-time OSINT monitoring platform for conflict-driven situational awareness. It ingests open feeds, geolocates events, computes confidence, and presents a live operations interface with separate mission pages.
 
-## Documentation
+## What This Project Does
 
-- Kubernetes-specific deployment and operations: [README_K8s.md](README_K8s.md)
+- Aggregates live signals from:
+  - Telegram channels (currently `AJ Mubasher (TG)` and `Roaa War Studies (TG)`)
+  - RSS sources (Reuters, Al Jazeera, BBC, CBS, The Guardian, Times of Israel)
+  - FlightRadar24 military-relevant aircraft feed
+  - Red Alert feed (when reachable)
+- Generates event confidence using source reliability + cross-source corroboration
+- Performs geolocation with fallback logic (place match, geocoder, AI/fallback)
+- Downloads Telegram video media when available and links it to events
+- Streams data to frontend over WebSocket for live operations
 
-## Overview
+## Current UI Structure
 
-The platform consists of:
+The frontend now supports versioned workspaces:
 
-- **Backend**: FastAPI service that ingests, normalizes, and streams events.
-- **Frontend**: Next.js dashboard with live map visualization and analyst panel.
-- **AI Layer**: Ollama-hosted local model (`llama3`) for geolocation and tactical summaries.
-- **Infra**: Docker Compose and Kubernetes manifests for local deployment.
+- `v1` (stable, default): `http://localhost:3000/`
+- `v2` (beta): `http://localhost:3000/v2`
 
-## Key Capabilities
+Both include mission pages:
 
-- Real-time aircraft tracking (FlightRadar24 feed in a defined Middle East bounding box).
-- RSS-based conflict event extraction from major news sources.
-- Israel Home Front Command Red Alert ingestion and mapping.
-- WebSocket streaming for live event updates.
-- Map-based operational view (MapLibre) with:
-  - Event markers
-  - Threat radius overlays
-  - Heatmap density
-  - Conflict zone polygons
-- AI analyst summaries with threat-level classification.
+- Hub
+- Operations
+- Alerts
+- Sources
 
-## Repository Structure
+A version switch button is available in navigation:
 
-```text
-.
-├── backend/                 # FastAPI ingest + API + websocket
-├── frontend/                # Next.js dashboard
-├── k8s/                     # Kubernetes manifests
-├── docker-compose.yml       # Compose stack
-├── README.md
-└── README_K8s.md
-```
+- `Switch to V2 Beta` from v1
+- `Switch to V1 Stable` from v2
+
+## Architecture
+
+- `frontend/`: Next.js app router UI
+- `backend/`: FastAPI ingestion and analytics engine
+- `k8s/`: Kubernetes manifests for local Minikube deployment
+- `docker-compose.yml`: local Compose stack
+
+## Key Backend Capabilities
+
+- Persistent event storage in SQLite (`/tmp/osint_nexus.db` by default)
+- Incident deduplication and incident threading
+- Confidence scoring with explainable reason text
+- Guardrailed analyst output with insufficient-evidence mode
+- Source health, watchdog warnings, and operations metrics APIs
+
+## Main API Endpoints
+
+- `GET /api/health`
+- `GET /api/ops/health`
+- `GET /api/stats`
+- `GET /api/events`
+- `GET /api/alerts/assessment`
+- `GET /api/sources/recent`
+- `GET /api/analyst`
+- `WS /ws/live`
 
 ## Prerequisites
 
 - Docker Engine
 - Docker Compose
-- Node.js 20+ (for local frontend build/dev)
-- Python 3.11+ (for local backend development)
-- Minikube + kubectl (for Kubernetes deployment)
-- NVIDIA GPU + NVIDIA Container Toolkit (for Ollama GPU acceleration)
+- Node.js 20+ (for direct frontend dev)
+- Python 3.11+ (for direct backend dev)
+- Minikube + kubectl (for Kubernetes mode)
+- Optional NVIDIA GPU + NVIDIA Container Toolkit for Ollama acceleration
 
-## Environment Variables
+## Environment Variables (Backend)
 
-### Backend
+Core variables:
 
-- `OLLAMA_MODEL` (default: `llama3`)
 - `OLLAMA_URL` (default: `http://ollama:11434/api/generate`)
-- `REDIS_URL` (default: `redis://redis:6379`)
-- `GROQ_API_KEY` (optional; do not hardcode in source)
+- `OLLAMA_MODEL` (default: `llama3`)
+- `OSINT_DB_PATH` (default: `/tmp/osint_nexus.db`)
+- `MEDIA_DIR` (default: `/tmp/osint_nexus_media`)
 
-### Frontend
+Telegram/video tuning:
 
-- `NEXT_PUBLIC_WS_URL` (example: `ws://localhost:8000`)
+- `DOWNLOAD_TELEGRAM_MEDIA` (default: `true`)
+- `TELEGRAM_LOOKBACK_POSTS` (default: `20`)
+- `TELEGRAM_MAX_NEW_PER_POLL` (default: `8`)
 
-## Local Run with Docker Compose
+## Local Run (Docker Compose)
 
-1. Build and start:
+Start:
 
 ```bash
 docker compose up --build
 ```
 
-2. Open:
+Open:
 
 - Frontend: `http://localhost:3000`
-- Backend API: `http://localhost:8000`
+- Backend: `http://localhost:8000`
 
-3. Stop:
+Stop:
 
 ```bash
 docker compose down
 ```
 
-## Kubernetes Deployment (Minikube)
+## Kubernetes Run (Minikube)
 
-Use the scoped `osint` manifests:
+For Kubernetes setup and operations, see:
 
-```bash
-kubectl apply -f k8s/00-namespace.yaml \
-  -f k8s/01-redis.yaml \
-  -f k8s/03-backend.yaml \
-  -f k8s/04-frontend.yaml
-```
+- [README_K8s.md](README_K8s.md)
 
-For standard access in local development:
+## Ollama (GPU on Host)
 
-```bash
-kubectl port-forward -n osint svc/frontend 3000:3000
-kubectl port-forward -n osint svc/backend 8000:8000
-```
+Recommended local mode with Kubernetes backend:
 
-Then open:
+1. Run Ollama on host Docker with GPU.
+2. Point backend to `http://host.minikube.internal:11434/api/generate`.
 
-- Frontend: `http://127.0.0.1:3000`
-- Backend: `http://127.0.0.1:8000`
-
-## Ollama on GPU
-
-In environments where in-cluster GPU scheduling is unavailable, run Ollama on host Docker with GPU and point backend to host endpoint:
+Example:
 
 ```bash
 docker run -d --name ollama-gpu \
@@ -115,51 +124,25 @@ docker run -d --name ollama-gpu \
   -p 11434:11434 \
   -v "$(pwd)/ollama_data:/root/.ollama" \
   ollama/ollama:latest
-```
 
-Pull and verify model:
-
-```bash
 docker exec ollama-gpu ollama pull llama3
-docker exec ollama-gpu ollama list
 ```
 
-Current Kubernetes backend config uses:
+## Security and Usage Notes
+
+- This system is an OSINT aid, not an authoritative command system.
+- Treat model inference as advisory.
+- Always validate critical claims with official sources.
+- Do not commit secrets, private keys, or credentials.
+
+## Repository Layout
 
 ```text
-OLLAMA_URL=http://host.minikube.internal:11434/api/generate
+.
+├── backend/
+├── frontend/
+├── k8s/
+├── docker-compose.yml
+├── README.md
+└── README_K8s.md
 ```
-
-## API Endpoints
-
-- `GET /` - service status
-- `GET /api/health` - health check
-- `GET /api/stats` - dashboard counters
-- `GET /api/events` - recent events
-- `GET /api/analyst` - generated AI briefing
-- `WS /ws/live` - live event and aircraft stream
-
-## Security Notes
-
-- Never commit real API keys, SSH private keys, or model credentials.
-- Prefer environment variables and secret stores for sensitive values.
-- Review `docker-compose.yml`, `.env`, and Kubernetes secrets before sharing.
-
-## Troubleshooting
-
-- **Frontend client-side crash**:
-  - Hard refresh browser (`Ctrl+Shift+R`).
-  - Confirm backend reachable on `http://127.0.0.1:8000/api/health`.
-- **AI analyst shows offline**:
-  - Verify Ollama container is running and reachable on port `11434`.
-  - Check backend `OLLAMA_URL` and `OLLAMA_MODEL`.
-- **Kubernetes image mismatch**:
-  - Rebuild image, load into minikube, restart deployment:
-    - `docker build ...`
-    - `minikube image load ...`
-    - `kubectl rollout restart deployment/<name> -n osint`
-
-## Development Notes
-
-- `k8s/deployment.yaml` and `k8s/00-04*.yaml` represent different deployment styles; for local iteration, use `00-04` manifests to avoid duplicate namespaces and services.
-- The frontend build currently ignores type and lint failures (`frontend/next.config.mjs`). Tighten this for production CI.
