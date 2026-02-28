@@ -20,6 +20,7 @@ export interface IntelEvent {
   source: string
   timestamp?: string
   url?: string
+  video_url?: string
   lang?: string
 }
 
@@ -124,6 +125,10 @@ function IntelCard({ event, isNew, onClick }: { event: IntelEvent; isNew?: boole
   const displayDesc = event.desc.replace(/^\[.+?\]\s*/, "")
   const sourceTag   = event.desc.match(/^\[(.+?)\]/)?.[1] ?? event.source
 
+  const videoHref = event.video_url
+    ? (event.video_url.startsWith("/media/") ? `http://localhost:8000${event.video_url}` : event.video_url)
+    : null
+
   return (
     <div
       onClick={onClick}
@@ -158,17 +163,30 @@ function IntelCard({ event, isNew, onClick }: { event: IntelEvent; isNew?: boole
         <span className="text-[9px] text-muted-foreground tabular-nums">
           {event.lat.toFixed(3)}N&nbsp;{event.lng.toFixed(3)}E
         </span>
-        {event.url && (
-          <a
-            href={event.url}
-            target="_blank"
-            rel="noopener noreferrer"
-            onClick={(e) => e.stopPropagation()}
-            className="text-[9px] text-osint-blue hover:text-osint-blue/80 underline underline-offset-2"
-          >
-            source ↗
-          </a>
-        )}
+        <div className="flex items-center gap-2">
+          {videoHref && (
+            <a
+              href={videoHref}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={(e) => e.stopPropagation()}
+              className="text-[9px] text-osint-green hover:text-osint-green/80 underline underline-offset-2"
+            >
+              latest video ↗
+            </a>
+          )}
+          {event.url && (
+            <a
+              href={event.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={(e) => e.stopPropagation()}
+              className="text-[9px] text-osint-blue hover:text-osint-blue/80 underline underline-offset-2"
+            >
+              source ↗
+            </a>
+          )}
+        </div>
       </div>
     </div>
   )
@@ -411,4 +429,3 @@ export { TopBar }
 
 // Re-export for backwards compat
 export function IntelFeed() { return null }
-
