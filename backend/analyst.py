@@ -1,102 +1,115 @@
-"""
-Local Ollama AI analyst endpoint — runs Llama 3 on local GPU
-"""
-import os
+"""Local Ollama AI analyst endpoint — strict structured output with guardrails."""
+
 import json
+import os
+from datetime import datetime
+from typing import Any, Dict, List, Optional
+
 import httpx
 
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://ollama:11434/api/generate")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3")
 
-# Recent events buffer (shared reference from main.py — set externally)
-recent_events_buffer: list = []
 
 async def ensure_ollama_model():
-    """Ensure the specified model is pulled into Ollama before use."""
     try:
         async with httpx.AsyncClient(timeout=600) as client:
-            print(f"[OLLAMA] Checking model '{OLLAMA_MODEL}'...")
             base_url = OLLAMA_URL.rsplit("/api/", 1)[0]
-            resp = await client.post(
-                f"{base_url}/api/pull",
-                json={"name": OLLAMA_MODEL},
-                timeout=600
-            )
-            # stream the pull response just to keep connection alive or ignore
+            await client.post(f"{base_url}/api/pull", json={"name": OLLAMA_MODEL}, timeout=600)
             print(f"[OLLAMA] Model '{OLLAMA_MODEL}' ready.")
     except Exception as e:
         print(f"[OLLAMA] Warning: Failed to ping/pull model: {e}")
 
-async def generate_analyst_report(events_buffer: list) -> dict:
-    """Call local Ollama to generate an intel report from recent events, localized to lang."""
+
+def _safe_default(msg: str = "Insufficient evidence to produce reliable analyst brief.") -> Dict[str, Any]:
+    return {
+        "summary": msg,
+        "threat_level": "MEDIUM",
+        "key_developments": ["Insufficient evidence"],
+        "insufficient_evidence": True,
+        "generated_at": datetime.utcnow().isoformat(),
+        "model": f"local-{OLLAMA_MODEL}",
+    }
+
+
+async def _call_ollama_json(prompt: str, retries: int = 2) -> Optional[dict]:
+    for attempt in range(retries + 1):
+        try:
+            async with httpx.AsyncClient(timeout=60) as client:
+                resp = await client.post(
+                    OLLAMA_URL,
+                    json={
+                        "model": OLLAMA_MODEL,
+                        "prompt": prompt,
+                        "stream": False,
+                        "format": "json",
+                        "options": {"temperature": 0.1},
+                    },
+                )
+                resp.raise_for_status()
+                raw = str(resp.json().get("response", "{}")).strip()
+                if raw.startswith("```"):
+                    raw = raw.strip("`")
+                    raw = raw.replace("json", "", 1).strip()
+                data = json.loads(raw)
+                if isinstance(data, dict):
+                    return data
+        except Exception as e:
+            if attempt == retries:
+                print(f"[ANALYST] Ollama parse failed: {e}")
+    return None
+
+
+def _normalize_threat(level: str) -> str:
+    level = (level or "").upper().strip()
+    if level in {"LOW", "MEDIUM", "HIGH", "CRITICAL"}:
+        return level
+    return "MEDIUM"
+
+
+async def generate_analyst_report(events_buffer: List[dict]) -> Dict[str, Any]:
     if not events_buffer:
-        return {
-            "summary": "No recent events to analyze. Waiting for incoming feeds.",
-            "threat_level": "LOW",
-            "key_developments": ["Monitoring active..."],
-            "generated_at": __import__("datetime").datetime.utcnow().isoformat(),
-            "model": OLLAMA_MODEL,
-        }
+        return _safe_default("No recent events to analyze. Waiting for incoming feeds.")
 
-    # Build context from recent events
-    event_text = "\n".join([
-        f"- [{e.get('type', 'UNKNOWN')}] {e.get('desc', '')} (Source: {e.get('source', '')})"
-        for e in events_buffer[-20:]  # Last 20 events
-    ])
+    event_text = "\n".join(
+        [f"- [{e.get('type', 'UNKNOWN')}] {e.get('desc', '')} (Source: {e.get('source', '')})" for e in events_buffer[-30:]]
+    )
 
-    prompt = f"""You are an elite military and geopolitical intelligence analyst.
-Based on the following OSINT events collected in the last few minutes, provide a concise intelligence briefing.
+    prompt = f"""You are an intelligence analyst assistant for a monitoring dashboard.
+Return ONLY strict JSON with this schema:
+{{
+  "summary": "2-3 sentence tactical summary",
+  "threat_level": "LOW|MEDIUM|HIGH|CRITICAL",
+  "key_developments": ["item1", "item2", "item3"],
+  "insufficient_evidence": true|false
+}}
+Rules:
+- If evidence is weak or contradictory, set insufficient_evidence=true.
+- If insufficient_evidence=true, keep threat_level at MEDIUM unless explicit official warning exists in events.
+- No markdown and no extra keys.
 
 RECENT EVENTS:
 {event_text}
+"""
 
-Provide your response ONLY as valid JSON matching this exact structure:
-{{
-  "summary": "2-3 sentence tactical summary of the current situation",
-  "threat_level": "LOW", // MUST be one of: LOW, MEDIUM, HIGH, CRITICAL
-  "key_developments": ["development 1", "development 2", "development 3"]
-}}
+    data = await _call_ollama_json(prompt, retries=2)
+    if not data:
+        return _safe_default("Failed to connect to local Ollama instance.")
 
-Do not include any markdown formatting, explanations, or notes outside the JSON structure. Respond ONLY with JSON."""
+    summary = str(data.get("summary", "")).strip() or "Insufficient evidence to produce reliable analyst brief."
+    threat = _normalize_threat(str(data.get("threat_level", "MEDIUM")))
+    key_developments = data.get("key_developments") if isinstance(data.get("key_developments"), list) else []
+    key_developments = [str(x)[:200] for x in key_developments[:5]] or ["Insufficient evidence"]
+    insufficient = bool(data.get("insufficient_evidence", False))
 
-    try:
-        async with httpx.AsyncClient(timeout=60) as client:
-            resp = await client.post(
-                OLLAMA_URL,
-                json={
-                    "model": OLLAMA_MODEL,
-                    "prompt": prompt,
-                    "stream": False,
-                    "format": "json"
-                },
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            content = data.get("response", "{}")
-            
-            content = content.strip()
-            if content.startswith("```"):
-                content = content.split("```")[1]
-                if content.lower().startswith("json"):
-                    content = content[4:].strip()
+    if insufficient and threat in {"HIGH", "CRITICAL"}:
+        threat = "MEDIUM"
 
-            result = json.loads(content)
-            
-            # Ensure required fields
-            result.setdefault("summary", "Analysis failed to produce summary.")
-            result.setdefault("threat_level", "MEDIUM")
-            result.setdefault("key_developments", ["Analysis error"])
-            
-            result["generated_at"] = __import__("datetime").datetime.utcnow().isoformat()
-            result["model"] = f"local-{OLLAMA_MODEL}"
-            return result
-            
-    except Exception as e:
-        print(f"[ANALYST] Local Ollama Error: {e}")
-        return {
-            "summary": f"Failed to connect to local Ollama instance ({e}).",
-            "threat_level": "UNKNOWN",
-            "key_developments": ["Local AI offline or pulling model."],
-            "generated_at": __import__("datetime").datetime.utcnow().isoformat(),
-            "model": "offline",
-        }
+    return {
+        "summary": summary,
+        "threat_level": threat,
+        "key_developments": key_developments,
+        "insufficient_evidence": insufficient,
+        "generated_at": datetime.utcnow().isoformat(),
+        "model": f"local-{OLLAMA_MODEL}",
+    }
