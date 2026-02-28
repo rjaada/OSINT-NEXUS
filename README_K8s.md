@@ -1,21 +1,17 @@
-# Kubernetes Deployment Guide (Minikube)
+# OSINT NEXUS Kubernetes Guide
 
-This document covers local Kubernetes deployment for OSINT NEXUS using Minikube.
-
-## Documentation
-
-- Project overview, architecture, and non-Kubernetes usage: [README.md](README.md)
+This guide covers local Kubernetes deployment and operations for OSINT NEXUS on Minikube.
 
 ## Scope
 
-Use the `osint` namespace manifests only:
+Use the `osint` namespace manifests for the active stack:
 
 - `k8s/00-namespace.yaml`
 - `k8s/01-redis.yaml`
 - `k8s/03-backend.yaml`
 - `k8s/04-frontend.yaml`
 
-Avoid applying all files in `k8s/` with a wildcard, because `k8s/deployment.yaml` deploys an alternate stack (`osint-nexus`) and can cause duplicate resources.
+Do not apply all files with `kubectl apply -f k8s/` because `k8s/deployment.yaml` is an alternate deployment style and can create duplicates.
 
 ## Prerequisites
 
@@ -26,29 +22,28 @@ Avoid applying all files in `k8s/` with a wildcard, because `k8s/deployment.yaml
   - `osint-backend:latest`
   - `osint-frontend:latest`
 
+Optional for local AI:
+
+- Host Ollama container (recommended)
+- NVIDIA GPU + NVIDIA Container Toolkit for GPU inference
+
 ## 1. Start Minikube
 
 ```bash
-minikube start --driver=docker --gpus all --memory=8192
+minikube start --driver=docker --memory=8192
 ```
 
-## 2. Build and Load Images
+If you need GPU scheduling in-cluster, your Minikube/node setup must expose `nvidia.com/gpu`.
 
-Build locally:
+## 2. Build Images Into Minikube Docker
 
 ```bash
-docker build ./backend -t osint-backend:latest
-docker build ./frontend -t osint-frontend:latest
+eval $(minikube docker-env)
+docker build -t osint-backend:latest ./backend
+docker build -t osint-frontend:latest ./frontend
 ```
 
-Load into Minikube image cache:
-
-```bash
-minikube image load osint-backend:latest
-minikube image load osint-frontend:latest
-```
-
-## 3. Deploy the Kubernetes Resources
+## 3. Deploy
 
 ```bash
 kubectl apply -f k8s/00-namespace.yaml \
@@ -57,47 +52,35 @@ kubectl apply -f k8s/00-namespace.yaml \
   -f k8s/04-frontend.yaml
 ```
 
-## 4. Verify Status
+## 4. Verify
 
 ```bash
-kubectl get pods -n osint -w
+kubectl get pods,svc -n osint
+kubectl rollout status deployment/backend -n osint
+kubectl rollout status deployment/frontend -n osint
+kubectl rollout status deployment/redis -n osint
 ```
 
-Expected:
-
-- `frontend`, `backend`, `redis` in `Running`
-- `ollama` is not required in this flow unless you explicitly deploy `k8s/02-ollama.yaml`
-
-## 5. Access the Application
-
-Recommended for local development:
+## 5. Access Services (Port Forward)
 
 ```bash
-kubectl port-forward -n osint svc/frontend 3000:3000
-kubectl port-forward -n osint svc/backend 8000:8000
+kubectl -n osint port-forward svc/frontend 3000:3000
+kubectl -n osint port-forward svc/backend 8000:8000
 ```
 
-Open:
+Then open:
 
 - Frontend: `http://127.0.0.1:3000`
 - Backend: `http://127.0.0.1:8000`
 
-Alternative NodePort access:
+## Ollama Integration (Recommended)
 
-```bash
-minikube ip
-kubectl get svc -n osint
-```
+Run Ollama on host Docker and let backend call it via host bridge.
 
-Then open `http://<MINIKUBE_IP>:30000`.
+Backend config (already set in `k8s/03-backend.yaml`):
 
-## Ollama and GPU Notes
-
-### Current recommended local mode
-
-Run Ollama on host Docker with GPU and let backend in Kubernetes call it via:
-
-`OLLAMA_URL=http://host.minikube.internal:11434/api/generate`
+- `OLLAMA_URL=http://host.minikube.internal:11434/api/generate`
+- `OLLAMA_MODEL=llama3`
 
 Start host Ollama:
 
@@ -108,44 +91,64 @@ docker run -d --name ollama-gpu \
   -p 11434:11434 \
   -v "$(pwd)/ollama_data:/root/.ollama" \
   ollama/ollama:latest
-```
 
-Pull model:
-
-```bash
 docker exec ollama-gpu ollama pull llama3
 ```
 
-### In-cluster Ollama GPU
-
-If you deploy `k8s/02-ollama.yaml`, pod scheduling requires `nvidia.com/gpu` to be available in node allocatable resources. If missing, the pod remains `Pending`.
-
 ## Common Operations
 
-Restart deployment after image reload:
+Restart after backend/frontend code changes:
 
 ```bash
+eval $(minikube docker-env)
+docker build -t osint-backend:latest ./backend
 kubectl rollout restart deployment/backend -n osint
-kubectl rollout restart deployment/frontend -n osint
+kubectl rollout status deployment/backend -n osint
 ```
 
-Watch rollout:
-
 ```bash
-kubectl rollout status deployment/backend -n osint
+eval $(minikube docker-env)
+docker build -t osint-frontend:latest ./frontend
+kubectl rollout restart deployment/frontend -n osint
 kubectl rollout status deployment/frontend -n osint
 ```
 
-Check logs:
+Logs:
 
 ```bash
 kubectl logs -n osint deploy/backend --tail=200
 kubectl logs -n osint deploy/frontend --tail=200
 ```
 
-## Full Reset
+Health checks:
+
+```bash
+curl http://127.0.0.1:8000/api/health
+curl http://127.0.0.1:8000/api/ops/health
+```
+
+## Full Shutdown and Cleanup
+
+Stop port-forwards:
+
+```bash
+pkill -f "kubectl -n osint port-forward" || true
+```
+
+Remove active namespace:
 
 ```bash
 kubectl delete namespace osint
+```
+
+Stop Minikube:
+
+```bash
+minikube stop
+```
+
+If needed, fully reset Minikube:
+
+```bash
 minikube delete --all --purge
 ```
