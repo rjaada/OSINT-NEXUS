@@ -14,13 +14,19 @@ import uuid
 import time
 import hashlib
 import os
+import math
+import subprocess
+from pathlib import Path
+from collections import defaultdict
 from datetime import datetime, timezone
 from typing import List, Optional
 import feedparser
 import httpx
+from bs4 import BeautifulSoup
 from analyst import generate_analyst_report
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 app = FastAPI(title="OSINT Nexus Engine v2")
 
@@ -31,6 +37,14 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+MEDIA_DIR = Path(os.getenv("MEDIA_DIR", "/tmp/osint_nexus_media"))
+MEDIA_DIR.mkdir(parents=True, exist_ok=True)
+TELEGRAM_MEDIA_DIR = MEDIA_DIR / "telegram"
+TELEGRAM_MEDIA_DIR.mkdir(parents=True, exist_ok=True)
+DOWNLOAD_TELEGRAM_MEDIA = os.getenv("DOWNLOAD_TELEGRAM_MEDIA", "true").lower() in ("1", "true", "yes", "on")
+
+app.mount("/media", StaticFiles(directory=str(MEDIA_DIR)), name="media")
 
 # ─────────────────────────────── Connection Manager ───────────────────────────
 
@@ -61,6 +75,7 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 seen_articles: set = set()      # deduplicate news items
+seen_telegram_posts: set = set()
 events_buffer: list = []        # last N events for AI analyst
 events_history: list = []       # all events with timestamps for backfill
 last_aircraft: list = []        # latest aircraft snapshot for stats
@@ -236,6 +251,19 @@ RSS_FEEDS_EN = [
     },
 ]
 
+TELEGRAM_CHANNELS = [
+    {
+        "slug": "ajMubasher",
+        "source": "AJ Mubasher (TG)",
+        "lang": "ar",
+    },
+    {
+        "slug": "RoaaWarStudies",
+        "source": "Roaa War Studies (TG)",
+        "lang": "ar",
+    },
+]
+
 
 
 def is_relevant(entry) -> bool:
@@ -395,6 +423,167 @@ async def poll_rss():
             await asyncio.sleep(60)  # poll every 60s for faster news response
 
 
+# ─────────────────────────────── TELEGRAM CHANNELS ─────────────────────────────
+
+def parse_telegram_posts(html_text: str, channel_slug: str) -> list:
+    """Parse public Telegram channel mirror page (/s/<channel>) and extract posts."""
+    soup = BeautifulSoup(html_text, "html.parser")
+    posts = []
+
+    for message in soup.select("div.tgme_widget_message"):
+        data_post = message.get("data-post", "")
+        if not data_post.startswith(f"{channel_slug}/"):
+            continue
+
+        post_id = data_post.split("/")[-1]
+        text_node = message.select_one("div.tgme_widget_message_text")
+        text = text_node.get_text(" ", strip=True) if text_node else ""
+        video_node = (
+            message.select_one("video.tgme_widget_message_video")
+            or message.select_one("video.js-message_video")
+            or message.select_one("video")
+        )
+        video_src = video_node.get("src") if video_node else None
+        has_video = bool(
+            video_node
+            or message.select_one(".tgme_widget_message_video_player")
+            or message.select_one(".tgme_widget_message_video_wrap")
+        )
+        if len(text) < 20 and not has_video:
+            continue
+
+        date_node = message.select_one("a.tgme_widget_message_date")
+        url = date_node.get("href", f"https://t.me/{data_post}") if date_node else f"https://t.me/{data_post}"
+
+        time_node = message.select_one("time")
+        ts = time_node.get("datetime") if time_node else datetime.now(timezone.utc).isoformat()
+
+        posts.append({
+            "post_id": post_id,
+            "text": text,
+            "url": url,
+            "timestamp": ts,
+            "has_video": has_video,
+            "video_src": video_src,
+        })
+
+    def post_sort_key(item: dict) -> int:
+        try:
+            return int(item["post_id"])
+        except Exception:
+            return 0
+
+    posts.sort(key=post_sort_key)
+    return posts
+
+
+def download_telegram_video(post_url: str, event_id: str) -> Optional[str]:
+    """Best-effort download of Telegram post video via yt-dlp and return served path."""
+    if not DOWNLOAD_TELEGRAM_MEDIA:
+        return None
+    try:
+        out_tpl = str(TELEGRAM_MEDIA_DIR / f"{event_id}.%(ext)s")
+        cmd = [
+            "yt-dlp",
+            "--no-playlist",
+            "--socket-timeout", "15",
+            "--retries", "2",
+            "-f", "mp4/best[ext=mp4]/best",
+            "-o", out_tpl,
+            post_url,
+        ]
+        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=90)
+        for ext in ("mp4", "webm", "mkv", "mov"):
+            candidate = TELEGRAM_MEDIA_DIR / f"{event_id}.{ext}"
+            if candidate.exists():
+                return f"/media/telegram/{candidate.name}"
+    except Exception as e:
+        print(f"[TELEGRAM] Video download failed for {event_id}: {e}")
+        return None
+    return None
+
+
+async def poll_telegram():
+    """Poll priority Arabic Telegram channels and emit events immediately."""
+    headers = {"User-Agent": "Mozilla/5.0 (OSINT-Nexus/1.0)"}
+    async with httpx.AsyncClient(timeout=20, headers=headers, follow_redirects=True) as client:
+        while True:
+            for cfg in TELEGRAM_CHANNELS:
+                try:
+                    url = f"https://t.me/s/{cfg['slug']}"
+                    resp = await client.get(url)
+                    if resp.status_code != 200:
+                        continue
+
+                    posts = parse_telegram_posts(resp.text, cfg["slug"])
+                    if not posts:
+                        continue
+
+                    for p in posts[-25:]:
+                        pid = f"tg_{cfg['slug']}_{p['post_id']}"
+                        if pid in seen_telegram_posts:
+                            continue
+                        seen_telegram_posts.add(pid)
+
+                        text = p["text"][:500]
+                        ai_data = await geolocate_with_ai(f"[{cfg['source']}] Telegram Update", text)
+
+                        if ai_data:
+                            coords = (ai_data["lat"], ai_data["lng"])
+                            etype = "CRITICAL" if ai_data["severity"] >= 8 else ai_data["type"]
+                        else:
+                            coords = (31.5 + (hash(pid) % 12) * 0.25, 35.0 + (hash(pid) % 9) * 0.25)
+                            etype = classify_event(text, text)
+
+                        event = {
+                            "id": pid,
+                            "type": etype,
+                            "desc": f"[{cfg['source']}] {p['text'][:240]}",
+                            "lat": coords[0],
+                            "lng": coords[1],
+                            "source": cfg["source"],
+                            "timestamp": p["timestamp"],
+                            "url": p["url"],
+                            "lang": cfg["lang"],
+                        }
+                        if p.get("has_video"):
+                            local_video = await asyncio.to_thread(download_telegram_video, p["url"], pid)
+                            if local_video:
+                                event["video_url"] = local_video
+                            elif p.get("video_src"):
+                                event["video_url"] = p["video_src"]
+                            else:
+                                event["video_url"] = p["url"]
+                            event["has_video"] = True
+
+                        events_history.append(event)
+                        if len(events_history) > 500:
+                            events_history[:] = events_history[-500:]
+
+                        events_buffer.append({
+                            "type": etype,
+                            "desc": f"[{cfg['source']}] {p['text'][:240]}",
+                            "source": cfg["source"],
+                        })
+                        if len(events_buffer) > 60:
+                            events_buffer[:] = events_buffer[-60:]
+
+                        await manager.broadcast({
+                            "type": "NEW_EVENT",
+                            "data": event,
+                        })
+                        print(f"[TELEGRAM] {cfg['source']}: {p['text'][:70]}")
+
+                    if len(seen_telegram_posts) > 5000:
+                        seen_telegram_posts.clear()
+
+                except Exception as e:
+                    if "timed out" not in str(e).lower():
+                        print(f"[TELEGRAM] Error {cfg['slug']}: {e}")
+
+            await asyncio.sleep(8)
+
+
 # ─────────────────────────────── RED ALERT (PIKUD HAOREF) ─────────────────────
 
 # Israel Home Front Command — real-time rocket/missile alerts
@@ -535,8 +724,9 @@ async def startup_event():
     
     asyncio.create_task(poll_flights())
     asyncio.create_task(poll_rss())
+    asyncio.create_task(poll_telegram())
     asyncio.create_task(poll_red_alert())
-    print("[OSINT] Engine started — Local AI + FR24 + RSS + Red Alert pollers running")
+    print("[OSINT] Engine started — Local AI + FR24 + RSS + Telegram + Red Alert pollers running")
 
 
 @app.get("/")
@@ -564,7 +754,7 @@ async def stats():
         "events_total":    len(events_history),
         "aircraft_tracked": len(last_aircraft),
         "military_aircraft": mil_count,
-        "sources_active":   len(RSS_FEEDS_EN),
+        "sources_active":   len(RSS_FEEDS_EN) + len(TELEGRAM_CHANNELS),
         "clients":          len(manager.connections),
         "uptime_seconds":   int(time.time() - _start_time),
     }
@@ -575,6 +765,117 @@ async def get_events(limit: int = 80):
     """Return recent events for backfill on reconnect."""
     limit = min(limit, 200)
     return events_history[-limit:][::-1]  # newest first
+
+
+def _parse_iso(ts: str) -> datetime:
+    try:
+        return datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    except Exception:
+        return datetime.now(timezone.utc)
+
+
+def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    r = 6371.0
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+    a = (
+        math.sin(dlat / 2) ** 2
+        + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon / 2) ** 2
+    )
+    return 2 * r * math.asin(math.sqrt(a))
+
+
+def _extract_source(event: dict) -> str:
+    desc = str(event.get("desc", ""))
+    m = re.match(r"^\[(.+?)\]", desc)
+    if m:
+        return m.group(1)
+    return str(event.get("source", "Unknown"))
+
+
+def _eta_band(event: dict) -> str:
+    source = _extract_source(event)
+    if source.lower() == "red alert":
+        return "<2m"
+
+    # Heuristic advisory estimate to central Israel (never exact flight-time prediction).
+    lat = float(event.get("lat", 31.77))
+    lng = float(event.get("lng", 35.21))
+    dist = _haversine_km(lat, lng, 31.77, 35.21)
+
+    if dist <= 120:
+        return "2-5m"
+    if dist <= 350:
+        return "5-10m"
+    if dist <= 900:
+        return "10-20m"
+    return ">20m"
+
+
+@app.get("/api/alerts/assessment")
+async def alert_assessment(limit: int = 40):
+    """Return strike-focused alert cards with confidence score, provenance, and ETA band."""
+    if not events_history:
+        return []
+
+    limit = min(max(limit, 1), 100)
+    now = datetime.now(timezone.utc)
+    recent = events_history[-300:]
+    by_bucket = defaultdict(list)
+
+    for e in recent:
+        lat_b = round(float(e.get("lat", 0.0)), 1)
+        lng_b = round(float(e.get("lng", 0.0)), 1)
+        by_bucket[(lat_b, lng_b)].append(e)
+
+    candidates = [e for e in recent if e.get("type") in ("STRIKE", "CRITICAL")]
+    cards = []
+
+    for event in reversed(candidates):
+        ts = _parse_iso(str(event.get("timestamp", now.isoformat())))
+        age_min = max(0.0, (now - ts).total_seconds() / 60.0)
+        src = _extract_source(event)
+        lat_b = round(float(event.get("lat", 0.0)), 1)
+        lng_b = round(float(event.get("lng", 0.0)), 1)
+        nearby = by_bucket[(lat_b, lng_b)]
+        corroborating_sources = sorted({_extract_source(x) for x in nearby if _extract_source(x) != src})
+
+        score = 35
+        if src.lower() == "red alert":
+            score += 45
+        if event.get("type") == "CRITICAL":
+            score += 10
+        if age_min <= 5:
+            score += 10
+        elif age_min <= 15:
+            score += 5
+        score += min(20, len(corroborating_sources) * 7)
+        score = max(0, min(100, score))
+
+        if score >= 80:
+            confidence = "HIGH"
+        elif score >= 55:
+            confidence = "MEDIUM"
+        else:
+            confidence = "LOW"
+
+        cards.append({
+            "id": event.get("id"),
+            "type": event.get("type"),
+            "desc": event.get("desc"),
+            "timestamp": event.get("timestamp"),
+            "lat": event.get("lat"),
+            "lng": event.get("lng"),
+            "source": src,
+            "confidence_score": score,
+            "confidence": confidence,
+            "eta_band": _eta_band(event),
+            "age_minutes": round(age_min, 1),
+            "corroborating_sources": corroborating_sources,
+            "video_url": event.get("video_url"),
+        })
+
+    return cards[:limit]
 
 
 @app.get("/api/analyst")
