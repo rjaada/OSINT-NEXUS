@@ -91,6 +91,14 @@ Start:
 docker compose up --build
 ```
 
+Or use the `Makefile` shortcuts:
+
+```bash
+make up
+make up-ai
+make health
+```
+
 Open:
 
 - Frontend: `http://localhost:3000`
@@ -101,6 +109,14 @@ Stop:
 ```bash
 docker compose down
 ```
+
+Useful operational targets:
+
+- `make ps`
+- `make logs`
+- `make logs-backend`
+- `make analyst`
+- `make down`
 
 ## Kubernetes Run (Minikube)
 
