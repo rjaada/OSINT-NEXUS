@@ -56,6 +56,7 @@ export function TopBar({ headlines }: { headlines?: string[] }) {
   const [warnActive, setWarnActive] = useState(false)
   const [countdownText, setCountdownText] = useState("03:00")
   const [terminalLocked, setTerminalLocked] = useState(false)
+  const [defcon, setDefcon] = useState<number>(5)
   const lastActivityRef = useRef<number>(Date.now())
   const searchInputRef = useRef<HTMLInputElement>(null)
 
@@ -71,6 +72,22 @@ export function TopBar({ headlines }: { headlines?: string[] }) {
     const interval = setInterval(update, 1000)
     return () => clearInterval(interval)
   }, [])
+
+  useEffect(() => {
+    try {
+      const lv = Number(localStorage.getItem("osint_defcon") || "5")
+      setDefcon(Number.isFinite(lv) ? Math.min(5, Math.max(1, lv)) : 5)
+    } catch (_) {}
+  }, [])
+
+  useEffect(() => {
+    document.body.classList.remove("defcon-1", "defcon-2", "defcon-3", "defcon-4", "defcon-5")
+    document.body.classList.add(`defcon-${defcon}`)
+    try {
+      localStorage.setItem("osint_defcon", String(defcon))
+    } catch (_) {}
+    window.dispatchEvent(new CustomEvent("osint:defcon", { detail: { level: defcon } }))
+  }, [defcon])
 
   useEffect(() => {
     const NAV_ITEMS: SearchItem[] = [
@@ -204,6 +221,10 @@ export function TopBar({ headlines }: { headlines?: string[] }) {
     setCountdownText("03:00")
   }
 
+  const cycleDefcon = () => {
+    setDefcon((prev) => (prev <= 1 ? 5 : prev - 1))
+  }
+
   return (
     <>
       <header className="flex flex-col glass-panel border-b border-[rgba(255,255,255,0.06)]">
@@ -251,6 +272,20 @@ export function TopBar({ headlines }: { headlines?: string[] }) {
               <span>LOCAL {localTime}</span>
               <span>THEATER {theaterTime}</span>
             </div>
+
+            <button
+              type="button"
+              onClick={cycleDefcon}
+              className={`hidden lg:flex items-center gap-1 rounded border px-2 py-1 text-[9px] tracking-[0.16em] uppercase ${
+                defcon <= 2
+                  ? "border-osint-red/45 text-osint-red bg-osint-red/12"
+                  : defcon === 3
+                    ? "border-osint-amber/45 text-osint-amber bg-osint-amber/12"
+                    : "border-osint-blue/35 text-osint-blue bg-osint-blue/10"
+              }`}
+            >
+              <span>DEFCON {defcon}</span>
+            </button>
 
             <div className="hidden md:flex items-center gap-2 text-[10px] text-muted-foreground uppercase tracking-wider">
               <span className="h-1.5 w-1.5 rounded-full bg-osint-green" />

@@ -82,7 +82,47 @@
   }
   body {
     @apply bg-background text-foreground;
+    transition: filter 240ms ease, background-color 240ms ease;
   }
+}
+
+body.defcon-5 {
+  --osint-blue: #00b4d8;
+  --osint-green: #00ff88;
+  --osint-amber: #ffa630;
+  --osint-red: #ff1a3c;
+}
+
+body.defcon-4 {
+  --osint-blue: #00a4cf;
+  --osint-green: #00e890;
+  --osint-amber: #ff9f36;
+  --osint-red: #ff334a;
+  filter: saturate(1.05);
+}
+
+body.defcon-3 {
+  --osint-blue: #0098c8;
+  --osint-green: #00d488;
+  --osint-amber: #ffad3b;
+  --osint-red: #ff3f54;
+  filter: saturate(1.1) hue-rotate(-4deg);
+}
+
+body.defcon-2 {
+  --osint-blue: #007fb4;
+  --osint-green: #00bf7c;
+  --osint-amber: #ffb44a;
+  --osint-red: #ff4f61;
+  filter: saturate(1.18) hue-rotate(-8deg) brightness(1.02);
+}
+
+body.defcon-1 {
+  --osint-blue: #0072a8;
+  --osint-green: #00b06f;
+  --osint-amber: #ffbe58;
+  --osint-red: #ff6171;
+  filter: saturate(1.25) hue-rotate(-12deg) brightness(1.05);
 }
 
 @keyframes blink {

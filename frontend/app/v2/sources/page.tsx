@@ -50,7 +50,7 @@ interface SystemInfo {
   storage_backend: string
   ollama_model_primary: string
   ollama_model_fallback: string
-  v2_ai_models?: { default?: string; chat?: string; verify?: string; report?: string }
+  v2_ai_models?: { default?: string; verify?: string; report?: string }
   queue: { media_jobs_pending: number; media_jobs_tracked: number }
 }
 
@@ -155,7 +155,6 @@ export default function SourcesPage() {
                 <p>Storage: {system?.storage_backend ?? "--"}</p>
                 <p>Primary: {system?.ollama_model_primary ?? "--"}</p>
                 <p>Fallback: {system?.ollama_model_fallback ?? "--"}</p>
-                <p>Chat: {system?.v2_ai_models?.chat ?? "--"}</p>
                 <p>Verify: {system?.v2_ai_models?.verify ?? "--"}</p>
                 <p>Report: {system?.v2_ai_models?.report ?? "--"}</p>
                 <p>Media queue: {system?.queue.media_jobs_pending ?? 0}</p>

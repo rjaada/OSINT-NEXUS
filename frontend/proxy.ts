@@ -15,8 +15,9 @@ export function proxy(req: NextRequest) {
   if (isPublicPath(pathname)) return NextResponse.next()
 
   const session = req.cookies.get("osint_session")?.value
+  const signedSession = req.cookies.get("osint_auth")?.value
   const role = req.cookies.get("osint_role")?.value || "viewer"
-  if (session === "1") {
+  if (session === "1" || Boolean(signedSession)) {
     // v2 is analyst/admin only; v1 remains available for any authenticated role.
     if ((pathname === "/v2" || pathname.startsWith("/v2/")) && !["analyst", "admin"].includes(role)) {
       const deniedUrl = req.nextUrl.clone()

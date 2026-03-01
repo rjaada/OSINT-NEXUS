@@ -3,11 +3,14 @@ OSINT NEXUS — Real-time Intelligence Engine
 """
 
 import asyncio
+import base64
+import hmac
 import hashlib
 import json
 import math
 import os
 import re
+import secrets
 import sqlite3
 import subprocess
 import time
@@ -23,18 +26,24 @@ from bs4 import BeautifulSoup
 from fastapi import FastAPI, Header, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 try:
     import psycopg  # type: ignore
 except Exception:
     psycopg = None
+try:
+    import mgrs  # type: ignore
+except Exception:
+    mgrs = None
 
 from analyst import generate_analyst_report
 
 app = FastAPI(title="OSINT Nexus Engine v3")
 
+CORS_ORIGINS = [x.strip() for x in os.getenv("CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000").split(",") if x.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -56,7 +65,7 @@ OLLAMA_BASE_URL = OLLAMA_URL.rsplit("/api/", 1)[0] if "/api/" in OLLAMA_URL else
 V2_MODEL_CHAT = os.getenv("V2_MODEL_CHAT", "qwen2.5:7b")
 V2_MODEL_VERIFY = os.getenv("V2_MODEL_VERIFY", "phi4-mini")
 V2_MODEL_REPORT = os.getenv("V2_MODEL_REPORT", "deepseek-r1:8b")
-V2_MODEL_DEFAULT = os.getenv("V2_MODEL_DEFAULT", V2_MODEL_CHAT)
+V2_MODEL_DEFAULT = os.getenv("V2_MODEL_DEFAULT", V2_MODEL_VERIFY)
 V2_CHAT_TIMEOUT_SEC = int(os.getenv("V2_CHAT_TIMEOUT_SEC", "25"))
 V2_VERIFY_TIMEOUT_SEC = int(os.getenv("V2_VERIFY_TIMEOUT_SEC", "35"))
 V2_REPORT_TIMEOUT_SEC = int(os.getenv("V2_REPORT_TIMEOUT_SEC", "120"))
@@ -65,6 +74,12 @@ GEOCODE_URL = os.getenv("GEOCODE_URL", "https://nominatim.openstreetmap.org/sear
 V2_API_KEY = os.getenv("V2_API_KEY", "")
 STORAGE_BACKEND = "postgres" if os.getenv("DATABASE_URL", "").startswith("postgres") else "sqlite"
 DATABASE_URL = os.getenv("DATABASE_URL", "")
+AUTH_SECRET = os.getenv("AUTH_SECRET", "dev-change-me")
+AUTH_DEFAULT_ADMIN_USER = os.getenv("AUTH_DEFAULT_ADMIN_USER", "admin")
+AUTH_DEFAULT_ADMIN_PASSWORD = os.getenv("AUTH_DEFAULT_ADMIN_PASSWORD", "osint123")
+AUTH_COOKIE_SECURE = os.getenv("AUTH_COOKIE_SECURE", "0").lower() in ("1", "true", "yes", "on")
+OVERLAY_DIR = Path(os.getenv("OVERLAY_DIR", "/tmp/osint_overlays"))
+OVERLAY_DIR.mkdir(parents=True, exist_ok=True)
 
 app.mount("/media", StaticFiles(directory=str(MEDIA_DIR)), name="media")
 
@@ -250,6 +265,87 @@ def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def hash_password(password: str, salt: Optional[bytes] = None, iterations: int = 240_000) -> str:
+    salt_bytes = salt or secrets.token_bytes(16)
+    dk = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt_bytes, iterations)
+    return f"pbkdf2_sha256${iterations}${base64.b64encode(salt_bytes).decode()}${base64.b64encode(dk).decode()}"
+
+
+def verify_password(password: str, encoded: str) -> bool:
+    try:
+        scheme, iter_str, salt_b64, hash_b64 = encoded.split("$", 3)
+        if scheme != "pbkdf2_sha256":
+            return False
+        iterations = int(iter_str)
+        salt = base64.b64decode(salt_b64.encode())
+        expected = base64.b64decode(hash_b64.encode())
+        got = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations)
+        return hmac.compare_digest(expected, got)
+    except Exception:
+        return False
+
+
+def mgrs_from_latlng(lat: float, lng: float) -> Optional[str]:
+    if mgrs is None:
+        return None
+    try:
+        converter = mgrs.MGRS()
+        return str(converter.toMGRS(lat, lng))
+    except Exception:
+        return None
+
+
+def parse_overlay_file(path: Path) -> Optional[dict]:
+    try:
+        if path.suffix.lower() != ".geojson":
+            return None
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict) or raw.get("type") not in {"FeatureCollection", "Feature"}:
+            return None
+        return {
+            "id": path.stem,
+            "name": path.stem.replace("_", " ").title(),
+            "kind": "geojson",
+            "source": raw,
+        }
+    except Exception:
+        return None
+
+
+def load_overlays() -> List[dict]:
+    items: List[dict] = []
+    if not OVERLAY_DIR.exists():
+        return items
+    for p in sorted(OVERLAY_DIR.glob("*.geojson")):
+        parsed = parse_overlay_file(p)
+        if parsed:
+            items.append(parsed)
+    return items
+
+
+def auth_sign(username: str, role: str, expires_epoch: int) -> str:
+    payload = f"{username}|{role}|{expires_epoch}"
+    sig = hmac.new(AUTH_SECRET.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
+    token = f"{payload}|{sig}"
+    return base64.urlsafe_b64encode(token.encode("utf-8")).decode("utf-8")
+
+
+def auth_verify(token: str) -> Optional[dict]:
+    try:
+        decoded = base64.urlsafe_b64decode(token.encode("utf-8")).decode("utf-8")
+        username, role, expires_txt, sig = decoded.split("|", 3)
+        payload = f"{username}|{role}|{expires_txt}"
+        expected = hmac.new(AUTH_SECRET.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(expected, sig):
+            return None
+        expires = int(expires_txt)
+        if int(time.time()) > expires:
+            return None
+        return {"username": username, "role": role, "expires": expires}
+    except Exception:
+        return None
+
+
 def init_db() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.row_factory = sqlite3.Row
@@ -391,6 +487,19 @@ def init_db() -> sqlite3.Connection:
         )
         """
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL UNIQUE,
+            password_hash TEXT NOT NULL,
+            role TEXT NOT NULL DEFAULT 'viewer',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_users_username ON users(username)")
     conn.commit()
     return conn
 
@@ -733,6 +842,50 @@ def postgres_status() -> dict:
         return {"configured": True, "connected": False, "events_count": None, "error": str(e)}
 
 
+def ensure_default_admin() -> None:
+    if _db is None:
+        return
+    row = _db.execute("SELECT id FROM users WHERE username = ?", (AUTH_DEFAULT_ADMIN_USER.lower(),)).fetchone()
+    if row:
+        return
+    now = utc_now_iso()
+    _db.execute(
+        """
+        INSERT INTO users (username, password_hash, role, created_at, updated_at)
+        VALUES (?, ?, 'admin', ?, ?)
+        """,
+        (
+            AUTH_DEFAULT_ADMIN_USER.lower(),
+            hash_password(AUTH_DEFAULT_ADMIN_PASSWORD),
+            now,
+            now,
+        ),
+    )
+    _db.commit()
+
+
+def get_user(username: str) -> Optional[sqlite3.Row]:
+    if _db is None:
+        return None
+    return _db.execute("SELECT * FROM users WHERE username = ?", (username.lower(),)).fetchone()
+
+
+class AuthRegisterPayload(BaseModel):
+    username: str
+    password: str
+    role: str = "viewer"
+
+
+class AuthLoginPayload(BaseModel):
+    username: str
+    password: str
+
+
+class OpsBriefPayload(BaseModel):
+    mode: str = "INTSUM"
+    limit: int = 20
+
+
 def persist_event_v2_pg(event: dict):
     if not DATABASE_URL.startswith("postgres") or psycopg is None:
         return
@@ -1018,6 +1171,54 @@ async def geocode_place(place: str) -> Optional[Tuple[float, float]]:
         return None
 
 
+async def fetch_metoc(lat: float, lng: float) -> dict:
+    url = "https://api.open-meteo.com/v1/forecast"
+    params = {
+        "latitude": f"{lat:.4f}",
+        "longitude": f"{lng:.4f}",
+        "current": ",".join(
+            [
+                "temperature_2m",
+                "wind_speed_10m",
+                "wind_direction_10m",
+                "visibility",
+                "cloud_cover",
+                "pressure_msl",
+            ]
+        ),
+        "timezone": "UTC",
+    }
+    try:
+        client = _get_geocode_client()
+        res = await client.get(url, params=params, timeout=10)
+        res.raise_for_status()
+        data = res.json().get("current", {}) if isinstance(res.json(), dict) else {}
+        visibility_m = float(data.get("visibility", 0.0) or 0.0)
+        cloud_cover = float(data.get("cloud_cover", 0.0) or 0.0)
+        ceiling_ft = int(max(500.0, 12000.0 - (cloud_cover / 100.0) * 10000.0))
+        return {
+            "source": "open-meteo",
+            "lat": lat,
+            "lng": lng,
+            "temperature_c": data.get("temperature_2m"),
+            "wind_speed_kts": round(float(data.get("wind_speed_10m", 0.0) or 0.0) * 0.539957, 1),
+            "wind_direction_deg": data.get("wind_direction_10m"),
+            "visibility_km": round(visibility_m / 1000.0, 1) if visibility_m else None,
+            "cloud_cover_pct": cloud_cover,
+            "cloud_ceiling_ft_est": ceiling_ft,
+            "pressure_hpa": data.get("pressure_msl"),
+            "updated_at": utc_now_iso(),
+        }
+    except Exception as e:
+        return {
+            "source": "open-meteo",
+            "lat": lat,
+            "lng": lng,
+            "error": str(e),
+            "updated_at": utc_now_iso(),
+        }
+
+
 def _decode_ollama_json_response(raw: str) -> Optional[dict]:
     raw_text = str(raw or "{}").strip()
     if raw_text.startswith("```"):
@@ -1036,12 +1237,10 @@ class V2AiScheduler:
     def __init__(self):
         self._lock = asyncio.Lock()
         self._task_to_model = {
-            "chat": V2_MODEL_CHAT,
             "verify": V2_MODEL_VERIFY,
             "report": V2_MODEL_REPORT,
         }
         self._task_timeout = {
-            "chat": V2_CHAT_TIMEOUT_SEC,
             "verify": V2_VERIFY_TIMEOUT_SEC,
             "report": V2_REPORT_TIMEOUT_SEC,
         }
@@ -1855,6 +2054,7 @@ async def startup_event():
         timeout=8,
         headers={"User-Agent": "OSINT-Nexus/1.0 (research dashboard)"},
     )
+    ensure_default_admin()
     load_recent_events()
 
     asyncio.create_task(poll_flights())
@@ -1879,6 +2079,84 @@ async def shutdown_event():
 @app.get("/")
 async def root():
     return {"status": "OSINT Engine v3 Running", "clients": len(manager.connections), "events": len(events_history)}
+
+
+@app.post("/api/auth/register")
+async def auth_register(payload: AuthRegisterPayload):
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    username = payload.username.strip().lower()
+    password = payload.password
+    role = (payload.role or "viewer").strip().lower()
+    if not re.match(r"^[a-z0-9_.-]{3,32}$", username):
+        raise HTTPException(status_code=400, detail="Username must be 3-32 chars [a-z0-9_.-]")
+    if len(password) < 8:
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
+    if role not in {"viewer", "analyst", "admin"}:
+        raise HTTPException(status_code=400, detail="Invalid role")
+    if get_user(username):
+        raise HTTPException(status_code=409, detail="Username already exists")
+    now = utc_now_iso()
+    _db.execute(
+        """
+        INSERT INTO users (username, password_hash, role, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (username, hash_password(password), role, now, now),
+    )
+    _db.commit()
+    return {"ok": True, "username": username, "role": role, "created_at": now}
+
+
+@app.post("/api/auth/login")
+async def auth_login(payload: AuthLoginPayload, response: Response):
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    username = payload.username.strip().lower()
+    user = get_user(username)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    if not verify_password(payload.password, str(user["password_hash"])):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    role = str(user["role"])
+    expiry_dt = datetime.now(timezone.utc) + timedelta(hours=8)
+    expires_epoch = int(expiry_dt.timestamp())
+    token = auth_sign(username, role, expires_epoch)
+    cookie_expires = expiry_dt.strftime("%a, %d %b %Y %H:%M:%S GMT")
+    for key, value in [
+        ("osint_session", "1"),
+        ("osint_role", role),
+        ("osint_user", username),
+        ("osint_auth", token),
+    ]:
+        response.set_cookie(
+            key=key,
+            value=value,
+            path="/",
+            expires=cookie_expires,
+            httponly=(key == "osint_auth"),
+            samesite="lax",
+            secure=AUTH_COOKIE_SECURE,
+        )
+    return {"ok": True, "username": username, "role": role, "expires_at": expiry_dt.isoformat()}
+
+
+@app.post("/api/auth/logout")
+async def auth_logout(response: Response):
+    for key in ["osint_session", "osint_role", "osint_user", "osint_auth"]:
+        response.delete_cookie(key=key, path="/", samesite="lax")
+    return {"ok": True}
+
+
+@app.get("/api/auth/session")
+async def auth_session(request: Request):
+    token = request.cookies.get("osint_auth") or ""
+    if not token:
+        return {"authenticated": False}
+    verified = auth_verify(token)
+    if not verified:
+        return {"authenticated": False}
+    return {"authenticated": True, **verified}
 
 
 @app.get("/api/health")
@@ -2179,39 +2457,6 @@ BODY: {body}
     }
 
 
-@app.post("/api/v2/ai/chat")
-async def v2_ai_chat(payload: Dict[str, Any]):
-    message = str(payload.get("message", "")).strip()
-    context = payload.get("context")
-    if not message:
-        raise HTTPException(status_code=400, detail="message is required")
-
-    prompt = f"""You are the v2 OSINT operations copilot.
-Return ONLY strict JSON:
-{{
-  "reply": "short helpful response",
-  "next_actions": ["action1","action2"],
-  "risk_note": "one short warning if needed"
-}}
-Rules:
-- Keep reply concise and operational.
-- If user asks for facts not in context, say uncertainty clearly.
-- No markdown and no extra keys.
-
-CONTEXT_JSON: {json.dumps(context)[:4000] if context is not None else "{}"}
-USER_MESSAGE: {message}
-"""
-    data = await _v2_ai_scheduler.run_json("chat", prompt=prompt, temperature=0.2)
-    next_actions = data.get("next_actions") if isinstance(data.get("next_actions"), list) else []
-    return {
-        "reply": str(data.get("reply", "")).strip() or "I need more context to answer safely.",
-        "next_actions": [str(x)[:160] for x in next_actions[:4]],
-        "risk_note": str(data.get("risk_note", "")).strip(),
-        "model": V2_MODEL_CHAT,
-        "generated_at": utc_now_iso(),
-    }
-
-
 @app.post("/api/media/consume")
 async def media_consume(payload: Dict[str, Any]):
     event_id = str(payload.get("event_id", "")).strip()
@@ -2257,7 +2502,6 @@ async def v2_system():
         "ollama_model_fallback": OLLAMA_FALLBACK_MODEL,
         "v2_ai_models": {
             "default": V2_MODEL_DEFAULT,
-            "chat": V2_MODEL_CHAT,
             "verify": V2_MODEL_VERIFY,
             "report": V2_MODEL_REPORT,
         },
@@ -2268,6 +2512,116 @@ async def v2_system():
         },
         "ai_policy": ai_status.get("policy"),
         "ai_runtime": ai_status.get("runtime"),
+        "generated_at": utc_now_iso(),
+    }
+
+
+@app.get("/api/v2/overlays")
+async def v2_overlays():
+    return {
+        "items": load_overlays(),
+        "generated_at": utc_now_iso(),
+    }
+
+
+@app.get("/api/v2/metoc")
+async def v2_metoc(lat: Optional[float] = None, lng: Optional[float] = None):
+    if lat is None or lng is None:
+        sample = fetch_recent_v2_events_pg(limit=120, source_whitelist=sorted(TELEGRAM_SOURCE_SET))
+        if not sample:
+            sample = list(events_history[-120:])
+        if sample:
+            lat = sum(float(e.get("lat", 0.0)) for e in sample) / len(sample)
+            lng = sum(float(e.get("lng", 0.0)) for e in sample) / len(sample)
+        else:
+            lat, lng = 31.7683, 35.2137
+    metoc = await fetch_metoc(float(lat), float(lng))
+    return metoc
+
+
+@app.post("/api/v2/ai/ops-brief")
+async def v2_ai_ops_brief(payload: OpsBriefPayload):
+    mode = str(payload.mode or "INTSUM").upper()
+    limit = min(max(int(payload.limit or 20), 5), 40)
+    recent = fetch_recent_v2_events_pg(
+        limit=500,
+        source_whitelist=sorted(TELEGRAM_SOURCE_SET),
+        type_whitelist=["STRIKE", "CRITICAL", "CLASH", "MOVEMENT", "NOTAM"],
+    )
+    if not recent:
+        recent = [e for e in events_history[-1200:] if _is_telegram_source(e)]
+    recent_sorted = sorted(recent, key=lambda x: _parse_iso(str(x.get("timestamp", utc_now_iso()))), reverse=True)
+    sample = recent_sorted[:limit]
+    if not sample:
+        return {"mode": mode, "summary": "No events available.", "verify": [], "report": None, "generated_at": utc_now_iso()}
+
+    verify_cards = []
+    for e in sample[: min(5, len(sample))]:
+        try:
+            verify_prompt = f"""You verify intelligence claims.
+Return strict JSON:
+{{
+  "classification": "credible|uncertain|unlikely",
+  "confidence_0_to_100": 0,
+  "reasoning": ["..."],
+  "required_follow_up": ["..."],
+  "insufficient_evidence": false
+}}
+Title: {str(e.get('desc','')).replace('[','(').replace(']',')')[:180]}
+Body: {str(e.get('desc',''))[:400]}
+Source: {str(e.get('source',''))}
+Timestamp: {str(e.get('timestamp',''))}
+"""
+            vr = await _v2_ai_scheduler.run_json("verify", verify_prompt, temperature=0.0)
+            verify_cards.append(
+                {
+                    "event_id": e.get("id"),
+                    "desc": str(e.get("desc", "")).replace("[", "(").replace("]", ")")[:200],
+                    "source": e.get("source"),
+                    "timestamp": e.get("timestamp"),
+                    "result": vr,
+                }
+            )
+        except Exception:
+            continue
+
+    context_lines = []
+    for e in sample[:25]:
+        mgrs_code = mgrs_from_latlng(float(e.get("lat", 0.0)), float(e.get("lng", 0.0))) or "N/A"
+        context_lines.append(
+            f"- [{e.get('type')}] {str(e.get('timestamp',''))} {str(e.get('source',''))} MGRS:{mgrs_code} :: {str(e.get('desc',''))[:180]}"
+        )
+    for v in verify_cards:
+        res = v.get("result", {})
+        context_lines.append(
+            f"- VERIFY {v.get('event_id')} => {res.get('classification')} ({res.get('confidence_0_to_100')})"
+        )
+
+    report_prompt = f"""You are an operational intelligence reporting assistant.
+Mode: {mode}
+Return strict JSON:
+{{
+  "title": "string",
+  "summary": "string",
+  "paragraphs": ["..."],
+  "priority_actions": ["..."],
+  "risk_level": "low|medium|high|critical"
+}}
+Context:
+{chr(10).join(context_lines)}
+"""
+    report_json = await _v2_ai_scheduler.run_json("report", report_prompt, temperature=0.1)
+    priority_actions = report_json.get("priority_actions") if isinstance(report_json.get("priority_actions"), list) else []
+    commander_chat = {
+        "one_line_risk": str(report_json.get("summary", "")).strip()[:240],
+        "next_actions": [str(x)[:180] for x in priority_actions[:5]],
+    }
+    return {
+        "mode": mode,
+        "verify": verify_cards,
+        "report": report_json,
+        "commander_chat": commander_chat,
+        "model_policy": _v2_ai_scheduler.status().get("policy"),
         "generated_at": utc_now_iso(),
     }
 
@@ -2300,6 +2654,7 @@ async def v2_events(limit: int = 120, clustered: bool = False):
             "facts": x.get("observed_facts", []),
             "inference": x.get("model_inference", []),
         }
+        x["mgrs"] = mgrs_from_latlng(float(x.get("lat", 0.0)), float(x.get("lng", 0.0)))
         enriched.append(x)
     if clustered:
         return {"clusters": cluster_events_for_map(enriched), "items": enriched}
@@ -2352,6 +2707,7 @@ async def v2_alerts(limit: int = 60):
                 "video_url": e.get("video_url"),
                 "video_assessment": e.get("video_assessment"),
                 "video_confidence": e.get("video_confidence"),
+                "mgrs": mgrs_from_latlng(float(e.get("lat", 0.0)), float(e.get("lng", 0.0))),
                 "media": get_media_analysis(str(e.get("id", ""))),
                 "review": _review_cache.get(str(e.get("id", ""))),
             }
