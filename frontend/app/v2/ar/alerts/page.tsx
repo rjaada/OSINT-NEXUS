@@ -4,6 +4,7 @@ import { useEffect, useState } from "react"
 import { TopBar } from "@/components/dashboard/top-bar"
 import { CommandNav } from "@/components/dashboard/command-nav"
 import { VideoModal } from "@/components/system/video-modal"
+import { csrfHeaders } from "@/lib/security"
 
 type Confidence = "LOW" | "MEDIUM" | "HIGH"
 type ReviewState = "confirm" | "reject" | "needs_review"
@@ -49,12 +50,10 @@ function requestHeaders() {
   try {
     apiKey = localStorage.getItem("osint_v2_api_key") || ""
   } catch (_) {}
-  return {
+  return csrfHeaders({
     "Content-Type": "application/json",
-    "x-role": "analyst",
-    "x-actor": "local-ui-ar",
     "x-api-key": apiKey,
-  }
+  })
 }
 
 export default function ArabicAlertsPage() {
@@ -85,6 +84,7 @@ export default function ArabicAlertsPage() {
       await fetch("http://localhost:8000/api/v2/reviews", {
         method: "POST",
         headers: requestHeaders(),
+        credentials: "include",
         body: JSON.stringify({ event_id: eventId, status, note: "set from arabic v2 board" }),
       })
       await load()

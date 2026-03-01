@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react"
 import { TopBar } from "@/components/dashboard/top-bar"
 import { CommandNav } from "@/components/dashboard/command-nav"
+import { csrfHeaders } from "@/lib/security"
 
 type Role = "viewer" | "analyst" | "admin"
 
@@ -52,6 +53,7 @@ export default function AdminUsersPage() {
   }, [role])
 
   const adminsCount = useMemo(() => users.filter((u) => u.role === "admin").length, [users])
+  const actorNorm = actor.trim().toLowerCase()
 
   const setUserRole = async (username: string, nextRole: Role) => {
     setBusyUser(username)
@@ -59,7 +61,7 @@ export default function AdminUsersPage() {
     try {
       const res = await fetch(`http://localhost:8000/api/admin/users/${encodeURIComponent(username)}/role`, {
         method: "PATCH",
-        headers: { "Content-Type": "application/json" },
+        headers: csrfHeaders({ "Content-Type": "application/json" }),
         credentials: "include",
         body: JSON.stringify({ role: nextRole }),
       })
@@ -72,6 +74,31 @@ export default function AdminUsersPage() {
       setMsg(`Updated ${username} to ${nextRole}`)
     } catch (_) {
       setMsg("Network error while updating role")
+    } finally {
+      setBusyUser("")
+    }
+  }
+
+  const deleteUser = async (username: string) => {
+    const ok = window.confirm(`Delete user "${username}"? This action cannot be undone.`)
+    if (!ok) return
+    setBusyUser(username)
+    setMsg("")
+    try {
+      const res = await fetch(`http://localhost:8000/api/admin/users/${encodeURIComponent(username)}`, {
+        method: "DELETE",
+        headers: csrfHeaders(),
+        credentials: "include",
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        setMsg(data?.detail || "Delete failed")
+        return
+      }
+      setUsers((prev) => prev.filter((u) => u.username !== username))
+      setMsg(`Deleted ${username}`)
+    } catch (_) {
+      setMsg("Network error while deleting user")
     } finally {
       setBusyUser("")
     }
@@ -136,6 +163,14 @@ export default function AdminUsersPage() {
                           {busyUser === u.username ? "..." : r}
                         </button>
                       ))}
+                      <button
+                        disabled={busyUser === u.username || u.username.toLowerCase() === actorNorm}
+                        onClick={() => void deleteUser(u.username)}
+                        className="text-[10px] px-2 py-1 rounded border disabled:opacity-50 border-osint-red/40 text-osint-red bg-osint-red/10"
+                        title={u.username.toLowerCase() === actorNorm ? "You cannot delete your own account" : "Delete user"}
+                      >
+                        {busyUser === u.username ? "..." : "delete"}
+                      </button>
                     </div>
                   </article>
                 ))}

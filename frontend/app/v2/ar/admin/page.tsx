@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react"
 import { TopBar } from "@/components/dashboard/top-bar"
 import { CommandNav } from "@/components/dashboard/command-nav"
+import { csrfHeaders } from "@/lib/security"
 
 type Role = "viewer" | "analyst" | "admin"
 
@@ -52,6 +53,7 @@ export default function ArabicAdminUsersPage() {
   }, [role])
 
   const adminsCount = useMemo(() => users.filter((u) => u.role === "admin").length, [users])
+  const actorNorm = actor.trim().toLowerCase()
 
   const setUserRole = async (username: string, nextRole: Role) => {
     setBusyUser(username)
@@ -59,7 +61,7 @@ export default function ArabicAdminUsersPage() {
     try {
       const res = await fetch(`http://localhost:8000/api/admin/users/${encodeURIComponent(username)}/role`, {
         method: "PATCH",
-        headers: { "Content-Type": "application/json" },
+        headers: csrfHeaders({ "Content-Type": "application/json" }),
         credentials: "include",
         body: JSON.stringify({ role: nextRole }),
       })
@@ -72,6 +74,31 @@ export default function ArabicAdminUsersPage() {
       setMsg(`تم تحديث ${username} إلى ${nextRole}`)
     } catch (_) {
       setMsg("خطأ شبكة أثناء التحديث")
+    } finally {
+      setBusyUser("")
+    }
+  }
+
+  const deleteUser = async (username: string) => {
+    const ok = window.confirm(`حذف المستخدم "${username}"؟ لا يمكن التراجع عن هذا الإجراء.`)
+    if (!ok) return
+    setBusyUser(username)
+    setMsg("")
+    try {
+      const res = await fetch(`http://localhost:8000/api/admin/users/${encodeURIComponent(username)}`, {
+        method: "DELETE",
+        headers: csrfHeaders(),
+        credentials: "include",
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        setMsg(data?.detail || "فشل الحذف")
+        return
+      }
+      setUsers((prev) => prev.filter((u) => u.username !== username))
+      setMsg(`تم حذف ${username}`)
+    } catch (_) {
+      setMsg("خطأ شبكة أثناء الحذف")
     } finally {
       setBusyUser("")
     }
@@ -136,6 +163,14 @@ export default function ArabicAdminUsersPage() {
                           {busyUser === u.username ? "..." : r}
                         </button>
                       ))}
+                      <button
+                        disabled={busyUser === u.username || u.username.toLowerCase() === actorNorm}
+                        onClick={() => void deleteUser(u.username)}
+                        className="text-[10px] px-2 py-1 rounded border disabled:opacity-50 border-osint-red/40 text-osint-red bg-osint-red/10"
+                        title={u.username.toLowerCase() === actorNorm ? "لا يمكنك حذف حسابك الحالي" : "حذف المستخدم"}
+                      >
+                        {busyUser === u.username ? "..." : "حذف"}
+                      </button>
                     </div>
                   </article>
                 ))}

@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useState } from "react"
+import { csrfHeaders } from "@/lib/security"
 
 interface VideoModalProps {
   open: boolean
@@ -32,7 +33,8 @@ export function VideoModal({ open, videoUrl, eventId, title, onClose, onConsumed
     try {
       await fetch("http://localhost:8000/api/media/consume", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: csrfHeaders({ "Content-Type": "application/json" }),
+        credentials: "include",
         body: JSON.stringify({ event_id: eventId || "", video_url: videoUrl }),
       })
       setConsumed(true)

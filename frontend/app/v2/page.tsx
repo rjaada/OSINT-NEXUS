@@ -1,6 +1,7 @@
 "use client"
 import Link from "next/link"
 import { useEffect, useState } from "react"
+import { csrfHeaders } from "@/lib/security"
 
 export default function HomePage() {
   const [role, setRole] = useState("viewer")
@@ -15,7 +16,11 @@ export default function HomePage() {
 
   const logout = async () => {
     try {
-      await fetch("http://localhost:8000/api/auth/logout", { method: "POST", credentials: "include" })
+      await fetch("http://localhost:8000/api/auth/logout", {
+        method: "POST",
+        credentials: "include",
+        headers: csrfHeaders({ "Content-Type": "application/json" }),
+      })
     } catch (_) {}
     document.cookie = "osint_session=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; SameSite=Lax"
     document.cookie = "osint_role=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; SameSite=Lax"
@@ -34,13 +39,6 @@ export default function HomePage() {
             <button onClick={logout} className="text-[10px] tracking-[0.14em] uppercase px-3 py-1.5 rounded mr-2" style={{ color: "#ff1a3c", border: "1px solid #ff1a3c55", background: "#ff1a3c18" }}>
               Logout
             </button>
-            <Link
-              href="/"
-              className="text-[10px] tracking-[0.14em] uppercase px-3 py-1.5 rounded"
-              style={{ color: "#00ff88", border: "1px solid #00ff8855", background: "#00ff8818" }}
-            >
-              Switch to V1 Stable
-            </Link>
           </div>
           <p className="text-[11px] uppercase tracking-[0.2em] text-osint-blue mb-2">OSINT NEXUS</p>
           <h1 className="text-3xl md:text-4xl font-bold tracking-tight mb-3">Mission Hub</h1>

@@ -76,10 +76,29 @@ AUTH_SECRET = os.getenv("AUTH_SECRET", "dev-change-me")
 AUTH_DEFAULT_ADMIN_USER = os.getenv("AUTH_DEFAULT_ADMIN_USER", "admin")
 AUTH_DEFAULT_ADMIN_PASSWORD = os.getenv("AUTH_DEFAULT_ADMIN_PASSWORD", "osint123")
 AUTH_COOKIE_SECURE = os.getenv("AUTH_COOKIE_SECURE", "0").lower() in ("1", "true", "yes", "on")
+AUTH_ACCESS_HOURS = int(os.getenv("AUTH_ACCESS_HOURS", "8"))
+AUTH_LOGIN_MAX_ATTEMPTS = int(os.getenv("AUTH_LOGIN_MAX_ATTEMPTS", "5"))
+AUTH_LOGIN_LOCK_SEC = int(os.getenv("AUTH_LOGIN_LOCK_SEC", "300"))
+AUTH_RATE_WINDOW_SEC = int(os.getenv("AUTH_RATE_WINDOW_SEC", "60"))
+AUTH_RATE_LOGIN_PER_IP = int(os.getenv("AUTH_RATE_LOGIN_PER_IP", "20"))
+AUTH_RATE_REGISTER_PER_IP = int(os.getenv("AUTH_RATE_REGISTER_PER_IP", "8"))
 OVERLAY_DIR = Path(os.getenv("OVERLAY_DIR", "/tmp/osint_overlays"))
 OVERLAY_DIR.mkdir(parents=True, exist_ok=True)
 
 app.mount("/media", StaticFiles(directory=str(MEDIA_DIR)), name="media")
+
+
+@app.middleware("http")
+async def security_headers_middleware(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
+    response.headers["Cache-Control"] = "no-store"
+    if AUTH_COOKIE_SECURE:
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    return response
 
 
 class ConnectionManager:
@@ -148,6 +167,8 @@ _geocode_http_client: Optional[httpx.AsyncClient] = None
 _ollama_available_models: set = set()
 _media_jobs: "asyncio.Queue[dict]" = asyncio.Queue()
 _media_job_state: Dict[str, dict] = {}
+_rate_limit: Dict[str, List[float]] = {}
+_failed_logins: Dict[str, Dict[str, Any]] = {}
 _review_cache: Dict[str, dict] = {}
 _analyst_state: Dict[str, Any] = {
     "last_generated_ts": 0.0,
@@ -340,9 +361,72 @@ def auth_verify(token: str) -> Optional[dict]:
         expires = int(expires_txt)
         if int(time.time()) > expires:
             return None
-        return {"username": username, "role": role, "expires": expires}
+        return {"username": username, "role": role, "expires": expires, "sig": sig}
     except Exception:
         return None
+
+
+def auth_token_signature(token: str) -> Optional[str]:
+    verified = auth_verify(token)
+    if not verified:
+        return None
+    return str(verified.get("sig") or "")
+
+
+def check_password_policy(password: str) -> Optional[str]:
+    if len(password) < 10:
+        return "Password must be at least 10 characters"
+    if not re.search(r"[a-z]", password):
+        return "Password must include a lowercase letter"
+    if not re.search(r"[A-Z]", password):
+        return "Password must include an uppercase letter"
+    if not re.search(r"[0-9]", password):
+        return "Password must include a number"
+    if not re.search(r"[^A-Za-z0-9]", password):
+        return "Password must include a symbol"
+    common = {"password", "12345678", "qwerty", "letmein", "admin123", "osint123"}
+    if password.lower() in common:
+        return "Password is too common"
+    return None
+
+
+def _client_ip(request: Request) -> str:
+    forwarded = request.headers.get("x-forwarded-for", "").strip()
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return (request.client.host if request.client else "unknown").strip() or "unknown"
+
+
+def enforce_rate_limit(bucket: str, key: str, max_events: int, window_sec: int) -> None:
+    now = time.time()
+    token = f"{bucket}:{key}"
+    events = _rate_limit.get(token, [])
+    events = [t for t in events if now - t <= window_sec]
+    if len(events) >= max_events:
+        raise HTTPException(status_code=429, detail="Too many requests, retry later")
+    events.append(now)
+    _rate_limit[token] = events
+
+
+def enforce_csrf(request: Request) -> None:
+    csrf_cookie = request.cookies.get("osint_csrf", "")
+    csrf_header = request.headers.get("x-csrf-token", "")
+    if not csrf_cookie or not csrf_header or not hmac.compare_digest(csrf_cookie, csrf_header):
+        raise HTTPException(status_code=403, detail="CSRF validation failed")
+
+
+def is_token_revoked(sig: str) -> bool:
+    if not sig or _db is None:
+        return False
+    row = _db.execute("SELECT sig FROM revoked_tokens WHERE sig = ?", (sig,)).fetchone()
+    return row is not None
+
+
+def cleanup_revoked_tokens() -> None:
+    if _db is None:
+        return
+    _db.execute("DELETE FROM revoked_tokens WHERE expires_epoch < ?", (int(time.time()),))
+    _db.commit()
 
 
 def auth_user_from_request(request: Request) -> dict:
@@ -350,6 +434,8 @@ def auth_user_from_request(request: Request) -> dict:
     verified = auth_verify(token) if token else None
     if not verified:
         raise HTTPException(status_code=401, detail="Authentication required")
+    if is_token_revoked(str(verified.get("sig", ""))):
+        raise HTTPException(status_code=401, detail="Session revoked")
     return verified
 
 
@@ -358,6 +444,31 @@ def require_admin(request: Request) -> dict:
     if str(verified.get("role", "")).lower() != "admin":
         raise HTTPException(status_code=403, detail="Admin role required")
     return verified
+
+
+def resolve_write_identity(
+    request: Request,
+    x_api_key: Optional[str] = None,
+    x_actor: Optional[str] = None,
+    x_role: Optional[str] = None,
+) -> dict:
+    token = request.cookies.get("osint_auth") or ""
+    if token:
+        enforce_csrf(request)
+        verified = auth_user_from_request(request)
+        role = str(verified.get("role", "")).lower()
+        if role not in {"admin", "analyst"}:
+            raise HTTPException(status_code=403, detail="Role not allowed")
+        return {"username": str(verified.get("username", "unknown")), "role": role, "auth": "cookie"}
+
+    if V2_API_KEY and x_api_key == V2_API_KEY:
+        role = (x_role or "viewer").strip().lower()
+        if role not in {"admin", "analyst"}:
+            raise HTTPException(status_code=403, detail="Role not allowed")
+        actor = (x_actor or "service").strip() or "service"
+        return {"username": actor, "role": role, "auth": "api_key"}
+
+    raise HTTPException(status_code=401, detail="Authentication required")
 
 
 def init_db() -> sqlite3.Connection:
@@ -514,6 +625,16 @@ def init_db() -> sqlite3.Connection:
         """
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_users_username ON users(username)")
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS revoked_tokens (
+            sig TEXT PRIMARY KEY,
+            expires_epoch INTEGER NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_revoked_tokens_expires ON revoked_tokens(expires_epoch)")
     conn.commit()
     return conn
 
@@ -593,17 +714,6 @@ def persist_event(event: dict):
     )
     _db.commit()
     metrics["db_writes"] += 1
-
-
-def v2_authorize(api_key: Optional[str], role: str, write: bool = False):
-    if not write:
-        return
-    if not V2_API_KEY:
-        return
-    if api_key != V2_API_KEY:
-        raise HTTPException(status_code=401, detail="Invalid API key")
-    if role not in {"admin", "analyst"}:
-        raise HTTPException(status_code=403, detail="Role not allowed")
 
 
 def audit_log(action: str, actor: str, role: str, payload: dict, target_id: Optional[str] = None):
@@ -2132,6 +2242,7 @@ async def startup_event():
         timeout=8,
         headers={"User-Agent": "OSINT-Nexus/1.0 (research dashboard)"},
     )
+    cleanup_revoked_tokens()
     await sync_ollama_runtime_models()
     ensure_default_admin()
     load_recent_events()
@@ -2161,16 +2272,18 @@ async def root():
 
 
 @app.post("/api/auth/register")
-async def auth_register(payload: AuthRegisterPayload):
+async def auth_register(payload: AuthRegisterPayload, request: Request):
     if _db is None:
         raise HTTPException(status_code=503, detail="Database unavailable")
+    enforce_rate_limit("register_ip", _client_ip(request), AUTH_RATE_REGISTER_PER_IP, AUTH_RATE_WINDOW_SEC)
     username = payload.username.strip().lower()
     password = payload.password
     role = (payload.role or "viewer").strip().lower()
     if not re.match(r"^[a-z0-9_.-]{3,32}$", username):
         raise HTTPException(status_code=400, detail="Username must be 3-32 chars [a-z0-9_.-]")
-    if len(password) < 8:
-        raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
+    password_error = check_password_policy(password)
+    if password_error:
+        raise HTTPException(status_code=400, detail=password_error)
     if role not in {"viewer", "analyst", "admin"}:
         raise HTTPException(status_code=400, detail="Invalid role")
     if get_user(username):
@@ -2188,25 +2301,49 @@ async def auth_register(payload: AuthRegisterPayload):
 
 
 @app.post("/api/auth/login")
-async def auth_login(payload: AuthLoginPayload, response: Response):
+async def auth_login(payload: AuthLoginPayload, request: Request, response: Response):
     if _db is None:
         raise HTTPException(status_code=503, detail="Database unavailable")
+    cleanup_revoked_tokens()
+    ip = _client_ip(request)
+    enforce_rate_limit("login_ip", ip, AUTH_RATE_LOGIN_PER_IP, AUTH_RATE_WINDOW_SEC)
     username = payload.username.strip().lower()
+    lock_key = f"{username}|{ip}"
+    lock_state = _failed_logins.get(lock_key) or {}
+    lock_until = float(lock_state.get("lock_until", 0))
+    if lock_until > time.time():
+        wait_sec = max(1, int(lock_until - time.time()))
+        raise HTTPException(status_code=429, detail=f"Too many failed attempts. Retry in {wait_sec}s")
     user = get_user(username)
     if not user:
+        state = _failed_logins.get(lock_key, {"count": 0, "lock_until": 0.0})
+        state["count"] = int(state.get("count", 0)) + 1
+        if state["count"] >= AUTH_LOGIN_MAX_ATTEMPTS:
+            state["lock_until"] = time.time() + AUTH_LOGIN_LOCK_SEC
+            state["count"] = 0
+        _failed_logins[lock_key] = state
         raise HTTPException(status_code=401, detail="Invalid credentials")
     if not verify_password(payload.password, str(user["password_hash"])):
+        state = _failed_logins.get(lock_key, {"count": 0, "lock_until": 0.0})
+        state["count"] = int(state.get("count", 0)) + 1
+        if state["count"] >= AUTH_LOGIN_MAX_ATTEMPTS:
+            state["lock_until"] = time.time() + AUTH_LOGIN_LOCK_SEC
+            state["count"] = 0
+        _failed_logins[lock_key] = state
         raise HTTPException(status_code=401, detail="Invalid credentials")
+    _failed_logins.pop(lock_key, None)
     role = str(user["role"])
-    expiry_dt = datetime.now(timezone.utc) + timedelta(hours=8)
+    expiry_dt = datetime.now(timezone.utc) + timedelta(hours=AUTH_ACCESS_HOURS)
     expires_epoch = int(expiry_dt.timestamp())
     token = auth_sign(username, role, expires_epoch)
+    csrf_token = secrets.token_urlsafe(24)
     cookie_expires = expiry_dt.strftime("%a, %d %b %Y %H:%M:%S GMT")
     for key, value in [
         ("osint_session", "1"),
         ("osint_role", role),
         ("osint_user", username),
         ("osint_auth", token),
+        ("osint_csrf", csrf_token),
     ]:
         response.set_cookie(
             key=key,
@@ -2217,13 +2354,22 @@ async def auth_login(payload: AuthLoginPayload, response: Response):
             samesite="lax",
             secure=AUTH_COOKIE_SECURE,
         )
-    return {"ok": True, "username": username, "role": role, "expires_at": expiry_dt.isoformat()}
+    return {"ok": True, "username": username, "role": role, "expires_at": expiry_dt.isoformat(), "csrf": csrf_token}
 
 
 @app.post("/api/auth/logout")
-async def auth_logout(response: Response):
-    for key in ["osint_session", "osint_role", "osint_user", "osint_auth"]:
-        response.delete_cookie(key=key, path="/", samesite="lax")
+async def auth_logout(request: Request, response: Response):
+    enforce_csrf(request)
+    token = request.cookies.get("osint_auth") or ""
+    verified = auth_verify(token) if token else None
+    if verified and _db is not None:
+        _db.execute(
+            "INSERT OR IGNORE INTO revoked_tokens (sig, expires_epoch, created_at) VALUES (?, ?, ?)",
+            (str(verified.get("sig", "")), int(verified.get("expires", 0)), utc_now_iso()),
+        )
+        _db.commit()
+    for key in ["osint_session", "osint_role", "osint_user", "osint_auth", "osint_csrf"]:
+        response.delete_cookie(key=key, path="/", samesite="lax", secure=AUTH_COOKIE_SECURE)
     return {"ok": True}
 
 
@@ -2235,7 +2381,15 @@ async def auth_session(request: Request):
     verified = auth_verify(token)
     if not verified:
         return {"authenticated": False}
-    return {"authenticated": True, **verified}
+    if is_token_revoked(str(verified.get("sig", ""))):
+        return {"authenticated": False}
+    return {
+        "authenticated": True,
+        "username": str(verified.get("username", "")),
+        "role": str(verified.get("role", "")),
+        "expires": int(verified.get("expires", 0)),
+        "csrf": request.cookies.get("osint_csrf", ""),
+    }
 
 
 @app.get("/api/admin/users")
@@ -2267,6 +2421,7 @@ async def admin_list_users(request: Request):
 
 @app.patch("/api/admin/users/{username}/role")
 async def admin_set_user_role(username: str, payload: AdminSetRolePayload, request: Request):
+    enforce_csrf(request)
     actor = require_admin(request)
     if _db is None:
         raise HTTPException(status_code=503, detail="Database unavailable")
@@ -2299,12 +2454,60 @@ async def admin_set_user_role(username: str, payload: AdminSetRolePayload, reque
         (next_role, now, target),
     )
     _db.commit()
+    audit_log(
+        "admin.role.set",
+        str(actor.get("username", "")),
+        str(actor.get("role", "admin")),
+        {"username": target, "from": current_role, "to": next_role},
+        target_id=target,
+    )
     return {
         "ok": True,
         "username": target,
         "role": next_role,
         "updated_at": now,
         "updated_by": str(actor.get("username", "")),
+    }
+
+
+@app.delete("/api/admin/users/{username}")
+async def admin_delete_user(username: str, request: Request):
+    enforce_csrf(request)
+    actor = require_admin(request)
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    target = username.strip().lower()
+    if not re.match(r"^[a-z0-9_.-]{3,32}$", target):
+        raise HTTPException(status_code=400, detail="Invalid username")
+
+    row = get_user(target)
+    if not row:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    actor_username = str(actor.get("username", "")).strip().lower()
+    if target == actor_username:
+        raise HTTPException(status_code=400, detail="You cannot delete your own account")
+
+    current_role = str(row["role"]).lower()
+    if current_role == "admin":
+        admin_count = int(_db.execute("SELECT COUNT(*) AS c FROM users WHERE role = 'admin'").fetchone()["c"])
+        if admin_count <= 1:
+            raise HTTPException(status_code=400, detail="Cannot delete the last admin account")
+
+    _db.execute("DELETE FROM users WHERE username = ?", (target,))
+    _db.commit()
+    audit_log(
+        "admin.user.delete",
+        str(actor.get("username", "")),
+        str(actor.get("role", "admin")),
+        {"username": target, "role": current_role},
+        target_id=target,
+    )
+    return {
+        "ok": True,
+        "username": target,
+        "deleted_at": utc_now_iso(),
+        "deleted_by": str(actor.get("username", "")),
     }
 
 
@@ -2607,7 +2810,14 @@ BODY: {body}
 
 
 @app.post("/api/media/consume")
-async def media_consume(payload: Dict[str, Any]):
+async def media_consume(
+    payload: Dict[str, Any],
+    request: Request,
+    x_api_key: Optional[str] = Header(default=None, alias="x-api-key"),
+    x_role: str = Header(default="viewer", alias="x-role"),
+    x_actor: str = Header(default="anon", alias="x-actor"),
+):
+    resolve_write_identity(request, x_api_key=x_api_key, x_actor=x_actor, x_role=x_role)
     event_id = str(payload.get("event_id", "")).strip()
     video_url = str(payload.get("video_url", "")).strip()
     if not video_url.startswith("/media/telegram/"):
@@ -2894,7 +3104,9 @@ async def v2_reviews(
     x_role: str = Header(default="viewer", alias="x-role"),
     x_actor: str = Header(default="anon", alias="x-actor"),
 ):
-    v2_authorize(x_api_key, x_role, write=True)
+    identity = resolve_write_identity(request, x_api_key=x_api_key, x_actor=x_actor, x_role=x_role)
+    actor = identity["username"]
+    role = identity["role"]
     event_id = str(payload.get("event_id", "")).strip()
     status = str(payload.get("status", "")).strip().lower()
     note = str(payload.get("note", "")).strip()[:500]
@@ -2909,11 +3121,11 @@ async def v2_reviews(
             INSERT INTO reviews (event_id, incident_id, status, analyst, note, created_at)
             VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (event_id, incident_id, status, x_actor, note, utc_now_iso()),
+            (event_id, incident_id, status, actor, note, utc_now_iso()),
         )
         _db.commit()
-    _review_cache[event_id] = {"status": status, "analyst": x_actor, "note": note, "updated_at": utc_now_iso()}
-    audit_log("review.set", x_actor, x_role, payload, target_id=event_id)
+    _review_cache[event_id] = {"status": status, "analyst": actor, "note": note, "updated_at": utc_now_iso()}
+    audit_log("review.set", actor, role, payload, target_id=event_id)
     return {"ok": True, "event_id": event_id, "status": status}
 
 
@@ -2935,11 +3147,14 @@ async def v2_reviews_list(limit: int = 200):
 @app.post("/api/v2/saved-views")
 async def v2_saved_views_create(
     payload: Dict[str, Any],
+    request: Request,
     x_api_key: Optional[str] = Header(default=None, alias="x-api-key"),
     x_role: str = Header(default="viewer", alias="x-role"),
     x_actor: str = Header(default="anon", alias="x-actor"),
 ):
-    v2_authorize(x_api_key, x_role, write=True)
+    identity = resolve_write_identity(request, x_api_key=x_api_key, x_actor=x_actor, x_role=x_role)
+    actor = identity["username"]
+    role = identity["role"]
     name = str(payload.get("name", "")).strip()[:120]
     filters = payload.get("filters", {})
     if not name:
@@ -2947,15 +3162,17 @@ async def v2_saved_views_create(
     if _db is not None:
         _db.execute(
             "INSERT INTO saved_views (name, owner, filters_json, created_at) VALUES (?, ?, ?, ?)",
-            (name, x_actor, json.dumps(filters, ensure_ascii=False), utc_now_iso()),
+            (name, actor, json.dumps(filters, ensure_ascii=False), utc_now_iso()),
         )
         _db.commit()
-    audit_log("saved_view.create", x_actor, x_role, payload, target_id=name)
+    audit_log("saved_view.create", actor, role, payload, target_id=name)
     return {"ok": True}
 
 
 @app.get("/api/v2/saved-views")
-async def v2_saved_views(owner: str = "anon"):
+async def v2_saved_views(request: Request, owner: str = "anon", x_api_key: Optional[str] = Header(default=None, alias="x-api-key")):
+    if x_api_key != V2_API_KEY:
+        owner = auth_user_from_request(request).get("username", "anon")
     if _db is None:
         return []
     rows = _db.execute(
@@ -2979,11 +3196,14 @@ async def v2_saved_views(owner: str = "anon"):
 @app.post("/api/v2/watchlists")
 async def v2_watchlist_create(
     payload: Dict[str, Any],
+    request: Request,
     x_api_key: Optional[str] = Header(default=None, alias="x-api-key"),
     x_role: str = Header(default="viewer", alias="x-role"),
     x_actor: str = Header(default="anon", alias="x-actor"),
 ):
-    v2_authorize(x_api_key, x_role, write=True)
+    identity = resolve_write_identity(request, x_api_key=x_api_key, x_actor=x_actor, x_role=x_role)
+    actor = identity["username"]
+    role = identity["role"]
     name = str(payload.get("name", "")).strip()[:120]
     query = str(payload.get("query", "")).strip()[:220]
     tags = payload.get("tags", [])
@@ -2992,15 +3212,17 @@ async def v2_watchlist_create(
     if _db is not None:
         _db.execute(
             "INSERT INTO watchlists (name, owner, query, tags_json, created_at) VALUES (?, ?, ?, ?, ?)",
-            (name, x_actor, query, json.dumps(tags, ensure_ascii=False), utc_now_iso()),
+            (name, actor, query, json.dumps(tags, ensure_ascii=False), utc_now_iso()),
         )
         _db.commit()
-    audit_log("watchlist.create", x_actor, x_role, payload, target_id=name)
+    audit_log("watchlist.create", actor, role, payload, target_id=name)
     return {"ok": True}
 
 
 @app.get("/api/v2/watchlists")
-async def v2_watchlists(owner: str = "anon"):
+async def v2_watchlists(request: Request, owner: str = "anon", x_api_key: Optional[str] = Header(default=None, alias="x-api-key")):
+    if x_api_key != V2_API_KEY:
+        owner = auth_user_from_request(request).get("username", "anon")
     if _db is None:
         return []
     rows = _db.execute(
@@ -3031,11 +3253,14 @@ async def v2_watchlists(owner: str = "anon"):
 @app.post("/api/v2/pins")
 async def v2_pin_incident(
     payload: Dict[str, Any],
+    request: Request,
     x_api_key: Optional[str] = Header(default=None, alias="x-api-key"),
     x_role: str = Header(default="viewer", alias="x-role"),
     x_actor: str = Header(default="anon", alias="x-actor"),
 ):
-    v2_authorize(x_api_key, x_role, write=True)
+    identity = resolve_write_identity(request, x_api_key=x_api_key, x_actor=x_actor, x_role=x_role)
+    actor = identity["username"]
+    role = identity["role"]
     incident_id = str(payload.get("incident_id", "")).strip()
     note = str(payload.get("note", "")).strip()[:400]
     if not incident_id:
@@ -3046,15 +3271,17 @@ async def v2_pin_incident(
             INSERT OR REPLACE INTO pinned_incidents (incident_id, owner, note, created_at)
             VALUES (?, ?, ?, ?)
             """,
-            (incident_id, x_actor, note, utc_now_iso()),
+            (incident_id, actor, note, utc_now_iso()),
         )
         _db.commit()
-    audit_log("pin.set", x_actor, x_role, payload, target_id=incident_id)
+    audit_log("pin.set", actor, role, payload, target_id=incident_id)
     return {"ok": True}
 
 
 @app.get("/api/v2/pins")
-async def v2_pins(owner: str = "anon"):
+async def v2_pins(request: Request, owner: str = "anon", x_api_key: Optional[str] = Header(default=None, alias="x-api-key")):
+    if x_api_key != V2_API_KEY:
+        owner = auth_user_from_request(request).get("username", "anon")
     if _db is None:
         return []
     rows = _db.execute(
@@ -3067,11 +3294,14 @@ async def v2_pins(owner: str = "anon"):
 @app.post("/api/v2/handoff")
 async def v2_handoff_add(
     payload: Dict[str, Any],
+    request: Request,
     x_api_key: Optional[str] = Header(default=None, alias="x-api-key"),
     x_role: str = Header(default="viewer", alias="x-role"),
     x_actor: str = Header(default="anon", alias="x-actor"),
 ):
-    v2_authorize(x_api_key, x_role, write=True)
+    identity = resolve_write_identity(request, x_api_key=x_api_key, x_actor=x_actor, x_role=x_role)
+    actor = identity["username"]
+    role = identity["role"]
     incident_id = str(payload.get("incident_id", "")).strip()
     note = str(payload.get("note", "")).strip()[:1000]
     if not incident_id or not note:
@@ -3079,10 +3309,10 @@ async def v2_handoff_add(
     if _db is not None:
         _db.execute(
             "INSERT INTO handoff_notes (incident_id, owner, note, created_at) VALUES (?, ?, ?, ?)",
-            (incident_id, x_actor, note, utc_now_iso()),
+            (incident_id, actor, note, utc_now_iso()),
         )
         _db.commit()
-    audit_log("handoff.add", x_actor, x_role, payload, target_id=incident_id)
+    audit_log("handoff.add", actor, role, payload, target_id=incident_id)
     return {"ok": True}
 
 
@@ -3100,11 +3330,14 @@ async def v2_handoff(incident_id: str):
 @app.post("/api/v2/notifications")
 async def v2_notifications_create(
     payload: Dict[str, Any],
+    request: Request,
     x_api_key: Optional[str] = Header(default=None, alias="x-api-key"),
     x_role: str = Header(default="viewer", alias="x-role"),
     x_actor: str = Header(default="anon", alias="x-actor"),
 ):
-    v2_authorize(x_api_key, x_role, write=True)
+    identity = resolve_write_identity(request, x_api_key=x_api_key, x_actor=x_actor, x_role=x_role)
+    actor = identity["username"]
+    role = identity["role"]
     min_confidence = int(payload.get("min_confidence", 75))
     event_types = payload.get("event_types", ["CRITICAL"])
     channels = payload.get("channels", ["in_app"])
@@ -3115,15 +3348,17 @@ async def v2_notifications_create(
             INSERT INTO notification_rules (owner, min_confidence, event_types_json, channels_json, enabled, created_at)
             VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (x_actor, min_confidence, json.dumps(event_types), json.dumps(channels), enabled, utc_now_iso()),
+            (actor, min_confidence, json.dumps(event_types), json.dumps(channels), enabled, utc_now_iso()),
         )
         _db.commit()
-    audit_log("notifications.create", x_actor, x_role, payload)
+    audit_log("notifications.create", actor, role, payload)
     return {"ok": True}
 
 
 @app.get("/api/v2/notifications")
-async def v2_notifications(owner: str = "anon"):
+async def v2_notifications(request: Request, owner: str = "anon", x_api_key: Optional[str] = Header(default=None, alias="x-api-key")):
+    if x_api_key != V2_API_KEY:
+        owner = auth_user_from_request(request).get("username", "anon")
     if _db is None:
         return []
     rows = _db.execute(

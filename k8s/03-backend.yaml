@@ -7,6 +7,7 @@ data:
   REDIS_URL: "redis://redis:6379"
   OLLAMA_MODEL: "llama3"
   OLLAMA_URL: "http://host.minikube.internal:11434/api/generate"
+  OSINT_DB_PATH: "/data/osint_nexus.db"
 
 ---
 apiVersion: apps/v1
@@ -15,7 +16,7 @@ metadata:
   name: backend
   namespace: osint
 spec:
-  replicas: 2
+  replicas: 1
   selector:
     matchLabels:
       app: backend
@@ -33,6 +34,9 @@ spec:
         envFrom:
         - configMapRef:
             name: backend-config
+        volumeMounts:
+        - name: backend-data
+          mountPath: /data
         resources:
           requests:
             cpu: 250m
@@ -40,6 +44,23 @@ spec:
           limits:
             cpu: 500m
             memory: 1Gi
+      volumes:
+      - name: backend-data
+        persistentVolumeClaim:
+          claimName: backend-data-pvc
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: backend-data-pvc
+  namespace: osint
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
 
 ---
 apiVersion: v1

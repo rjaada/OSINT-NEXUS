@@ -1,12 +1,10 @@
 "use client"
 
 import { FormEvent, useMemo, useState } from "react"
-import { useRouter } from "next/navigation"
 
 type Role = "viewer" | "analyst" | "admin"
 
 export default function LoginPage() {
-  const router = useRouter()
   const nextPath = useMemo(() => {
     if (typeof window === "undefined") return "/"
     const n = new URLSearchParams(window.location.search).get("next") || "/"
@@ -64,14 +62,26 @@ export default function LoginPage() {
       }
 
       const expires = new Date(Date.now() + 1000 * 60 * 60 * 8).toUTCString()
-      const resolvedRole = String(loginJson?.role || role).toLowerCase()
+      let resolvedRole = String(loginJson?.role || role).toLowerCase()
+      let resolvedUser = String(loginJson?.username || username).toLowerCase()
+      try {
+        const sessionRes = await fetch("http://localhost:8000/api/auth/session", {
+          credentials: "include",
+          cache: "no-store",
+        })
+        const sessionJson = await sessionRes.json().catch(() => ({}))
+        if (sessionRes.ok && sessionJson?.authenticated) {
+          resolvedRole = String(sessionJson?.role || resolvedRole).toLowerCase()
+          resolvedUser = String(sessionJson?.username || resolvedUser).toLowerCase()
+        }
+      } catch {}
       document.cookie = `osint_session=1; Path=/; Expires=${expires}; SameSite=Lax`
       document.cookie = `osint_role=${resolvedRole}; Path=/; Expires=${expires}; SameSite=Lax`
-      document.cookie = `osint_user=${(loginJson?.username || username).toLowerCase()}; Path=/; Expires=${expires}; SameSite=Lax`
+      document.cookie = `osint_user=${resolvedUser}; Path=/; Expires=${expires}; SameSite=Lax`
 
       // Avoid role-gate redirect loop when "next" points to /v2 and user is viewer.
       const targetPath = nextPath.startsWith("/v2") && !["analyst", "admin"].includes(resolvedRole) ? "/" : nextPath
-      router.replace(targetPath)
+      window.location.href = targetPath
     } catch {
       setError("Network error while authenticating")
     } finally {
@@ -103,7 +113,7 @@ export default function LoginPage() {
                 <option value="analyst">Analyst</option>
                 <option value="admin">Admin</option>
               </select>
-              <p className="mt-1 text-[10px] text-muted-foreground">Choose Analyst or Admin if you need access to v2 dashboards.</p>
+              <p className="mt-1 text-[10px] text-muted-foreground">Viewer, Analyst, and Admin can all access V2. Admin is only required for the Admin page.</p>
             </label>
           )}
 
