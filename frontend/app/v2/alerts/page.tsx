@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { TopBar } from "@/components/dashboard/top-bar"
 import { CommandNav } from "@/components/dashboard/command-nav"
 import { VideoModal } from "@/components/system/video-modal"
@@ -53,7 +53,7 @@ const CONF_STYLE: Record<Confidence, { text: string; bg: string; border: string 
   MEDIUM: { text: "#00b4d8", bg: "#00b4d820", border: "#00b4d840" },
   HIGH: { text: "#00ff88", bg: "#00ff8820", border: "#00ff8840" },
 }
-const ALERTS_REFRESH_MS = 5000
+const ALERTS_REFRESH_MS = 15000
 
 function cookie(name: string) {
   if (typeof document === "undefined") return ""
@@ -83,6 +83,8 @@ export default function AlertsPage() {
   const [role, setRole] = useState("viewer")
   const [verifyingId, setVerifyingId] = useState<string | null>(null)
   const [verifyById, setVerifyById] = useState<Record<string, VerifyResult>>({})
+  const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const lastRefreshTsRef = useRef(0)
 
   useEffect(() => {
     try {
@@ -98,7 +100,7 @@ export default function AlertsPage() {
     return () => window.removeEventListener("osint:mode", onMode)
   }, [])
 
-  const loadMain = async () => {
+  const loadMain = useCallback(async () => {
     try {
       const res = await fetch(`http://localhost:8000/api/v2/alerts?limit=${crisisMode ? 80 : 60}`, { cache: "no-store" })
       if (!res.ok) return
@@ -106,16 +108,65 @@ export default function AlertsPage() {
       const normalized = crisisMode ? data.filter((a) => a.type === "CRITICAL" || a.type === "STRIKE") : data
       setAlerts(normalized)
       setLastSync(new Date().toISOString().slice(11, 19) + "Z")
+      lastRefreshTsRef.current = Date.now()
     } finally {
       setLoading(false)
     }
-  }
+  }, [crisisMode])
 
   useEffect(() => {
-    loadMain()
+    void loadMain()
     const interval = setInterval(loadMain, ALERTS_REFRESH_MS)
     return () => clearInterval(interval)
-  }, [crisisMode])
+  }, [loadMain])
+
+  useEffect(() => {
+    let ws: WebSocket | null = null
+    let retry: ReturnType<typeof setTimeout> | null = null
+
+    const scheduleRefresh = () => {
+      const now = Date.now()
+      const elapsed = now - lastRefreshTsRef.current
+      if (elapsed >= 1500) {
+        void loadMain()
+        return
+      }
+      if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current)
+      refreshTimerRef.current = setTimeout(() => void loadMain(), 1200)
+    }
+
+    const connect = () => {
+      try {
+        const wsUrl = (process.env.NEXT_PUBLIC_WS_URL ?? "ws://localhost:8000") + "/ws/live/v2"
+        ws = new WebSocket(wsUrl)
+        ws.onclose = () => {
+          retry = setTimeout(connect, 3500)
+        }
+        ws.onerror = () => ws?.close()
+        ws.onmessage = (evt) => {
+          try {
+            const payload = JSON.parse(evt.data)
+            if (payload?.type !== "NEW_EVENT") return
+            const data = payload?.data || {}
+            const source = String(data.source || "")
+            const typ = String(data.type || "")
+            if (!source.endsWith("(TG)")) return
+            if (!["STRIKE", "CRITICAL", "CLASH"].includes(typ)) return
+            scheduleRefresh()
+          } catch (_) {}
+        }
+      } catch (_) {
+        retry = setTimeout(connect, 3500)
+      }
+    }
+
+    connect()
+    return () => {
+      if (retry) clearTimeout(retry)
+      if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current)
+      ws?.close()
+    }
+  }, [loadMain])
 
   const criticalCount = useMemo(() => alerts.filter((a) => a.type === "CRITICAL").length, [alerts])
   const canReview = role === "analyst" || role === "admin"

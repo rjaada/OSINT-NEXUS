@@ -15,7 +15,7 @@ from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import Lock
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import feedparser
 import httpx
@@ -130,6 +130,8 @@ metrics = {
 
 _start_time = time.time()
 _db: Optional[sqlite3.Connection] = None
+_ollama_http_client: Optional[httpx.AsyncClient] = None
+_geocode_http_client: Optional[httpx.AsyncClient] = None
 _media_jobs: "asyncio.Queue[dict]" = asyncio.Queue()
 _media_job_state: Dict[str, dict] = {}
 _review_cache: Dict[str, dict] = {}
@@ -828,21 +830,32 @@ def _decode_pg_event(row: Any) -> dict:
     }
 
 
-def fetch_recent_v2_events_pg(limit: int = 200) -> List[dict]:
+def fetch_recent_v2_events_pg(
+    limit: int = 200,
+    source_whitelist: Optional[Sequence[str]] = None,
+    type_whitelist: Optional[Sequence[str]] = None,
+) -> List[dict]:
     if not DATABASE_URL.startswith("postgres") or psycopg is None:
         return []
     try:
         with psycopg.connect(DATABASE_URL, connect_timeout=3) as conn:
             with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT id, type, source, timestamp, lat, lng, description, payload_json
-                    FROM events_v2
-                    ORDER BY timestamp DESC
-                    LIMIT %s
-                    """,
-                    (limit,),
-                )
+                query = [
+                    "SELECT id, type, source, timestamp, lat, lng, description, payload_json",
+                    "FROM events_v2",
+                    "WHERE 1=1",
+                ]
+                params: List[Any] = []
+                if source_whitelist:
+                    query.append("AND source = ANY(%s)")
+                    params.append(list(source_whitelist))
+                if type_whitelist:
+                    query.append("AND type = ANY(%s)")
+                    params.append(list(type_whitelist))
+                query.append("ORDER BY timestamp DESC")
+                query.append("LIMIT %s")
+                params.append(limit)
+                cur.execute("\n".join(query), tuple(params))
                 rows = cur.fetchall()
                 return [_decode_pg_event(r) for r in rows]
     except Exception:
@@ -917,6 +930,23 @@ def _is_telegram_source(event: dict) -> bool:
     return src in TELEGRAM_SOURCE_SET or src.endswith("(TG)")
 
 
+def _get_ollama_client() -> httpx.AsyncClient:
+    global _ollama_http_client
+    if _ollama_http_client is None:
+        _ollama_http_client = httpx.AsyncClient(timeout=30)
+    return _ollama_http_client
+
+
+def _get_geocode_client() -> httpx.AsyncClient:
+    global _geocode_http_client
+    if _geocode_http_client is None:
+        _geocode_http_client = httpx.AsyncClient(
+            timeout=8,
+            headers={"User-Agent": "OSINT-Nexus/1.0 (research dashboard)"},
+        )
+    return _geocode_http_client
+
+
 def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     r = 6371.0
     dlat = math.radians(lat2 - lat1)
@@ -972,19 +1002,18 @@ async def geocode_place(place: str) -> Optional[Tuple[float, float]]:
     if place in geocode_cache:
         return geocode_cache[place]
     try:
-        headers = {"User-Agent": "OSINT-Nexus/1.0 (research dashboard)"}
         params = {"q": place, "format": "json", "limit": 1}
-        async with httpx.AsyncClient(timeout=8, headers=headers) as client:
-            r = await client.get(GEOCODE_URL, params=params)
-            if r.status_code != 200:
-                return None
-            data = r.json()
-            if not data:
-                return None
-            lat = float(data[0]["lat"])
-            lng = float(data[0]["lon"])
-            geocode_cache[place] = (lat, lng)
-            return lat, lng
+        client = _get_geocode_client()
+        r = await client.get(GEOCODE_URL, params=params)
+        if r.status_code != 200:
+            return None
+        data = r.json()
+        if not data:
+            return None
+        lat = float(data[0]["lat"])
+        lng = float(data[0]["lon"])
+        geocode_cache[place] = (lat, lng)
+        return lat, lng
     except Exception:
         return None
 
@@ -1028,10 +1057,10 @@ class V2AiScheduler:
         }
 
     async def _post_generate(self, payload: Dict[str, Any], timeout_sec: int) -> dict:
-        async with httpx.AsyncClient(timeout=timeout_sec) as client:
-            resp = await client.post(f"{OLLAMA_BASE_URL}/api/generate", json=payload)
-            resp.raise_for_status()
-            return resp.json()
+        client = _get_ollama_client()
+        resp = await client.post(f"{OLLAMA_BASE_URL}/api/generate", json=payload, timeout=timeout_sec)
+        resp.raise_for_status()
+        return resp.json()
 
     async def _unload_model(self, model: Optional[str]) -> None:
         if not model:
@@ -1141,25 +1170,26 @@ async def call_ollama_json(prompt: str, retries: int = 2) -> Optional[dict]:
     for model_name in model_chain:
         for attempt in range(retries + 1):
             try:
-                async with httpx.AsyncClient(timeout=20) as client:
-                    resp = await client.post(
-                        OLLAMA_URL,
-                        json={
-                            "model": model_name,
-                            "prompt": prompt,
-                            "stream": False,
-                            "format": "json",
-                            "options": {"temperature": 0.1},
-                        },
-                    )
-                    resp.raise_for_status()
-                    raw = str(resp.json().get("response", "{}")).strip()
-                    if raw.startswith("```"):
-                        raw = raw.strip("`")
-                        raw = raw.replace("json", "", 1).strip()
-                    data = json.loads(raw)
-                    if isinstance(data, dict):
-                        return data
+                client = _get_ollama_client()
+                resp = await client.post(
+                    OLLAMA_URL,
+                    json={
+                        "model": model_name,
+                        "prompt": prompt,
+                        "stream": False,
+                        "format": "json",
+                        "options": {"temperature": 0.1},
+                    },
+                    timeout=20,
+                )
+                resp.raise_for_status()
+                raw = str(resp.json().get("response", "{}")).strip()
+                if raw.startswith("```"):
+                    raw = raw.strip("`")
+                    raw = raw.replace("json", "", 1).strip()
+                data = json.loads(raw)
+                if isinstance(data, dict):
+                    return data
             except Exception as e:
                 if attempt == retries:
                     print(f"[OLLAMA] JSON call failed ({model_name}): {e}")
@@ -1817,9 +1847,14 @@ def render_prometheus_metrics() -> str:
 
 @app.on_event("startup")
 async def startup_event():
-    global _start_time, _db
+    global _start_time, _db, _ollama_http_client, _geocode_http_client
     _start_time = time.time()
     _db = init_db()
+    _ollama_http_client = httpx.AsyncClient(timeout=30)
+    _geocode_http_client = httpx.AsyncClient(
+        timeout=8,
+        headers={"User-Agent": "OSINT-Nexus/1.0 (research dashboard)"},
+    )
     load_recent_events()
 
     asyncio.create_task(poll_flights())
@@ -1828,6 +1863,17 @@ async def startup_event():
     asyncio.create_task(poll_red_alert())
     asyncio.create_task(media_worker())
     print("[OSINT] Engine started — pollers + DB persistence active")
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    global _ollama_http_client, _geocode_http_client
+    if _ollama_http_client is not None:
+        await _ollama_http_client.aclose()
+        _ollama_http_client = None
+    if _geocode_http_client is not None:
+        await _geocode_http_client.aclose()
+        _geocode_http_client = None
 
 
 @app.get("/")
@@ -1983,8 +2029,10 @@ async def analyst_endpoint(force: bool = False):
 
 
 def _v2_events_for_ai(limit: int = 160) -> List[dict]:
-    rows = fetch_recent_v2_events_pg(limit=limit)
-    return rows if rows else events_history[-limit:]
+    rows = fetch_recent_v2_events_pg(limit=limit, source_whitelist=sorted(TELEGRAM_SOURCE_SET))
+    if rows:
+        return rows
+    return [e for e in events_history[-limit:] if _is_telegram_source(e)]
 
 
 def _normalize_threat_level(level: str) -> str:
@@ -2227,11 +2275,9 @@ async def v2_system():
 @app.get("/api/v2/events")
 async def v2_events(limit: int = 120, clustered: bool = False):
     limit = min(max(limit, 1), 400)
-    rows = fetch_recent_v2_events_pg(limit=min(1400, limit * 8))
+    rows = fetch_recent_v2_events_pg(limit=limit, source_whitelist=sorted(TELEGRAM_SOURCE_SET))
     if not rows:
-        rows = events_history[-min(1400, limit * 8):][::-1]
-    rows = [e for e in rows if _is_telegram_source(e)]
-    rows = rows[:limit]
+        rows = [e for e in events_history[-1200:][::-1] if _is_telegram_source(e)][:limit]
     now = datetime.now(timezone.utc)
     by_bucket = defaultdict(list)
     for e in rows:
@@ -2264,10 +2310,13 @@ async def v2_events(limit: int = 120, clustered: bool = False):
 async def v2_alerts(limit: int = 60):
     limit = min(max(limit, 1), 120)
     now = datetime.now(timezone.utc)
-    recent = fetch_recent_v2_events_pg(limit=700)
+    recent = fetch_recent_v2_events_pg(
+        limit=700,
+        source_whitelist=sorted(TELEGRAM_SOURCE_SET),
+        type_whitelist=["STRIKE", "CRITICAL", "CLASH"],
+    )
     if not recent:
-        recent = events_history[-700:]
-    recent = [e for e in recent if _is_telegram_source(e)]
+        recent = [e for e in events_history[-1000:] if _is_telegram_source(e) and e.get("type") in {"STRIKE", "CRITICAL", "CLASH"}]
     by_bucket = defaultdict(list)
     for e in recent:
         by_bucket[(round(float(e.get("lat", 0.0)), 1), round(float(e.get("lng", 0.0)), 1))].append(e)
@@ -2313,11 +2362,9 @@ async def v2_alerts(limit: int = 60):
 @app.get("/api/v2/sources")
 async def v2_sources(limit: int = 200):
     limit = min(max(limit, 1), 400)
-    rows = fetch_recent_v2_events_pg(limit=min(1800, limit * 8))
+    rows = fetch_recent_v2_events_pg(limit=limit, source_whitelist=sorted(TELEGRAM_SOURCE_SET))
     if not rows:
-        rows = events_history[-min(1800, limit * 8):][::-1]
-    rows = [r for r in rows if _is_telegram_source(r)]
-    rows = rows[:limit]
+        rows = [r for r in events_history[-1200:][::-1] if _is_telegram_source(r)][:limit]
     grouped = defaultdict(int)
     for r in rows:
         grouped[_extract_source(r)] += 1
