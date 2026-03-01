@@ -101,41 +101,6 @@ function playAlertBeep(type: "CRITICAL" | "STRIKE") {
   } catch (_) {}
 }
 
-function clusterForMap(events: IntelEvent[]): IntelEvent[] {
-  const buckets = new Map<string, IntelEvent[]>()
-  for (const evt of events) {
-    const key = `${evt.type}:${Math.round(evt.lat * 2) / 2}:${Math.round(evt.lng * 2) / 2}`
-    const arr = buckets.get(key) || []
-    arr.push(evt)
-    buckets.set(key, arr)
-  }
-  const out: IntelEvent[] = []
-  for (const [key, members] of buckets.entries()) {
-    if (members.length <= 1) {
-      out.push(members[0])
-      continue
-    }
-    const [rawType] = key.split(":")
-    const type = (rawType || "CLASH") as EventType
-    const lat = members.reduce((s, x) => s + x.lat, 0) / members.length
-    const lng = members.reduce((s, x) => s + x.lng, 0) / members.length
-    out.push({
-      id: `cluster-${key}`,
-      type,
-      lat,
-      lng,
-      source: "Clustered",
-      desc: `${members.length} merged nearby events (${type})`,
-      timestamp: members[0].timestamp,
-      confidence: members.some((m) => m.confidence === "HIGH") ? "HIGH" : members.some((m) => m.confidence === "MEDIUM") ? "MEDIUM" : "LOW",
-      confidence_score: Math.round(members.reduce((s, x) => s + (x.confidence_score || 40), 0) / members.length),
-      observed_facts: [`Clustered ${members.length} nearby events to reduce map clutter.`],
-      model_inference: [],
-    })
-  }
-  return out
-}
-
 function SourceBadge({ source }: { source: string }) {
   const color = SOURCE_COLORS[source] ?? "#808090"
   return (
@@ -253,6 +218,7 @@ export function Dashboard() {
   const [newIds, setNewIds] = useState<Set<string>>(new Set())
   const [crisisMode, setCrisisMode] = useState(false)
   const [activeVideo, setActiveVideo] = useState<{ eventId: string; videoUrl: string; title: string } | null>(null)
+  const [selectedMapEvent, setSelectedMapEvent] = useState<IntelEvent | null>(null)
   const seenIdsRef = useRef<Set<string>>(new Set())
   const hasInteractedRef = useRef(false)
 
@@ -322,6 +288,21 @@ export function Dashboard() {
     }
     backfill()
   }, [addEvent, crisisMode])
+
+  useEffect(() => {
+    if (!selectedMapEvent) return
+    if (!events.some((evt) => evt.id === selectedMapEvent.id)) {
+      setSelectedMapEvent(null)
+    }
+  }, [events, selectedMapEvent])
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setSelectedMapEvent(null)
+    }
+    window.addEventListener("keydown", onKey)
+    return () => window.removeEventListener("keydown", onKey)
+  }, [])
 
   useEffect(() => {
     let ws: WebSocket
@@ -399,13 +380,70 @@ export function Dashboard() {
     window.open("https://twitter.com/spectatorindex", "_blank", "noopener,noreferrer")
   }
 
-  const mapEvents = crisisMode ? events : clusterForMap(events)
+  const handleMapEventClick = (evt: IntelEvent) => {
+    setSelectedMapEvent(evt)
+  }
 
   return (
     <>
       <div className="flex-1 min-w-0 flex flex-col">
-        <div className="flex-1 min-h-0 p-2 flex flex-col">
-          <MapArea events={mapEvents} onEventClick={handleEventClick} />
+        <div className="flex-1 min-h-0 p-2 flex flex-col relative">
+          <MapArea events={events} onEventClick={handleMapEventClick} />
+          {selectedMapEvent && (
+            <div className="absolute top-5 left-5 z-30 w-[min(420px,calc(100%-2.5rem))] rounded-xl border border-cyan-500/35 bg-[rgba(5,8,14,0.94)] shadow-[0_14px_30px_rgba(0,0,0,0.55)] backdrop-blur-md">
+              <div className="flex items-start gap-2 border-b border-white/10 px-4 py-3">
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-[10px] font-bold tracking-[0.2em] px-2 py-0.5 rounded border border-white/20 text-white/90">
+                      {selectedMapEvent.type}
+                    </span>
+                    <span className="text-[10px] font-bold tracking-[0.08em] px-2 py-0.5 rounded border border-osint-blue/40 text-osint-blue max-w-[170px] truncate">
+                      {selectedMapEvent.source}
+                    </span>
+                    {selectedMapEvent.confidence ? (
+                      <span className="text-[9px] px-2 py-0.5 rounded border border-osint-green/30 text-osint-green">
+                        {selectedMapEvent.confidence} {typeof selectedMapEvent.confidence_score === "number" ? `(${selectedMapEvent.confidence_score})` : ""}
+                      </span>
+                    ) : null}
+                  </div>
+                  <p className="mt-2 text-[12px] leading-relaxed text-[#d7dbea]">
+                    {selectedMapEvent.desc.replace(/^\[.+?\]\s*/, "")}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setSelectedMapEvent(null)}
+                  className="shrink-0 rounded border border-white/15 px-2 py-1 text-[10px] text-white/75 hover:text-white hover:border-white/35"
+                >
+                  X
+                </button>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2 p-3 text-[10px]">
+                <div className="rounded border border-white/10 bg-black/20 p-2">
+                  <p className="mb-1 text-[9px] uppercase tracking-[0.12em] text-osint-green">Observed</p>
+                  <p className="text-[#b6d7bf] line-clamp-3">{(selectedMapEvent.observed_facts && selectedMapEvent.observed_facts[0]) || "No direct fact extracted"}</p>
+                </div>
+                <div className="rounded border border-white/10 bg-black/20 p-2">
+                  <p className="mb-1 text-[9px] uppercase tracking-[0.12em] text-osint-amber">Inference</p>
+                  <p className="text-[#d6c7a8] line-clamp-3">{(selectedMapEvent.model_inference && selectedMapEvent.model_inference[0]) || "No model inference"}</p>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-y-2 border-t border-white/10 px-4 py-3 text-[10px] text-muted-foreground">
+                <p className="truncate">time: {selectedMapEvent.timestamp ?? "--"}</p>
+                <p className="text-right truncate">coords: {selectedMapEvent.lat.toFixed(3)}N {selectedMapEvent.lng.toFixed(3)}E</p>
+                <p className="truncate">source: {selectedMapEvent.source}</p>
+                <p className="text-right truncate">corroboration: {(selectedMapEvent.corroborating_sources?.length ?? 0) > 0 ? selectedMapEvent.corroborating_sources?.length : "single-source"}</p>
+                {selectedMapEvent.confidence_reason ? (
+                  <p className="col-span-2 truncate text-osint-blue">confidence note: {selectedMapEvent.confidence_reason}</p>
+                ) : null}
+                {selectedMapEvent.video_assessment ? (
+                  <p className="col-span-2 truncate text-osint-green">media: {selectedMapEvent.video_assessment}{selectedMapEvent.video_confidence ? ` (${selectedMapEvent.video_confidence})` : ""}</p>
+                ) : null}
+              </div>
+            </div>
+          )}
         </div>
         <ConflictTimeline events={events} />
       </div>

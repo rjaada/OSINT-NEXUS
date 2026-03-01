@@ -348,7 +348,7 @@ export function Dashboard() {
       {/* Map + Timeline column */}
       <div className="flex-1 min-w-0 flex flex-col">
         <div className="flex-1 min-h-0 p-2 flex flex-col">
-          <MapArea events={events} onEventClick={handleEventClick} />
+          <MapArea events={events} />
         </div>
         <ConflictTimeline events={events} />
       </div>

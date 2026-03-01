@@ -192,7 +192,7 @@ function createCircle(lng: number, lat: number, radiusKm: number, points = 48): 
   return coords
 }
 
-export function MapArea({ events }: {
+export function MapArea({ events, onEventClick }: {
   events?: IntelEvent[]
   onEventClick?: (evt: IntelEvent) => void
 }) {
@@ -396,7 +396,7 @@ export function MapArea({ events }: {
       const el = document.createElement("div")
       el.style.cssText = `
         width:${size}px;height:${size}px;border-radius:50%;
-        background:${color};cursor:default;
+        background:${color};cursor:${onEventClick ? "pointer" : "default"};
         box-shadow:0 0 ${isCritical ? 14 : 7}px ${isCritical ? 3 : 2}px ${color}99;
         border: 1px solid ${color};
       `
@@ -511,6 +511,7 @@ export function MapArea({ events }: {
       el.addEventListener("click", (event) => {
         event.preventDefault()
         event.stopPropagation()
+        onEventClick?.(evt)
       })
 
       const marker = new maplibregl.Marker({ element: el })
@@ -518,7 +519,7 @@ export function MapArea({ events }: {
         .addTo(map)
       eventMarkersRef.current[evt.id] = marker
     })
-  }, [events, isSatellite])
+  }, [events, isSatellite, onEventClick])
 
   const evtCount  = events?.length ?? 0
   const strikeCnt = events?.filter((e) => e.type === "STRIKE" || e.type === "CRITICAL").length ?? 0

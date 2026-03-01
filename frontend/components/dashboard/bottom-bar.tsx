@@ -44,37 +44,41 @@ export function BottomBar() {
   ]
 
   return (
-    <footer className="glass-panel flex items-center justify-between px-4 py-2 border-t border-[rgba(255,255,255,0.06)]">
-      <div className="flex items-center gap-6 md:gap-10">
-        {items.map((stat) => {
-          const Icon = stat.icon
-          return (
-            <div key={stat.label} className="flex items-center gap-2">
-              <Icon className="h-3.5 w-3.5 hidden sm:block" style={{ color: stat.color }} />
-              <div className="flex flex-col">
-                <span className="text-[8px] uppercase tracking-[0.15em] text-muted-foreground leading-none mb-0.5">
-                  {stat.label}
-                </span>
-                <span
-                  className="text-sm font-bold tabular-nums leading-none"
-                  style={{ color: stat.color }}
-                >
-                  {stat.value.toLocaleString()}
-                </span>
+    <footer className="glass-panel border-t border-[rgba(255,255,255,0.06)]">
+      <div className="flex items-center justify-between px-4 py-2">
+        <div className="flex items-center gap-6 md:gap-10">
+          {items.map((stat) => {
+            const Icon = stat.icon
+            return (
+              <div key={stat.label} className="flex items-center gap-2">
+                <Icon className="h-3.5 w-3.5 hidden sm:block" style={{ color: stat.color }} />
+                <div className="flex flex-col">
+                  <span className="text-[8px] uppercase tracking-[0.15em] text-muted-foreground leading-none mb-0.5">
+                    {stat.label}
+                  </span>
+                  <span className="text-sm font-bold tabular-nums leading-none" style={{ color: stat.color }}>
+                    {stat.value.toLocaleString()}
+                  </span>
+                </div>
               </div>
-            </div>
-          )
-        })}
+            )
+          })}
+        </div>
+        <div className="hidden lg:flex items-center gap-4">
+          <div className="flex items-center gap-2 text-[9px] text-muted-foreground tracking-wider font-mono">
+            <Clock className="h-3 w-3" />
+            <span>UPTIME {stats ? formatUptime(stats.uptime_seconds) : "--:--:--"}</span>
+          </div>
+          <div className="flex items-center gap-2 text-[9px] text-muted-foreground tracking-wider">
+            <span className="h-1.5 w-1.5 rounded-full bg-osint-green animate-pulse" />
+            UPLINK ACTIVE / 128-BIT AES
+          </div>
+        </div>
       </div>
-      <div className="hidden lg:flex items-center gap-4">
-        <div className="flex items-center gap-2 text-[9px] text-muted-foreground tracking-wider font-mono">
-          <Clock className="h-3 w-3" />
-          <span>UPTIME {stats ? formatUptime(stats.uptime_seconds) : "--:--:--"}</span>
-        </div>
-        <div className="flex items-center gap-2 text-[9px] text-muted-foreground tracking-wider">
-          <span className="h-1.5 w-1.5 rounded-full bg-osint-green animate-pulse" />
-          UPLINK ACTIVE / 128-BIT AES
-        </div>
+
+      <div className="h-5 border-t border-[#ff1a3c]/30 bg-[#24070c] px-4 flex items-center justify-between text-[9px] tracking-[0.18em] uppercase">
+        <span className="text-[#ff6f7f]">SECRET // NOFORN // REL TO FVEY</span>
+        <span className="text-[#8f96ab]">Derived from multi-source intelligence</span>
       </div>
     </footer>
   )
