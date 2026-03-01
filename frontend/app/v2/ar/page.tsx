@@ -10,7 +10,7 @@ export default function ArabicHomePage() {
   useEffect(() => {
     const roleCookie = document.cookie.split("; ").find((x) => x.startsWith("osint_role="))
     const userCookie = document.cookie.split("; ").find((x) => x.startsWith("osint_user="))
-    setRole(roleCookie ? decodeURIComponent(roleCookie.split("=")[1]) : "viewer")
+    setRole(roleCookie ? decodeURIComponent(roleCookie.split("=")[1]).toLowerCase() : "viewer")
     setUser(userCookie ? decodeURIComponent(userCookie.split("=")[1]) : "user")
   }, [])
 
@@ -90,6 +90,18 @@ export default function ArabicHomePage() {
             <h2 className="text-xl font-semibold mb-2">لوحة الصحة</h2>
             <p className="text-sm text-muted-foreground">مراقبة الطوابير والمراقب واتصال PostgreSQL ضمن مرحلة 2.</p>
           </Link>
+
+          {role === "admin" ? (
+            <Link
+              href="/v2/ar/admin"
+              className="rounded-xl p-6 transition-all hover:bg-white/[0.03]"
+              style={{ background: "rgba(7,8,12,0.92)", border: "1px solid rgba(255,255,255,0.08)" }}
+            >
+              <p className="text-[10px] tracking-[0.18em] uppercase text-osint-purple mb-2">الصلاحيات</p>
+              <h2 className="text-xl font-semibold mb-2">إدارة المستخدمين</h2>
+              <p className="text-sm text-muted-foreground">ترقية أو خفض الأدوار مع حماية آخر حساب مشرف.</p>
+            </Link>
+          ) : null}
         </section>
       </div>
     </main>

@@ -3,7 +3,6 @@
 import { useEffect, useState, useCallback, useRef, useMemo } from "react"
 import { MapArea } from "./map-area"
 import { AiAnalyst } from "./ai-analyst-v2"
-import { VideoModal } from "@/components/system/video-modal"
 
 type EventType = "STRIKE" | "MOVEMENT" | "NOTAM" | "CLASH" | "CRITICAL"
 
@@ -40,26 +39,6 @@ export interface Aircraft {
   speed: number
   heading: number
   military: boolean
-}
-
-const TYPE_STYLES: Record<EventType, { bg: string; border: string; text: string }> = {
-  CRITICAL: { bg: "#b24bff18", border: "#b24bff60", text: "#b24bff" },
-  STRIKE: { bg: "#ff1a3c18", border: "#ff1a3c40", text: "#ff1a3c" },
-  MOVEMENT: { bg: "#00b4d818", border: "#00b4d840", text: "#00b4d8" },
-  NOTAM: { bg: "#ffa63018", border: "#ffa63040", text: "#ffa630" },
-  CLASH: { bg: "#00ff8818", border: "#00ff8840", text: "#00ff88" },
-}
-
-const SOURCE_COLORS: Record<string, string> = {
-  Reuters: "#ff8c00",
-  "Al Jazeera": "#c8a84b",
-  "BBC News": "#bb1919",
-  "CBS News": "#1a73e8",
-  "The Guardian": "#09803a",
-  "Times of Israel": "#4a90d9",
-  "Red Alert": "#ff0040",
-  "AJ Mubasher (TG)": "#6a4ccc",
-  "Roaa War Studies (TG)": "#00b4d8",
 }
 
 function isTelegramSource(src?: string): boolean {
@@ -100,121 +79,11 @@ function playAlertBeep(type: "CRITICAL" | "STRIKE") {
   } catch (_) {}
 }
 
-function SourceBadge({ source }: { source: string }) {
-  const color = SOURCE_COLORS[source] ?? "#808090"
-  return (
-    <span
-      className="text-[8px] font-bold tracking-[0.1em] px-1.5 py-0.5 rounded shrink-0"
-      style={{ background: `${color}20`, color, border: `1px solid ${color}40` }}
-    >
-      {source.toUpperCase()}
-    </span>
-  )
-}
-
-function IntelCard({
-  event,
-  isNew,
-  onClick,
-  crisisMode,
-  onOpenVideo,
-}: {
-  event: IntelEvent
-  isNew?: boolean
-  onClick: () => void
-  crisisMode: boolean
-  onOpenVideo: (eventId: string, videoUrl: string, title: string) => void
-}) {
-  const style = TYPE_STYLES[event.type] ?? TYPE_STYLES.CLASH
-  const isCritical = event.type === "CRITICAL"
-  const displayDesc = event.desc.replace(/^\[.+?\]\s*/, "")
-  const sourceTag = event.desc.match(/^\[(.+?)\]/)?.[1] ?? event.source
-
-  const videoHref = event.video_url
-    ? (event.video_url.startsWith("/media/") ? `http://localhost:8000${event.video_url}` : event.video_url)
-    : null
-
-  return (
-    <div
-      onClick={onClick}
-      className={`rounded-lg ${crisisMode ? "p-4" : "p-3"} cursor-pointer transition-all duration-200 hover:bg-white/5 ${isNew ? "animate-flash" : ""}`}
-      style={{
-        background: isCritical ? "rgba(178,75,255,0.08)" : "rgba(11,12,18,0.7)",
-        border: `1px solid ${isCritical ? "rgba(178,75,255,0.3)" : "rgba(255,255,255,0.07)"}`,
-        boxShadow: isCritical ? "0 0 12px rgba(178,75,255,0.15)" : "none",
-      }}
-    >
-      <div className="flex items-center gap-2 mb-2 flex-wrap">
-        <span className="text-[9px] font-bold tracking-[0.15em] px-2 py-0.5 rounded" style={{ background: style.bg, border: `1px solid ${style.border}`, color: style.text }}>
-          {isCritical ? "CRITICAL" : event.type}
-        </span>
-        <SourceBadge source={sourceTag} />
-        {event.video_assessment ? (
-          <span className="text-[8px] px-1.5 py-0.5 rounded border border-osint-green/30 text-osint-green">{event.video_assessment}</span>
-        ) : null}
-        {event.confidence ? (
-          <span className="text-[8px] px-1.5 py-0.5 rounded border border-osint-blue/30 text-osint-blue">
-            {event.confidence} {typeof event.confidence_score === "number" ? `(${event.confidence_score})` : ""}
-          </span>
-        ) : null}
-        <span className="text-[9px] text-muted-foreground tabular-nums ml-auto shrink-0">{event.timestamp ?? "--:--:--Z"}</span>
-      </div>
-
-      <p className={`leading-relaxed mb-2 ${crisisMode ? "text-[13px]" : "text-[11px]"} ${isCritical ? "text-[#d0b0f0] font-medium" : "text-[#b0b0c4]"}`}>
-        {displayDesc}
-      </p>
-
-      {event.confidence_reason ? <p className="text-[10px] text-osint-blue mb-2">{event.confidence_reason}</p> : null}
-
-      <div className="grid grid-cols-2 gap-2 mb-2 text-[10px]">
-        <div className="rounded border border-white/10 p-1.5 bg-black/20">
-          <p className="text-osint-green uppercase tracking-[0.12em] text-[9px] mb-1">Observed</p>
-          <p className="text-[#b6d7bf] line-clamp-2">{(event.observed_facts && event.observed_facts[0]) || "No direct fact extracted"}</p>
-        </div>
-        <div className="rounded border border-white/10 p-1.5 bg-black/20">
-          <p className="text-osint-amber uppercase tracking-[0.12em] text-[9px] mb-1">Inference</p>
-          <p className="text-[#d6c7a8] line-clamp-2">{(event.model_inference && event.model_inference[0]) || "No model inference"}</p>
-        </div>
-      </div>
-
-      <div className="flex items-center justify-between">
-        <span className="text-[9px] text-muted-foreground tabular-nums">{event.lat.toFixed(3)}N {event.lng.toFixed(3)}E</span>
-        <div className="flex items-center gap-2">
-          {videoHref && (
-            <button
-              className="text-[9px] text-osint-green hover:text-osint-green/80 underline underline-offset-2"
-              onClick={(e) => {
-                e.stopPropagation()
-                onOpenVideo(event.id, event.video_url || "", displayDesc)
-              }}
-            >
-              latest video
-            </button>
-          )}
-          {event.url && (
-            <a
-              href={event.url}
-              target="_blank"
-              rel="noopener noreferrer"
-              onClick={(e) => e.stopPropagation()}
-              className="text-[9px] text-osint-blue hover:text-osint-blue/80 underline underline-offset-2"
-            >
-              source
-            </a>
-          )}
-        </div>
-      </div>
-    </div>
-  )
-}
-
 export function Dashboard() {
   const [events, setEvents] = useState<IntelEvent[]>([])
   const [aircraft, setAircraft] = useState<Aircraft[]>([])
-  const [headlines, setHeadlines] = useState<string[]>([])
   const [wsStatus, setWsStatus] = useState<"connecting" | "live" | "offline">("connecting")
   const [crisisMode, setCrisisMode] = useState(false)
-  const [activeVideo, setActiveVideo] = useState<{ eventId: string; videoUrl: string; title: string } | null>(null)
   const [selectedMapEvent, setSelectedMapEvent] = useState<IntelEvent | null>(null)
   const [showWeatherOverlay, setShowWeatherOverlay] = useState(false)
   const [defcon, setDefcon] = useState<number>(5)
@@ -298,8 +167,6 @@ export function Dashboard() {
       return next.slice(0, crisisMode ? 280 : 200)
     })
 
-    setHeadlines((prev) => [evt.desc, ...prev].slice(0, 40))
-
     if (!fromBackfill) {
       if (hasInteractedRef.current && (evt.type === "CRITICAL" || evt.type === "STRIKE")) {
         playAlertBeep(evt.type)
@@ -315,7 +182,6 @@ export function Dashboard() {
           const data: IntelEvent[] = await res.json()
           seenIdsRef.current.clear()
           setEvents([])
-          setHeadlines([])
           data.filter((evt) => isTelegramSource(evt.source)).forEach((evt) => addEvent(evt, true))
         }
       } catch (_) {}
@@ -572,20 +438,7 @@ export function Dashboard() {
         </div>
       </aside>
 
-      <VideoModal
-        open={Boolean(activeVideo)}
-        eventId={activeVideo?.eventId}
-        videoUrl={activeVideo?.videoUrl}
-        title={activeVideo?.title}
-        onClose={() => setActiveVideo(null)}
-      />
-
       <style>{`
-        @keyframes flash-in {
-          0% { background: rgba(255,255,255,0.12); transform: translateX(4px); }
-          100% { background: transparent; transform: translateX(0); }
-        }
-        .animate-flash { animation: flash-in 0.6s ease-out; }
         .osint-feed-scroll {
           scrollbar-width: thin;
           scrollbar-color: rgba(0, 180, 216, 0.55) rgba(255, 255, 255, 0.06);

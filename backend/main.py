@@ -62,11 +62,9 @@ OLLAMA_URL = os.getenv("OLLAMA_URL", "http://ollama:11434/api/generate")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3")
 OLLAMA_FALLBACK_MODEL = os.getenv("OLLAMA_FALLBACK_MODEL", "llama3:latest")
 OLLAMA_BASE_URL = OLLAMA_URL.rsplit("/api/", 1)[0] if "/api/" in OLLAMA_URL else "http://ollama:11434"
-V2_MODEL_CHAT = os.getenv("V2_MODEL_CHAT", "qwen2.5:7b")
 V2_MODEL_VERIFY = os.getenv("V2_MODEL_VERIFY", "phi4-mini")
 V2_MODEL_REPORT = os.getenv("V2_MODEL_REPORT", "deepseek-r1:8b")
 V2_MODEL_DEFAULT = os.getenv("V2_MODEL_DEFAULT", V2_MODEL_VERIFY)
-V2_CHAT_TIMEOUT_SEC = int(os.getenv("V2_CHAT_TIMEOUT_SEC", "25"))
 V2_VERIFY_TIMEOUT_SEC = int(os.getenv("V2_VERIFY_TIMEOUT_SEC", "35"))
 V2_REPORT_TIMEOUT_SEC = int(os.getenv("V2_REPORT_TIMEOUT_SEC", "120"))
 V2_REPORT_CACHE_TTL_SEC = int(os.getenv("V2_REPORT_CACHE_TTL_SEC", "300"))
@@ -147,6 +145,7 @@ _start_time = time.time()
 _db: Optional[sqlite3.Connection] = None
 _ollama_http_client: Optional[httpx.AsyncClient] = None
 _geocode_http_client: Optional[httpx.AsyncClient] = None
+_ollama_available_models: set = set()
 _media_jobs: "asyncio.Queue[dict]" = asyncio.Queue()
 _media_job_state: Dict[str, dict] = {}
 _review_cache: Dict[str, dict] = {}
@@ -344,6 +343,21 @@ def auth_verify(token: str) -> Optional[dict]:
         return {"username": username, "role": role, "expires": expires}
     except Exception:
         return None
+
+
+def auth_user_from_request(request: Request) -> dict:
+    token = request.cookies.get("osint_auth") or ""
+    verified = auth_verify(token) if token else None
+    if not verified:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    return verified
+
+
+def require_admin(request: Request) -> dict:
+    verified = auth_user_from_request(request)
+    if str(verified.get("role", "")).lower() != "admin":
+        raise HTTPException(status_code=403, detail="Admin role required")
+    return verified
 
 
 def init_db() -> sqlite3.Connection:
@@ -881,6 +895,10 @@ class AuthLoginPayload(BaseModel):
     password: str
 
 
+class AdminSetRolePayload(BaseModel):
+    role: str
+
+
 class OpsBriefPayload(BaseModel):
     mode: str = "INTSUM"
     limit: int = 20
@@ -1100,6 +1118,44 @@ def _get_geocode_client() -> httpx.AsyncClient:
     return _geocode_http_client
 
 
+async def sync_ollama_runtime_models() -> None:
+    global OLLAMA_MODEL, OLLAMA_FALLBACK_MODEL, _ollama_available_models
+    try:
+        client = _get_ollama_client()
+        res = await client.get(f"{OLLAMA_BASE_URL}/api/tags", timeout=10)
+        res.raise_for_status()
+        raw = res.json()
+        models = raw.get("models", []) if isinstance(raw, dict) else []
+        names = [str(m.get("name", "")).strip() for m in models if isinstance(m, dict)]
+        available = {n for n in names if n}
+        _ollama_available_models = available
+        if not available:
+            print("[OLLAMA] No local models available from /api/tags")
+            return
+
+        preferred = [
+            OLLAMA_MODEL,
+            OLLAMA_FALLBACK_MODEL,
+            V2_MODEL_VERIFY,
+            V2_MODEL_REPORT,
+            V2_MODEL_DEFAULT,
+            "qwen2.5:7b",
+            "phi4-mini",
+            "deepseek-r1:8b",
+            "llama3",
+            "llama3:latest",
+        ]
+        primary = next((m for m in preferred if m and m in available), None)
+        if primary is None:
+            primary = sorted(available)[0]
+        fallback = next((m for m in preferred if m and m in available and m != primary), primary)
+        OLLAMA_MODEL = primary
+        OLLAMA_FALLBACK_MODEL = fallback
+        print(f"[OLLAMA] Runtime model chain: primary={OLLAMA_MODEL}, fallback={OLLAMA_FALLBACK_MODEL}")
+    except Exception as e:
+        print(f"[OLLAMA] Model discovery failed: {e}")
+
+
 def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     r = 6371.0
     dlat = math.radians(lat2 - lat1)
@@ -1300,6 +1356,10 @@ class V2AiScheduler:
         for fallback_model in (V2_MODEL_DEFAULT, OLLAMA_MODEL):
             if fallback_model and fallback_model not in candidate_models:
                 candidate_models.append(fallback_model)
+        if _ollama_available_models:
+            candidate_models = [m for m in candidate_models if m in _ollama_available_models]
+        if not candidate_models:
+            raise HTTPException(status_code=502, detail=f"v2 ai '{task}' failed: no available ollama models")
 
         async with self._lock:
             started = time.time()
@@ -1326,6 +1386,11 @@ class V2AiScheduler:
                         if data is None:
                             raise ValueError("invalid JSON response")
                         return data
+                    except httpx.HTTPStatusError as e:
+                        if getattr(e.response, "status_code", None) == 404:
+                            _ollama_available_models.discard(model_name)
+                        self._state["last_error"] = f"{model_name}: {e}"
+                        continue
                     except Exception as e:
                         self._state["last_error"] = f"{model_name}: {e}"
                         continue
@@ -1366,6 +1431,10 @@ async def call_ollama_json(prompt: str, retries: int = 2) -> Optional[dict]:
     model_chain = [OLLAMA_MODEL]
     if OLLAMA_FALLBACK_MODEL and OLLAMA_FALLBACK_MODEL not in model_chain:
         model_chain.append(OLLAMA_FALLBACK_MODEL)
+    if _ollama_available_models:
+        model_chain = [m for m in model_chain if m in _ollama_available_models]
+    if not model_chain:
+        return None
     for model_name in model_chain:
         for attempt in range(retries + 1):
             try:
@@ -1389,6 +1458,15 @@ async def call_ollama_json(prompt: str, retries: int = 2) -> Optional[dict]:
                 data = json.loads(raw)
                 if isinstance(data, dict):
                     return data
+            except httpx.HTTPStatusError as e:
+                # 404 usually means missing model; stop retrying that model to reduce log spam.
+                if getattr(e.response, "status_code", None) == 404:
+                    _ollama_available_models.discard(model_name)
+                    print(f"[OLLAMA] Missing model '{model_name}', removed from runtime chain")
+                    break
+                if attempt == retries:
+                    print(f"[OLLAMA] JSON call failed ({model_name}): {e}")
+                await asyncio.sleep(0.35 * (attempt + 1))
             except Exception as e:
                 if attempt == retries:
                     print(f"[OLLAMA] JSON call failed ({model_name}): {e}")
@@ -2054,6 +2132,7 @@ async def startup_event():
         timeout=8,
         headers={"User-Agent": "OSINT-Nexus/1.0 (research dashboard)"},
     )
+    await sync_ollama_runtime_models()
     ensure_default_admin()
     load_recent_events()
 
@@ -2157,6 +2236,76 @@ async def auth_session(request: Request):
     if not verified:
         return {"authenticated": False}
     return {"authenticated": True, **verified}
+
+
+@app.get("/api/admin/users")
+async def admin_list_users(request: Request):
+    actor = require_admin(request)
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    rows = _db.execute(
+        """
+        SELECT username, role, created_at, updated_at
+        FROM users
+        ORDER BY username ASC
+        """
+    ).fetchall()
+    return {
+        "items": [
+            {
+                "username": str(r["username"]),
+                "role": str(r["role"]),
+                "created_at": str(r["created_at"]),
+                "updated_at": str(r["updated_at"]),
+            }
+            for r in rows
+        ],
+        "actor": str(actor.get("username", "")),
+        "generated_at": utc_now_iso(),
+    }
+
+
+@app.patch("/api/admin/users/{username}/role")
+async def admin_set_user_role(username: str, payload: AdminSetRolePayload, request: Request):
+    actor = require_admin(request)
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    target = username.strip().lower()
+    if not re.match(r"^[a-z0-9_.-]{3,32}$", target):
+        raise HTTPException(status_code=400, detail="Invalid username")
+    next_role = str(payload.role or "").strip().lower()
+    if next_role not in {"viewer", "analyst", "admin"}:
+        raise HTTPException(status_code=400, detail="Invalid role")
+
+    row = get_user(target)
+    if not row:
+        raise HTTPException(status_code=404, detail="User not found")
+    current_role = str(row["role"]).lower()
+    if current_role == next_role:
+        return {"ok": True, "username": target, "role": current_role, "updated_at": str(row["updated_at"])}
+
+    if current_role == "admin" and next_role != "admin":
+        admin_count = int(_db.execute("SELECT COUNT(*) AS c FROM users WHERE role = 'admin'").fetchone()["c"])
+        if admin_count <= 1:
+            raise HTTPException(status_code=400, detail="Cannot demote the last admin account")
+
+    now = utc_now_iso()
+    _db.execute(
+        """
+        UPDATE users
+        SET role = ?, updated_at = ?
+        WHERE username = ?
+        """,
+        (next_role, now, target),
+    )
+    _db.commit()
+    return {
+        "ok": True,
+        "username": target,
+        "role": next_role,
+        "updated_at": now,
+        "updated_by": str(actor.get("username", "")),
+    }
 
 
 @app.get("/api/health")
@@ -2500,6 +2649,7 @@ async def v2_system():
         "storage_backend": STORAGE_BACKEND,
         "ollama_model_primary": OLLAMA_MODEL,
         "ollama_model_fallback": OLLAMA_FALLBACK_MODEL,
+        "ollama_models_available": sorted(_ollama_available_models),
         "v2_ai_models": {
             "default": V2_MODEL_DEFAULT,
             "verify": V2_MODEL_VERIFY,
