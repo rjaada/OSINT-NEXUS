@@ -192,7 +192,7 @@ function createCircle(lng: number, lat: number, radiusKm: number, points = 48): 
   return coords
 }
 
-export function MapArea({ events, onEventClick }: {
+export function MapArea({ events }: {
   events?: IntelEvent[]
   onEventClick?: (evt: IntelEvent) => void
 }) {
@@ -200,6 +200,7 @@ export function MapArea({ events, onEventClick }: {
   const mapRef          = useRef<maplibregl.Map | null>(null)
   const mapReadyRef     = useRef(false)
   const eventMarkersRef = useRef<Record<string, maplibregl.Marker>>({})
+  const hoverPopupRef   = useRef<maplibregl.Popup | null>(null)
   const zoneLabelsRef   = useRef<maplibregl.Marker[]>([])
   const [isSatellite, setIsSatellite] = useState(false)
   const [mapError, setMapError] = useState<string | null>(null)
@@ -339,6 +340,8 @@ export function MapArea({ events, onEventClick }: {
 
     Object.values(eventMarkersRef.current).forEach((m) => m.remove())
     eventMarkersRef.current = {}
+    hoverPopupRef.current?.remove()
+    hoverPopupRef.current = null
     zoneLabelsRef.current.forEach((m) => m.remove())
     zoneLabelsRef.current = []
 
@@ -346,27 +349,6 @@ export function MapArea({ events, onEventClick }: {
     setIsSatellite(next)
     map.setStyle(next ? SATELLITE_STYLE : DARK_STYLE)
     map.once("style.load", () => addCustomLayers(map))
-  }
-
-  // ── Fly to strike in satellite mode ──────────────────────────────────────
-  const flyToStrike = (evt: IntelEvent) => {
-    const map = mapRef.current
-    if (!map) return
-    if (!isSatellite) {
-      Object.values(eventMarkersRef.current).forEach((m) => m.remove())
-      eventMarkersRef.current = {}
-      zoneLabelsRef.current.forEach((m) => m.remove())
-      zoneLabelsRef.current = []
-      setIsSatellite(true)
-      map.setStyle(SATELLITE_STYLE)
-      map.once("style.load", () => {
-        addCustomLayers(map)
-        map.flyTo({ center: [evt.lng, evt.lat], zoom: 13, speed: 1.5 })
-      })
-    } else {
-      map.flyTo({ center: [evt.lng, evt.lat], zoom: 13, speed: 1.5 })
-    }
-    onEventClick?.(evt)
   }
 
   // ── Event markers + heat + threat radius ─────────────────────────────────
@@ -394,6 +376,8 @@ export function MapArea({ events, onEventClick }: {
 
     // Event dot markers 
     const currentEventIds = new Set(events.map(e => e.id))
+    hoverPopupRef.current?.remove()
+    hoverPopupRef.current = null
 
     // 1. Remove markers that are no longer in our events array (i.e. we switched languages)
     Object.keys(eventMarkersRef.current).forEach(id => {
@@ -412,39 +396,125 @@ export function MapArea({ events, onEventClick }: {
       const el = document.createElement("div")
       el.style.cssText = `
         width:${size}px;height:${size}px;border-radius:50%;
-        background:${color};cursor:pointer;
+        background:${color};cursor:default;
         box-shadow:0 0 ${isCritical ? 14 : 7}px ${isCritical ? 3 : 2}px ${color}99;
         border: 1px solid ${color};
       `
       if (!document.getElementById("osint-kf")) {
         const s = document.createElement("style"); s.id = "osint-kf"
-        s.textContent = `@keyframes osintPulse { 0%,100%{opacity:1} 50%{opacity:0.6} }`
+        s.textContent = `
+          @keyframes osintPulse { 0%,100%{opacity:1} 50%{opacity:0.6} }
+          .maplibregl-popup.osint-hover-popup .maplibregl-popup-content {
+            background: transparent;
+            border: 0;
+            box-shadow: none;
+            padding: 0;
+          }
+          .maplibregl-popup.osint-hover-popup .maplibregl-popup-tip {
+            border-top-color: rgba(5, 10, 18, 0.96);
+            border-bottom-color: rgba(5, 10, 18, 0.96);
+          }
+        `
         document.head.appendChild(s)
-        el.style.animation = "osintPulse 2s ease-in-out infinite"
       }
+      el.style.animation = "osintPulse 2s ease-in-out infinite"
 
       const source = evt.desc.match(/^\[(.+?)\]/)?.[1] ?? evt.source
-      const popup = new maplibregl.Popup({ offset: 14, closeButton: false, maxWidth: "260px" })
+      const ts = evt.timestamp
+        ? evt.timestamp.replace("T", " ").replace("+00:00", "Z").slice(0, 19)
+        : "live"
+      const popup = new maplibregl.Popup({
+        offset: 14,
+        closeButton: false,
+        closeOnClick: false,
+        maxWidth: "320px",
+        className: "osint-hover-popup",
+      })
         .setHTML(`
-          <div style="font-family:monospace;font-size:11px;color:#e0e0e8;padding:4px">
-            ${isCritical ? `<div style="color:#b24bff;font-size:8px;font-weight:700;letter-spacing:.15em;margin-bottom:3px">⚠ CRITICAL ALERT</div>` : ""}
-            <div style="color:${color};font-weight:700;letter-spacing:.12em;margin-bottom:5px">${evt.type}</div>
-            <div style="color:#b0b0c8;line-height:1.55;margin-bottom:6px">${evt.desc.replace(/^\[.+?\]\s*/, "").slice(0, 200)}</div>
-            <div style="color:#555;font-size:9px;display:flex;justify-content:space-between">
-              <span>${evt.lat.toFixed(3)}°, ${evt.lng.toFixed(3)}°</span>
-              <span style="color:${color}99">${source}</span>
+          <div style="
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
+            width: 296px;
+            color:#dbe5ff;
+            background: linear-gradient(180deg, rgba(8,12,20,0.96), rgba(4,7,12,0.98));
+            border:1px solid rgba(0,180,216,0.32);
+            border-radius:12px;
+            padding:10px 11px;
+            box-shadow: 0 10px 24px rgba(0,0,0,0.55), inset 0 0 0 1px rgba(255,255,255,0.03);
+            backdrop-filter: blur(6px);
+          ">
+            <div style="display:flex;gap:6px;align-items:center;margin-bottom:8px">
+              <span style="
+                display:inline-block;
+                color:${color};
+                border:1px solid ${color}66;
+                background:${color}1A;
+                border-radius:999px;
+                font-size:9px;
+                font-weight:700;
+                letter-spacing:.14em;
+                text-transform:uppercase;
+                padding:2px 7px;
+              ">${evt.type}</span>
+              <span style="
+                display:inline-block;
+                color:#7ee7ff;
+                border:1px solid rgba(0,180,216,0.42);
+                background:rgba(0,180,216,0.10);
+                border-radius:999px;
+                font-size:9px;
+                font-weight:700;
+                letter-spacing:.08em;
+                padding:2px 7px;
+                max-width:176px;
+                white-space:nowrap;
+                overflow:hidden;
+                text-overflow:ellipsis;
+              ">${source}</span>
             </div>
-            ${(evt.type === "STRIKE" || isCritical) ? `<div style="margin-top:6px;padding-top:5px;border-top:1px solid rgba(255,255,255,0.1);color:#00b4d8;font-size:9px;cursor:pointer" onclick="window.__satZoom && window.__satZoom()">🛰 Switch to Satellite View</div>` : ""}
+            <div style="
+              color:#e6ebff;
+              line-height:1.5;
+              font-size:11px;
+              margin-bottom:8px;
+              max-height:72px;
+              overflow:hidden;
+            ">${evt.desc.replace(/^\[.+?\]\s*/, "").slice(0, 220)}</div>
+            <div style="
+              display:flex;
+              justify-content:space-between;
+              align-items:center;
+              border-top:1px solid rgba(255,255,255,0.08);
+              padding-top:7px;
+              font-size:9px;
+              letter-spacing:.06em;
+              color:#8aa0bd;
+            ">
+              <span>${evt.lat.toFixed(3)}°, ${evt.lng.toFixed(3)}°</span>
+              <span>${ts}</span>
+            </div>
           </div>
         `)
 
-      if (evt.type === "STRIKE" || evt.type === "CRITICAL") {
-        el.addEventListener("click", () => flyToStrike(evt))
-      }
+      el.addEventListener("mouseenter", () => {
+        hoverPopupRef.current?.remove()
+        popup.setLngLat([evt.lng, evt.lat]).addTo(map)
+        hoverPopupRef.current = popup
+      })
+
+      el.addEventListener("mouseleave", () => {
+        if (hoverPopupRef.current === popup) {
+          popup.remove()
+          hoverPopupRef.current = null
+        }
+      })
+
+      el.addEventListener("click", (event) => {
+        event.preventDefault()
+        event.stopPropagation()
+      })
 
       const marker = new maplibregl.Marker({ element: el })
         .setLngLat([evt.lng, evt.lat])
-        .setPopup(popup)
         .addTo(map)
       eventMarkersRef.current[evt.id] = marker
     })
@@ -509,7 +579,7 @@ export function MapArea({ events, onEventClick }: {
           </div>
         ))}
         <div className="text-[7px] text-muted-foreground/40 mt-1 border-t border-white/5 pt-1">
-          ● Events · ◌ Strike radius · 🛰 Click strike for satellite
+          ● Events · ◌ Strike radius
         </div>
       </div>
 

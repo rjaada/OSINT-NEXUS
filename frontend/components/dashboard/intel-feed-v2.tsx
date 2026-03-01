@@ -1,7 +1,6 @@
 "use client"
 
 import { useEffect, useState, useCallback, useRef } from "react"
-import { ScrollArea } from "@/components/ui/scroll-area"
 import { MapArea } from "./map-area"
 import { AiAnalyst } from "./ai-analyst-v2"
 import { AiChatV2 } from "./ai-chat-v2"
@@ -457,7 +456,7 @@ export function Dashboard() {
           ))}
         </div>
 
-        <ScrollArea className="flex-1">
+        <div className="flex-1 min-h-0 overflow-y-auto osint-feed-scroll">
           <div className="flex flex-col gap-2 p-3">
             {filtered.map((evt) => (
               <IntelCard
@@ -470,7 +469,7 @@ export function Dashboard() {
               />
             ))}
           </div>
-        </ScrollArea>
+        </div>
       </aside>
 
       <VideoModal
@@ -487,6 +486,26 @@ export function Dashboard() {
           100% { background: transparent; transform: translateX(0); }
         }
         .animate-flash { animation: flash-in 0.6s ease-out; }
+        .osint-feed-scroll {
+          scrollbar-width: thin;
+          scrollbar-color: rgba(0, 180, 216, 0.55) rgba(255, 255, 255, 0.06);
+        }
+        .osint-feed-scroll::-webkit-scrollbar {
+          width: 8px;
+        }
+        .osint-feed-scroll::-webkit-scrollbar-track {
+          background: rgba(255, 255, 255, 0.04);
+          border-left: 1px solid rgba(255, 255, 255, 0.06);
+        }
+        .osint-feed-scroll::-webkit-scrollbar-thumb {
+          background: linear-gradient(180deg, rgba(0, 180, 216, 0.68), rgba(178, 75, 255, 0.5));
+          border: 1px solid rgba(0, 180, 216, 0.5);
+          border-radius: 999px;
+          box-shadow: 0 0 8px rgba(0, 180, 216, 0.35);
+        }
+        .osint-feed-scroll::-webkit-scrollbar-thumb:hover {
+          background: linear-gradient(180deg, rgba(0, 220, 255, 0.78), rgba(178, 75, 255, 0.62));
+        }
       `}</style>
     </>
   )
