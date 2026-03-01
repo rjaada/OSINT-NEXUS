@@ -188,7 +188,7 @@ export default function AlertsPage() {
         lines.push("SECRET // NOFORN // REL TO FVEY")
         lines.push(`${mode} // OSINT NEXUS AI OPS BRIEF`)
         lines.push(`GENERATED_AT: ${data.generated_at || now.toISOString()}`)
-        lines.push(`MODELS: chat=${data?.model_policy?.task_models?.chat || "-"} verify=${data?.model_policy?.task_models?.verify || "-"} report=${data?.model_policy?.task_models?.report || "-"}`)
+        lines.push(`MODELS: verify=${data?.model_policy?.task_models?.verify || "-"} report=${data?.model_policy?.task_models?.report || "-"}`)
         lines.push("")
         lines.push(`TITLE: ${data?.report?.title || mode}`)
         lines.push(`SUMMARY: ${data?.report?.summary || ""}`)

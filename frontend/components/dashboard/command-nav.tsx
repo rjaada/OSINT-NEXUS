@@ -9,6 +9,12 @@ export function CommandNav() {
   const inV2 = pathname === "/v2" || pathname.startsWith("/v2/")
   const isArabic = inV2 ? pathname.startsWith("/v2/ar") : pathname.startsWith("/ar")
   const prefix = inV2 ? "/v2" : ""
+  const [role, setRole] = useState("viewer")
+
+  useEffect(() => {
+    const roleCookie = document.cookie.split("; ").find((x) => x.startsWith("osint_role="))
+    setRole(roleCookie ? decodeURIComponent(roleCookie.split("=")[1]).toLowerCase() : "viewer")
+  }, [])
 
   const tabs = useMemo(() => {
     if (isArabic) {
@@ -18,6 +24,7 @@ export function CommandNav() {
         { href: `${prefix}/ar/alerts`, label: "الإنذارات" },
         { href: `${prefix}/ar/sources`, label: "المصادر" },
         ...(inV2 ? [{ href: `${prefix}/ar/health`, label: "الصحة" }] : []),
+        ...(inV2 && role === "admin" ? [{ href: `${prefix}/ar/admin`, label: "المشرف" }] : []),
       ]
     }
     return [
@@ -26,8 +33,9 @@ export function CommandNav() {
       { href: `${prefix}/alerts`, label: "Alerts" },
       { href: `${prefix}/sources`, label: "Sources" },
       ...(inV2 ? [{ href: `${prefix}/health`, label: "Health" }] : []),
+      ...(inV2 && role === "admin" ? [{ href: `${prefix}/admin`, label: "Admin" }] : []),
     ]
-  }, [inV2, isArabic, prefix])
+  }, [inV2, isArabic, prefix, role])
 
   const [crisisMode, setCrisisMode] = useState(false)
 
