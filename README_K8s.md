@@ -2,40 +2,45 @@
 
 This guide covers local Kubernetes deployment and operations for OSINT NEXUS on Minikube.
 
-## Scope
+## Scope and Manifests
 
-Use the `osint` namespace manifests for the active stack:
+Primary namespace stack is under `k8s/`:
 
 - `k8s/00-namespace.yaml`
 - `k8s/01-redis.yaml`
 - `k8s/03-backend.yaml`
 - `k8s/04-frontend.yaml`
 
-Do not apply all files with `kubectl apply -f k8s/` because `k8s/deployment.yaml` is an alternate deployment style and can create duplicates.
+Optional in-cluster Ollama manifest:
+
+- `k8s/02-ollama.yaml`
+
+Alternate/legacy deployment file (do not combine blindly):
+
+- `k8s/deployment.yaml`
+
+Use explicit `-f` lists instead of `kubectl apply -f k8s/` to avoid duplicate resources.
 
 ## Prerequisites
 
 - Docker Engine
 - Minikube
 - kubectl
-- Built images:
+- Images built into Minikube docker:
   - `osint-backend:latest`
   - `osint-frontend:latest`
 
-Optional for local AI:
+Optional AI acceleration:
 
-- Host Ollama container (recommended)
-- NVIDIA GPU + NVIDIA Container Toolkit for GPU inference
+- NVIDIA GPU + NVIDIA container toolkit
 
-## 1. Start Minikube
+## 1) Start Minikube
 
 ```bash
 minikube start --driver=docker --memory=8192
 ```
 
-If you need GPU scheduling in-cluster, your Minikube/node setup must expose `nvidia.com/gpu`.
-
-## 2. Build Images Into Minikube Docker
+## 2) Build Images into Minikube Docker
 
 ```bash
 eval $(minikube docker-env)
@@ -43,7 +48,13 @@ docker build -t osint-backend:latest ./backend
 docker build -t osint-frontend:latest ./frontend
 ```
 
-## 3. Deploy
+Or via Make:
+
+```bash
+make k8s-build
+```
+
+## 3) Deploy Base Stack
 
 ```bash
 kubectl apply -f k8s/00-namespace.yaml \
@@ -52,7 +63,21 @@ kubectl apply -f k8s/00-namespace.yaml \
   -f k8s/04-frontend.yaml
 ```
 
-## 4. Verify
+Or via Make:
+
+```bash
+make k8s-deploy
+```
+
+## 4) (Optional) Deploy Ollama In-Cluster
+
+```bash
+kubectl apply -f k8s/02-ollama.yaml
+```
+
+`02-ollama.yaml` requests `nvidia.com/gpu: 1`. If your Minikube node does not expose GPU resources, keep Ollama on host instead (recommended for most local setups).
+
+## 5) Verify
 
 ```bash
 kubectl get pods,svc -n osint
@@ -61,11 +86,25 @@ kubectl rollout status deployment/frontend -n osint
 kubectl rollout status deployment/redis -n osint
 ```
 
-## 5. Access Services (Port Forward)
+If using in-cluster Ollama:
+
+```bash
+kubectl rollout status deployment/ollama -n osint
+```
+
+## 6) Access Services
+
+Use port-forward in separate terminals:
 
 ```bash
 kubectl -n osint port-forward svc/frontend 3000:3000
 kubectl -n osint port-forward svc/backend 8000:8000
+```
+
+Or via Make (single command wrapper):
+
+```bash
+make k8s-pf
 ```
 
 Then open:
@@ -73,14 +112,15 @@ Then open:
 - Frontend: `http://127.0.0.1:3000`
 - Backend: `http://127.0.0.1:8000`
 
-## Ollama Integration (Recommended)
+## Ollama Wiring Options
 
-Run Ollama on host Docker and let backend call it via host bridge.
+### Option A: Host Ollama (recommended)
 
-Backend config (already set in `k8s/03-backend.yaml`):
+Keep backend config pointed to host bridge:
 
 - `OLLAMA_URL=http://host.minikube.internal:11434/api/generate`
-- `OLLAMA_MODEL=llama3`
+
+This is already configured in `k8s/03-backend.yaml`.
 
 Start host Ollama:
 
@@ -91,27 +131,59 @@ docker run -d --name ollama-gpu \
   -p 11434:11434 \
   -v "$(pwd)/ollama_data:/root/.ollama" \
   ollama/ollama:latest
-
-docker exec ollama-gpu ollama pull llama3
 ```
 
-## Common Operations
-
-Restart after backend/frontend code changes:
+Pull required models:
 
 ```bash
-eval $(minikube docker-env)
-docker build -t osint-backend:latest ./backend
-kubectl rollout restart deployment/backend -n osint
-kubectl rollout status deployment/backend -n osint
+docker exec ollama-gpu ollama pull deepseek-r1:8b
+docker exec ollama-gpu ollama pull phi4-mini
+docker exec ollama-gpu ollama pull qwen2.5:7b
 ```
 
-```bash
-eval $(minikube docker-env)
-docker build -t osint-frontend:latest ./frontend
-kubectl rollout restart deployment/frontend -n osint
-kubectl rollout status deployment/frontend -n osint
-```
+### Option B: In-cluster Ollama service
+
+If you deploy `02-ollama.yaml`, update backend env to use:
+
+- `OLLAMA_URL=http://ollama:11434/api/generate`
+
+and rollout restart backend.
+
+## Current V2 AI Policy (in this project)
+
+V2 scheduler currently uses:
+
+- `verify`: `phi4-mini`
+- `report`: `deepseek-r1:8b`
+
+Chat task has been removed from v2 operations.
+
+Runtime behavior:
+
+- model discovery through `/api/tags`
+- available model chain selection
+- missing models dropped from runtime chain to reduce repeated 404 errors
+
+## Auth and Admin in K8s
+
+Auth endpoints are active in-cluster as in local compose:
+
+- `POST /api/auth/register`
+- `POST /api/auth/login`
+- `POST /api/auth/logout`
+- `GET /api/auth/session`
+
+Admin role management endpoints:
+
+- `GET /api/admin/users`
+- `PATCH /api/admin/users/{username}/role`
+
+Frontend admin pages:
+
+- `/v2/admin`
+- `/v2/ar/admin`
+
+## Operations and Troubleshooting
 
 Logs:
 
@@ -125,9 +197,35 @@ Health checks:
 ```bash
 curl http://127.0.0.1:8000/api/health
 curl http://127.0.0.1:8000/api/ops/health
+curl http://127.0.0.1:8000/api/v2/ai/policy
 ```
 
-## Full Shutdown and Cleanup
+Common issue: local ports busy (`3000`, `8000`)
+
+- Stop local compose stack before `make k8s-pf`
+- Or use alternative local ports in manual port-forward commands
+
+## Rebuild and Rollout After Code Changes
+
+Backend:
+
+```bash
+eval $(minikube docker-env)
+docker build -t osint-backend:latest ./backend
+kubectl rollout restart deployment/backend -n osint
+kubectl rollout status deployment/backend -n osint
+```
+
+Frontend:
+
+```bash
+eval $(minikube docker-env)
+docker build -t osint-frontend:latest ./frontend
+kubectl rollout restart deployment/frontend -n osint
+kubectl rollout status deployment/frontend -n osint
+```
+
+## Full Shutdown / Cleanup
 
 Stop port-forwards:
 
@@ -135,7 +233,7 @@ Stop port-forwards:
 pkill -f "kubectl -n osint port-forward" || true
 ```
 
-Remove active namespace:
+Delete namespace:
 
 ```bash
 kubectl delete namespace osint
@@ -147,7 +245,7 @@ Stop Minikube:
 minikube stop
 ```
 
-If needed, fully reset Minikube:
+Full reset:
 
 ```bash
 minikube delete --all --purge
