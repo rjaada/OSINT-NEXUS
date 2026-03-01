@@ -169,7 +169,54 @@ export default function AlertsPage() {
   }, [loadMain])
 
   const criticalCount = useMemo(() => alerts.filter((a) => a.type === "CRITICAL").length, [alerts])
+  const strikeCount = useMemo(() => alerts.filter((a) => a.type === "STRIKE").length, [alerts])
   const canReview = role === "analyst" || role === "admin"
+
+  const exportReport = (mode: "SITREP" | "INTSUM") => {
+    const now = new Date()
+    const day = String(now.getUTCDate()).padStart(2, "0")
+    const hh = String(now.getUTCHours()).padStart(2, "0")
+    const mm = String(now.getUTCMinutes()).padStart(2, "0")
+    const months = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"]
+    const dtg = `${day}${hh}${mm}Z${months[now.getUTCMonth()]}${now.getUTCFullYear()}`
+
+    const lines: string[] = []
+    lines.push("SECRET // NOFORN // REL TO FVEY")
+    lines.push(`${mode} // OSINT NEXUS`)
+    lines.push(`DTG: ${dtg}`)
+    lines.push(`ROLE: ${role.toUpperCase()}`)
+    lines.push(`TOTAL ALERTS: ${alerts.length} | CRITICAL: ${criticalCount} | STRIKE: ${strikeCount}`)
+    lines.push("")
+    lines.push("1. SITUATION OVERVIEW")
+    lines.push(`- Last sync: ${lastSync || "--:--:--Z"}`)
+    lines.push(`- Operational mode: ${crisisMode ? "CRISIS" : "NORMAL"}`)
+    lines.push("")
+    lines.push("2. KEY INCIDENTS")
+    alerts.slice(0, 20).forEach((a, i) => {
+      lines.push(`${i + 1}. [${a.type}] ${a.desc.replace(/^\[.+?\]\s*/, "").slice(0, 180)}`)
+      lines.push(`   DTG: ${a.timestamp} | SOURCE: ${a.source} | CONFIDENCE: ${a.confidence} (${a.confidence_score})`)
+      lines.push(`   GRID/COORD: ${Number(a.lat).toFixed(3)}N ${Number(a.lng).toFixed(3)}E | ETA: ${a.eta_band}`)
+      lines.push(`   PROVENANCE: source=${a.source}; corroboration=${a.corroborating_sources.length > 0 ? a.corroborating_sources.join(",") : "single-source"}; reviewed=${a.review?.status || "unreviewed"}`)
+      if (a.observed_facts && a.observed_facts.length > 0) lines.push(`   OBSERVED: ${a.observed_facts.slice(0, 2).join(" | ")}`)
+      if (a.model_inference && a.model_inference.length > 0) lines.push(`   INFERENCE: ${a.model_inference.slice(0, 2).join(" | ")}`)
+      lines.push("")
+    })
+    lines.push("3. DISPOSITION")
+    lines.push("- Advisory use only. Validate through official channels before action.")
+    lines.push("")
+    lines.push("SECRET // NOFORN // REL TO FVEY")
+
+    const text = lines.join("\n")
+    const blob = new Blob([text], { type: "text/plain;charset=utf-8" })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement("a")
+    a.href = url
+    a.download = `${mode.toLowerCase()}_${now.toISOString().replace(/[:.]/g, "-")}.txt`
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    URL.revokeObjectURL(url)
+  }
 
   const setReview = async (eventId: string, status: ReviewState) => {
     if (!canReview) return
@@ -230,6 +277,14 @@ export default function AlertsPage() {
               <div>Role: {role}</div>
               <div>{loading ? "Syncing..." : `Last sync: ${lastSync || "--:--:--Z"}`}</div>
               <div>Critical cards: {criticalCount}</div>
+              <div className="mt-2 flex items-center justify-end gap-2">
+                <button className="text-[10px] px-2 py-1 rounded border border-osint-blue/40 text-osint-blue" onClick={() => exportReport("SITREP")}>
+                  Generate SITREP
+                </button>
+                <button className="text-[10px] px-2 py-1 rounded border border-osint-purple/40 text-osint-purple" onClick={() => exportReport("INTSUM")}>
+                  Generate INTSUM
+                </button>
+              </div>
             </div>
           </header>
 
@@ -291,6 +346,18 @@ export default function AlertsPage() {
                     <div className="rounded-md border border-white/10 p-2 bg-black/20">
                       <p className="text-[10px] uppercase tracking-[0.12em] text-osint-purple mb-1">Media Credibility</p>
                       <p className="text-[#c7b9dd] line-clamp-3">{a.media?.credibility_note || "Pending media analysis."}</p>
+                    </div>
+                  </div>
+
+                  <div className="rounded-md border border-white/10 p-2 bg-black/20 mb-3 text-[10px]">
+                    <p className="text-[10px] uppercase tracking-[0.12em] text-osint-blue mb-1">Data Provenance</p>
+                    <div className="grid md:grid-cols-2 gap-1 text-muted-foreground">
+                      <p>Sensor/source: {a.source}</p>
+                      <p className="md:text-right">Chain status: {a.review?.status || "unreviewed"}</p>
+                      <p>Corroborated by: {a.corroborating_sources.length > 0 ? a.corroborating_sources.join(", ") : "single-source"}</p>
+                      <p className="md:text-right">Last corroborated: {a.timestamp}</p>
+                      <p>Analyst: {a.review?.analyst || "n/a"}</p>
+                      <p className="md:text-right">Confidence lineage: {a.confidence} ({a.confidence_score})</p>
                     </div>
                   </div>
 
