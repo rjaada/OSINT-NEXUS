@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from 'next'
 import { JetBrains_Mono } from 'next/font/google'
+import { FirstOpenOverlay } from '@/components/system/first-open-overlay'
 import './globals.css'
 
 const jetbrainsMono = JetBrains_Mono({
@@ -41,6 +42,7 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className={`${jetbrainsMono.variable} font-mono antialiased`}>
+        <FirstOpenOverlay />
         {children}
       </body>
     </html>

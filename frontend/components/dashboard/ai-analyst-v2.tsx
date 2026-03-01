@@ -18,12 +18,7 @@ const THREAT_COLORS: Record<"LOW" | "MEDIUM" | "HIGH" | "CRITICAL", { text: stri
   CRITICAL: { text: "#b24bff", bg: "#b24bff20", border: "#b24bff40" },
 }
 
-const REFRESH_INTERVALS = {
-  LOW: 5 * 60 * 1000,
-  MEDIUM: 3 * 60 * 1000,
-  HIGH: 2 * 60 * 1000,
-  CRITICAL: 1 * 60 * 1000,
-}
+const REFRESH_INTERVAL_MS = 5 * 60 * 1000
 
 type ThreatLevel = keyof typeof THREAT_COLORS
 
@@ -47,10 +42,10 @@ export function AiAnalyst() {
   const [agoText, setAgoText] = useState("")
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
-  const fetchReport = async () => {
+  const fetchReport = async (force = false) => {
     setLoading(true)
     try {
-      const res = await fetch("http://localhost:8000/api/analyst")
+      const res = await fetch(`http://localhost:8000/api/v2/ai/report${force ? "?force=true" : ""}`, { cache: "no-store" })
       if (res.ok) {
         const data = await res.json()
         setReport(data)
@@ -66,12 +61,11 @@ export function AiAnalyst() {
   useEffect(() => {
     fetchReport()
     if (intervalRef.current) clearInterval(intervalRef.current)
-    const intervalTime = report ? REFRESH_INTERVALS[normalizeThreatLevel(report.threat_level)] : REFRESH_INTERVALS.MEDIUM
-    intervalRef.current = setInterval(fetchReport, intervalTime)
+    intervalRef.current = setInterval(fetchReport, REFRESH_INTERVAL_MS)
     return () => {
       if (intervalRef.current) clearInterval(intervalRef.current)
     }
-  }, [report?.threat_level])
+  }, [])
 
   useEffect(() => {
     const updateAgo = () => {
@@ -109,7 +103,7 @@ export function AiAnalyst() {
         <span className={`text-[8px] font-bold tracking-widest px-2 py-0.5 rounded ${isCritical ? "animate-blink" : ""}`} style={{ background: colors.bg, border: `1px solid ${colors.border}`, color: colors.text }}>
           {report?.threat_level ?? "—"}
         </span>
-        <button onClick={(e) => { e.stopPropagation(); fetchReport() }} className={`ml-1 text-muted-foreground hover:text-white transition-all ${loading ? "animate-spin" : ""}`}>
+        <button onClick={(e) => { e.stopPropagation(); fetchReport(true) }} className={`ml-1 text-muted-foreground hover:text-white transition-all ${loading ? "animate-spin" : ""}`}>
           <RefreshCw className="h-3.5 w-3.5" />
         </button>
         {expanded ? <ChevronUp className="h-3.5 w-3.5 text-muted-foreground" /> : <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />}
@@ -140,7 +134,7 @@ export function AiAnalyst() {
           )}
 
           <div className="flex items-center justify-between text-[8px] text-muted-foreground pt-1">
-            <span>{hasKey ? `Updated ${agoText} · Refreshes every ${REFRESH_INTERVALS[level] / 60000}m` : "Analyst unavailable"}</span>
+            <span>{hasKey ? `Updated ${agoText} · Refreshes every ${REFRESH_INTERVAL_MS / 60000}m` : "Analyst unavailable"}</span>
             {level === "CRITICAL" ? <span className="text-[8px] text-osint-purple font-bold tracking-wider animate-blink">ESCALATED</span> : null}
           </div>
         </div>

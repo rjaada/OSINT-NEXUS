@@ -20,8 +20,10 @@ services:
     environment:
       - REDIS_URL=redis://redis:6379
       - GROQ_API_KEY=${GROQ_API_KEY:-}
+      - DATABASE_URL=${DATABASE_URL:-postgresql://osint:osint@postgres:5432/osint}
     depends_on:
       - redis
+      - postgres
 
   redis:
     image: redis:alpine
@@ -42,5 +44,17 @@ services:
               count: 1
               capabilities: [gpu]
 
+  postgres:
+    image: postgis/postgis:16-3.4
+    environment:
+      - POSTGRES_DB=osint
+      - POSTGRES_USER=osint
+      - POSTGRES_PASSWORD=osint
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
 volumes:
   ollama_data:
+  postgres_data:

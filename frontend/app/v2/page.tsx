@@ -1,11 +1,36 @@
+"use client"
 import Link from "next/link"
+import { useEffect, useState } from "react"
 
 export default function HomePage() {
+  const [role, setRole] = useState("viewer")
+  const [user, setUser] = useState("user")
+
+  useEffect(() => {
+    const roleCookie = document.cookie.split("; ").find((x) => x.startsWith("osint_role="))
+    const userCookie = document.cookie.split("; ").find((x) => x.startsWith("osint_user="))
+    setRole(roleCookie ? decodeURIComponent(roleCookie.split("=")[1]) : "viewer")
+    setUser(userCookie ? decodeURIComponent(userCookie.split("=")[1]) : "user")
+  }, [])
+
+  const logout = () => {
+    document.cookie = "osint_session=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; SameSite=Lax"
+    document.cookie = "osint_role=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; SameSite=Lax"
+    document.cookie = "osint_user=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; SameSite=Lax"
+    window.location.href = "/login"
+  }
+
   return (
     <main className="min-h-screen bg-background text-foreground px-6 py-8 md:px-10">
       <div className="max-w-6xl mx-auto">
         <header className="mb-8">
           <div className="flex items-center justify-end mb-3">
+            <span className="text-[10px] tracking-[0.14em] uppercase px-3 py-1.5 rounded mr-2" style={{ color: "#00b4d8", border: "1px solid #00b4d855", background: "#00b4d818" }}>
+              {user} · {role}
+            </span>
+            <button onClick={logout} className="text-[10px] tracking-[0.14em] uppercase px-3 py-1.5 rounded mr-2" style={{ color: "#ff1a3c", border: "1px solid #ff1a3c55", background: "#ff1a3c18" }}>
+              Logout
+            </button>
             <Link
               href="/"
               className="text-[10px] tracking-[0.14em] uppercase px-3 py-1.5 rounded"
@@ -21,7 +46,7 @@ export default function HomePage() {
           </p>
         </header>
 
-        <section className="grid md:grid-cols-3 gap-4">
+        <section className="grid md:grid-cols-4 gap-4">
           <Link
             href="/v2/operations"
             className="rounded-xl p-6 transition-all hover:bg-white/[0.03]"
@@ -55,6 +80,18 @@ export default function HomePage() {
             <h2 className="text-xl font-semibold mb-2">Sources and Ops Health</h2>
             <p className="text-sm text-muted-foreground">
               Raw feed verification, source volume, queue health, and watchdog state.
+            </p>
+          </Link>
+
+          <Link
+            href="/v2/health"
+            className="rounded-xl p-6 transition-all hover:bg-white/[0.03]"
+            style={{ background: "rgba(7,8,12,0.92)", border: "1px solid rgba(255,255,255,0.08)" }}
+          >
+            <p className="text-[10px] tracking-[0.18em] uppercase text-osint-purple mb-2">Ops Control</p>
+            <h2 className="text-xl font-semibold mb-2">Health Dashboard</h2>
+            <p className="text-sm text-muted-foreground">
+              Queue depth, watchdog state, and PostgreSQL connectivity for phase-2 operations.
             </p>
           </Link>
         </section>

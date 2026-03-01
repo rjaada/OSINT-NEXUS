@@ -6,6 +6,7 @@ import { MapArea } from "./map-area"
 import { TopBar } from "./top-bar"
 import { AiAnalyst } from "./ai-analyst"
 import { ConflictTimeline } from "./conflict-timeline"
+import { VideoModal } from "@/components/system/video-modal"
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -117,7 +118,17 @@ function SourceBadge({ source }: { source: string }) {
   )
 }
 
-function IntelCard({ event, isNew, onClick }: { event: IntelEvent; isNew?: boolean; onClick: () => void }) {
+function IntelCard({
+  event,
+  isNew,
+  onClick,
+  onOpenVideo,
+}: {
+  event: IntelEvent
+  isNew?: boolean
+  onClick: () => void
+  onOpenVideo: (eventId: string, videoUrl: string, title: string) => void
+}) {
   const style = TYPE_STYLES[event.type] ?? TYPE_STYLES.CLASH
   const isCritical = event.type === "CRITICAL"
 
@@ -165,15 +176,15 @@ function IntelCard({ event, isNew, onClick }: { event: IntelEvent; isNew?: boole
         </span>
         <div className="flex items-center gap-2">
           {videoHref && (
-            <a
-              href={videoHref}
-              target="_blank"
-              rel="noopener noreferrer"
-              onClick={(e) => e.stopPropagation()}
+            <button
+              onClick={(e) => {
+                e.stopPropagation()
+                onOpenVideo(event.id, event.video_url || "", displayDesc)
+              }}
               className="text-[9px] text-osint-green hover:text-osint-green/80 underline underline-offset-2"
             >
-              latest video ↗
-            </a>
+              latest video
+            </button>
           )}
           {event.url && (
             <a
@@ -201,6 +212,7 @@ export function Dashboard() {
   const [filter,    setFilter]    = useState<"ALL" | EventType>("ALL")
   const [wsStatus,  setWsStatus]  = useState<"connecting" | "live" | "offline">("connecting")
   const [newIds,    setNewIds]    = useState<Set<string>>(new Set())
+  const [activeVideo, setActiveVideo] = useState<{ eventId: string; videoUrl: string; title: string } | null>(null)
   const seenIdsRef = useRef<Set<string>>(new Set())
   const hasInteractedRef = useRef(false)
 
@@ -403,11 +415,20 @@ export function Dashboard() {
                 event={evt}
                 isNew={newIds.has(evt.id)}
                 onClick={() => handleEventClick(evt)}
+                onOpenVideo={(eventId, videoUrl, title) => setActiveVideo({ eventId, videoUrl, title })}
               />
             ))}
           </div>
         </ScrollArea>
       </aside>
+
+      <VideoModal
+        open={Boolean(activeVideo)}
+        eventId={activeVideo?.eventId}
+        videoUrl={activeVideo?.videoUrl}
+        title={activeVideo?.title}
+        onClose={() => setActiveVideo(null)}
+      />
 
 
       {/* Flash animation keyframes */}

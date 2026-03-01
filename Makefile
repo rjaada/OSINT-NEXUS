@@ -12,6 +12,7 @@ help:
 	@echo "Docker Compose"
 	@echo "  make build           Build backend/frontend images"
 	@echo "  make up              Start redis+backend+frontend"
+	@echo "  make up-p2           Start postgres+redis+backend+frontend (Phase 2 stack)"
 	@echo "  make up-ai           Start ollama + pull model (MODEL=$(MODEL))"
 	@echo "  make start           Start existing containers"
 	@echo "  make stop            Stop containers"
@@ -24,6 +25,7 @@ help:
 	@echo "  make logs-ollama     Tail ollama logs"
 	@echo "  make health          Check key HTTP endpoints"
 	@echo "  make analyst         Query /api/analyst once"
+	@echo "  make migrate-pg      Migrate SQLite events into Postgres events_v2"
 	@echo ""
 	@echo "Kubernetes (Minikube)"
 	@echo "  make k8s-start       Start minikube"
@@ -37,12 +39,15 @@ help:
 	@echo "  make clean           Remove local build artifacts (.next, node_modules, pycache)"
 	@echo "  make clean-docker    Remove compose stack + project containers/images"
 
-.PHONY: build up up-ai pull-model start stop down restart ps logs logs-backend logs-frontend logs-ollama health analyst
+.PHONY: build up up-p2 up-ai pull-model start stop down restart ps logs logs-backend logs-frontend logs-ollama health analyst migrate-pg
 build:
 	$(COMPOSE) build backend frontend
 
 up:
 	$(COMPOSE) up -d --build redis backend frontend
+
+up-p2:
+	$(COMPOSE) up -d --build postgres redis backend frontend
 
 up-ai:
 	$(COMPOSE) up -d ollama
@@ -88,6 +93,9 @@ health:
 analyst:
 	@curl -fsS http://127.0.0.1:8000/api/analyst || true
 	@echo ""
+
+migrate-pg:
+	$(COMPOSE) exec -T backend python scripts/migrate_sqlite_to_postgres.py
 
 .PHONY: k8s-start k8s-build k8s-deploy k8s-status k8s-pf k8s-stop
 k8s-start:

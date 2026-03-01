@@ -3,12 +3,20 @@
 import { useEffect, useState } from "react"
 import { TopBar } from "@/components/dashboard/top-bar"
 import { CommandNav } from "@/components/dashboard/command-nav"
+import { VideoModal } from "@/components/system/video-modal"
 
 type Confidence = "LOW" | "MEDIUM" | "HIGH"
+type ReviewState = "confirm" | "reject" | "needs_review"
+
+interface MediaCred {
+  claim_alignment?: string
+  credibility_note?: string
+}
 
 interface AlertAssessment {
   id: string
-  type: "STRIKE" | "CRITICAL"
+  incident_id?: string
+  type: "STRIKE" | "CRITICAL" | "CLASH"
   desc: string
   timestamp: string
   lat: number
@@ -26,6 +34,8 @@ interface AlertAssessment {
   video_url?: string
   video_assessment?: string
   video_confidence?: string
+  media?: MediaCred
+  review?: { status?: string; analyst?: string; note?: string }
 }
 
 const CONF_STYLE: Record<Confidence, { text: string; bg: string; border: string }> = {
@@ -34,27 +44,52 @@ const CONF_STYLE: Record<Confidence, { text: string; bg: string; border: string 
   HIGH: { text: "#00ff88", bg: "#00ff8820", border: "#00ff8840" },
 }
 
+function requestHeaders() {
+  let apiKey = ""
+  try {
+    apiKey = localStorage.getItem("osint_v2_api_key") || ""
+  } catch (_) {}
+  return {
+    "Content-Type": "application/json",
+    "x-role": "analyst",
+    "x-actor": "local-ui-ar",
+    "x-api-key": apiKey,
+  }
+}
+
 export default function ArabicAlertsPage() {
   const [alerts, setAlerts] = useState<AlertAssessment[]>([])
   const [loading, setLoading] = useState(true)
   const [lastSync, setLastSync] = useState("")
+  const [activeVideo, setActiveVideo] = useState<{ eventId: string; videoUrl: string; title: string } | null>(null)
+
+  const load = async () => {
+    try {
+      const res = await fetch("http://localhost:8000/api/v2/alerts?limit=60")
+      if (!res.ok) return
+      setAlerts(await res.json())
+      setLastSync(new Date().toISOString().slice(11, 19) + "Z")
+    } finally {
+      setLoading(false)
+    }
+  }
 
   useEffect(() => {
-    const load = async () => {
-      try {
-        const res = await fetch("http://localhost:8000/api/alerts/assessment?limit=50")
-        if (!res.ok) return
-        setAlerts(await res.json())
-        setLastSync(new Date().toISOString().slice(11, 19) + "Z")
-      } finally {
-        setLoading(false)
-      }
-    }
-
     load()
     const interval = setInterval(load, 10000)
     return () => clearInterval(interval)
   }, [])
+
+  const setReview = async (eventId: string, status: ReviewState) => {
+    try {
+      await fetch("http://localhost:8000/api/v2/reviews", {
+        method: "POST",
+        headers: requestHeaders(),
+        body: JSON.stringify({ event_id: eventId, status, note: "set from arabic v2 board" }),
+      })
+      await load()
+    } catch (_) {}
+  }
 
   return (
     <div dir="rtl" className="min-h-screen bg-background text-foreground">
@@ -65,10 +100,10 @@ export default function ArabicAlertsPage() {
         <div className="max-w-7xl mx-auto">
           <header className="mb-5 flex items-end justify-between gap-3 flex-wrap">
             <div>
-              <p className="text-[10px] tracking-[0.18em] uppercase text-osint-amber mb-1">تنبيهات</p>
-              <h1 className="text-2xl md:text-3xl font-semibold">لوحة الثقة والتقدير الزمني</h1>
+              <p className="text-[10px] tracking-[0.18em] uppercase text-osint-amber mb-1">تنبيهات v2</p>
+              <h1 className="text-2xl md:text-3xl font-semibold">لوحة الثقة والتحقق والتقدير الزمني</h1>
               <p className="text-xs text-muted-foreground mt-2">
-                هذا تقدير استرشادي فقط. يجب اعتماد تعليمات الدفاع المدني الرسمية.
+                إرشادي فقط. لا تعتمد على تقدير الوقت كتحذير رسمي؛ اتبع قنوات الدفاع المدني الرسمية.
               </p>
             </div>
             <div className="text-[11px] text-muted-foreground">
@@ -79,6 +114,7 @@ export default function ArabicAlertsPage() {
           <section className="grid gap-3">
             {alerts.map((a) => {
               const c = CONF_STYLE[a.confidence]
+              const videoHref = a.video_url ? (a.video_url.startsWith("/media/") ? `http://localhost:8000${a.video_url}` : a.video_url) : null
               return (
                 <article
                   key={a.id}
@@ -101,7 +137,7 @@ export default function ArabicAlertsPage() {
                   <p className="text-sm text-[#c9c9db] leading-relaxed mb-2">{a.desc.replace(/^\[.+?\]\s*/, "")}</p>
                   <p className="text-[11px] text-osint-blue mb-3">سبب مستوى الثقة: {a.confidence_reason || "بيانات غير كافية"}</p>
 
-                  <div className="grid md:grid-cols-2 gap-3 text-[11px] mb-3">
+                  <div className="grid md:grid-cols-3 gap-3 text-[11px] mb-3">
                     <div className="rounded-md border border-white/10 p-2 bg-black/20">
                       <p className="text-[10px] uppercase tracking-[0.12em] text-osint-green mb-1">حقائق مرصودة</p>
                       {(a.observed_facts && a.observed_facts.length > 0)
@@ -114,23 +150,28 @@ export default function ArabicAlertsPage() {
                         ? <ul className="text-[#d7c6a8] list-disc pr-4 space-y-1">{a.model_inference.slice(0, 3).map((x, i) => <li key={i}>{x}</li>)}</ul>
                         : <p className="text-muted-foreground">لا يوجد استدلال مرفق.</p>}
                     </div>
+                    <div className="rounded-md border border-white/10 p-2 bg-black/20">
+                      <p className="text-[10px] uppercase tracking-[0.12em] text-osint-purple mb-1">مصداقية الوسائط</p>
+                      <p className="text-[#c7b9dd] line-clamp-3">{a.media?.credibility_note || "بانتظار تحليل الوسائط"}</p>
+                    </div>
                   </div>
 
                   <div className="flex items-center gap-4 text-[11px] text-muted-foreground flex-wrap">
                     <span>{Number(a.lat).toFixed(3)}N {Number(a.lng).toFixed(3)}E</span>
                     <span>{a.timestamp}</span>
-                    <span>التحقق المتقاطع: {a.corroborating_sources.length > 0 ? a.corroborating_sources.join(", ") : "مصدر واحد"}</span>
+                    <span>تحقق متقاطع: {a.corroborating_sources.length > 0 ? a.corroborating_sources.join(", ") : "مصدر واحد"}</span>
                     {a.video_assessment ? <span>الفيديو: {a.video_assessment} ({a.video_confidence || "LOW"})</span> : null}
-                    {a.video_url && (
-                      <a
-                        href={a.video_url.startsWith("/media/") ? `http://localhost:8000${a.video_url}` : a.video_url}
-                        target="_blank"
-                        rel="noopener noreferrer"
+                    {videoHref ? (
+                      <button
+                        onClick={() => setActiveVideo({ eventId: a.id, videoUrl: a.video_url || "", title: a.desc.replace(/^\[.+?\]\s*/, "") })}
                         className="text-osint-green underline underline-offset-2"
                       >
                         أحدث فيديو
-                      </a>
-                    )}
+                      </button>
+                    ) : null}
+                    <button className="text-[10px] px-2 py-1 rounded border border-osint-green/40 text-osint-green" onClick={() => setReview(a.id, "confirm")}>تأكيد</button>
+                    <button className="text-[10px] px-2 py-1 rounded border border-osint-red/40 text-osint-red" onClick={() => setReview(a.id, "reject")}>رفض</button>
+                    <button className="text-[10px] px-2 py-1 rounded border border-osint-amber/40 text-osint-amber" onClick={() => setReview(a.id, "needs_review")}>بحاجة مراجعة</button>
                   </div>
                 </article>
               )
@@ -138,6 +179,15 @@ export default function ArabicAlertsPage() {
           </section>
         </div>
       </main>
+
+      <VideoModal
+        open={Boolean(activeVideo)}
+        eventId={activeVideo?.eventId}
+        videoUrl={activeVideo?.videoUrl}
+        title={activeVideo?.title}
+        onClose={() => setActiveVideo(null)}
+        onConsumed={() => load()}
+      />
     </div>
   )
 }
