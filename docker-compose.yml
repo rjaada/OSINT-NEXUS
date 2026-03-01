@@ -21,9 +21,12 @@ services:
       - REDIS_URL=redis://redis:6379
       - GROQ_API_KEY=${GROQ_API_KEY:-}
       - DATABASE_URL=${DATABASE_URL:-postgresql://osint:osint@postgres:5432/osint}
+      - OSINT_DB_PATH=/data/osint_nexus.db
     depends_on:
       - redis
       - postgres
+    volumes:
+      - backend_data:/data
 
   redis:
     image: redis:alpine
@@ -58,3 +61,4 @@ services:
 volumes:
   ollama_data:
   postgres_data:
+  backend_data:

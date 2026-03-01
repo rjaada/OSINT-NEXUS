@@ -2,14 +2,26 @@
 
 OSINT NEXUS is a real-time OSINT monitoring platform for conflict-driven situational awareness. It ingests open sources, geolocates events, computes confidence, and serves versioned operational dashboards.
 
+## What This Project Is
+
+OSINT NEXUS is an operational intelligence workspace that combines:
+
+- live OSINT ingestion (Telegram, RSS, flight feed, red-alert feed),
+- map-centric incident monitoring,
+- analyst review workflows,
+- role-based access control,
+- local AI-assisted verification/report generation via Ollama.
+
+It is designed for decision support, not for authoritative command-and-control.
+
 ## Current Product State
 
-- `v1` remains available and untouched as the stable baseline.
-- `v2` is the active workspace for newer features and role-gated operations.
+- `v2` is now the primary workspace (`/` redirects to `/v2`).
+- `v1` remains in the codebase but is hidden from the main navigation.
 
 UI entry points:
 
-- V1: `http://localhost:3000/`
+- Root (V2): `http://localhost:3000/`
 - V2 hub: `http://localhost:3000/v2`
 - V2 operations: `http://localhost:3000/v2/operations`
 - V2 alerts: `http://localhost:3000/v2/alerts`
@@ -40,9 +52,21 @@ Arabic routes mirror v2 under `/v2/ar/...`.
 - Real METOC pull via Open-Meteo endpoint
 - Geo overlay loading from local GeoJSON files (`OVERLAY_DIR`)
 
+## Key Features
+
+- V2 operations map with event hover/click detail cards
+- V2 alerts board with confidence/ETA and analyst review actions
+- V2 source desk for reliability/throughput and pipeline status
+- V2 health dashboard for watchdog/queues/system status
+- Admin role-management page (list users, promote/demote, delete with safeguards)
+- Real-time updates via WebSocket stream
+- MGRS conversion and METOC weather integration
+- GeoJSON tactical overlays support
+- AI-assisted verification + report workflows (Ollama)
+
 ## AI in V2 (current policy)
 
-V2 currently uses **two** task models (chat task removed):
+V2 currently uses task models through Ollama:
 
 - `verify` model: default `phi4-mini`
 - `report` model: default `deepseek-r1:8b`
@@ -68,14 +92,16 @@ Runtime scheduler behavior:
 Route policy:
 
 - v1: any authenticated role
-- v2: `analyst` and `admin`
+- v2: any authenticated role (`viewer`, `analyst`, `admin`)
 - v2 admin pages: `admin` only
 
 Admin tooling:
 
 - `GET /api/admin/users` (admin only)
 - `PATCH /api/admin/users/{username}/role` (admin only)
+- `DELETE /api/admin/users/{username}` (admin only)
 - Last-admin safety: cannot demote the final admin account
+- Last-admin/self-delete safety: cannot delete final admin or current admin account
 
 ## V2 Page Summary
 
@@ -110,6 +136,7 @@ Admin (`/v2/admin`):
 
 - List users
 - Promote/demote roles
+- Delete users with safety checks
 
 ## Main API Endpoints
 
@@ -146,6 +173,7 @@ Auth/Admin:
 - `GET /api/auth/session`
 - `GET /api/admin/users`
 - `PATCH /api/admin/users/{username}/role`
+- `DELETE /api/admin/users/{username}`
 
 ## Prerequisites
 
@@ -160,7 +188,7 @@ Auth/Admin:
 
 Important variables:
 
-- `OSINT_DB_PATH` (default: `/tmp/osint_nexus.db`)
+- `OSINT_DB_PATH` (default: `/tmp/osint_nexus.db`; compose uses `/data/osint_nexus.db` for persistence)
 - `MEDIA_DIR` (default: `/tmp/osint_nexus_media`)
 - `OVERLAY_DIR` (default: `/tmp/osint_overlays`)
 - `DATABASE_URL` (Postgres enablement)
@@ -203,6 +231,11 @@ Access:
 
 - Frontend: `http://localhost:3000`
 - Backend: `http://localhost:8000`
+
+Persistence note:
+
+- Docker Compose mounts backend auth/local DB storage at `/data` (`backend_data` volume).
+- This keeps user accounts and local SQLite state across container restarts.
 
 Useful commands:
 

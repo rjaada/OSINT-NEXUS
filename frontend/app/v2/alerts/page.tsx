@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { TopBar } from "@/components/dashboard/top-bar"
 import { CommandNav } from "@/components/dashboard/command-nav"
 import { VideoModal } from "@/components/system/video-modal"
+import { csrfHeaders, readCookie } from "@/lib/security"
 
 type Confidence = "LOW" | "MEDIUM" | "HIGH"
 type ReviewState = "confirm" | "reject" | "needs_review"
@@ -55,23 +56,15 @@ const CONF_STYLE: Record<Confidence, { text: string; bg: string; border: string 
 }
 const ALERTS_REFRESH_MS = 15000
 
-function cookie(name: string) {
-  if (typeof document === "undefined") return ""
-  const row = document.cookie.split("; ").find((x) => x.startsWith(`${name}=`))
-  return row ? decodeURIComponent(row.split("=")[1]) : ""
-}
-
 function requestHeaders() {
   let apiKey = ""
   try {
     apiKey = localStorage.getItem("osint_v2_api_key") || ""
   } catch (_) {}
-  return {
+  return csrfHeaders({
     "Content-Type": "application/json",
-    "x-role": cookie("osint_role") || "viewer",
-    "x-actor": cookie("osint_user") || "local-user",
     "x-api-key": apiKey,
-  }
+  })
 }
 
 export default function AlertsPage() {
@@ -91,7 +84,7 @@ export default function AlertsPage() {
     try {
       setCrisisMode(localStorage.getItem("osint_crisis_mode") === "1")
     } catch (_) {}
-    setRole(cookie("osint_role") || "viewer")
+    setRole(readCookie("osint_role") || "viewer")
 
     const onMode = (e: Event) => {
       const custom = e as CustomEvent<{ crisis: boolean }>
@@ -283,6 +276,7 @@ export default function AlertsPage() {
       await fetch("http://localhost:8000/api/v2/reviews", {
         method: "POST",
         headers: requestHeaders(),
+        credentials: "include",
         body: JSON.stringify({ event_id: eventId, status, note: "set from v2 alert board" }),
       })
       await loadMain()

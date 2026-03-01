@@ -2,6 +2,15 @@
 
 This guide covers local Kubernetes deployment and operations for OSINT NEXUS on Minikube.
 
+## What Runs in K8s
+
+In Kubernetes mode, OSINT NEXUS runs as:
+
+- `frontend` (Next.js V2 UI),
+- `backend` (FastAPI ingestion + API + auth + AI orchestration),
+- `redis` (queue/cache support),
+- optional `ollama` deployment (or host Ollama via bridge URL).
+
 ## Scope and Manifests
 
 Primary namespace stack is under `k8s/`:
@@ -177,11 +186,26 @@ Admin role management endpoints:
 
 - `GET /api/admin/users`
 - `PATCH /api/admin/users/{username}/role`
+- `DELETE /api/admin/users/{username}`
 
 Frontend admin pages:
 
 - `/v2/admin`
 - `/v2/ar/admin`
+
+Access policy:
+
+- V2 is primary (`/` -> `/v2`).
+- Any authenticated role can access V2 pages.
+- Admin pages remain admin-only.
+
+## Persistence Notes
+
+- Backend auth/local SQLite is persisted via:
+  - `OSINT_DB_PATH=/data/osint_nexus.db`
+  - `backend-data-pvc` mounted to `/data`
+- Backend runs as `replicas: 1` in `k8s/03-backend.yaml` to avoid split auth state when using local SQLite.
+- If you scale backend replicas, move auth/local state to a shared datastore (recommended: Postgres for auth tables).
 
 ## Operations and Troubleshooting
 

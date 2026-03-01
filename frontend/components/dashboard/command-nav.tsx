@@ -54,10 +54,6 @@ export function CommandNav() {
     } catch (_) {}
   }
 
-  const switchHref = inV2
-    ? (pathname.replace(/^\/v2/, "") || "/")
-    : `/v2${pathname === "/" ? "" : pathname}`
-
   return (
     <nav className="flex items-center gap-1 px-3 py-2 border-b border-white/[0.06] flex-wrap">
       {tabs.map((tab) => {
@@ -78,21 +74,9 @@ export function CommandNav() {
         )
       })}
 
-      <Link
-        href={switchHref}
-        className="ml-auto text-[9px] tracking-[0.14em] uppercase px-2.5 py-1 rounded"
-        style={{
-          color: inV2 ? "#00ff88" : "#b24bff",
-          border: `1px solid ${inV2 ? "#00ff8855" : "#b24bff55"}`,
-          background: inV2 ? "#00ff8818" : "#b24bff18",
-        }}
-      >
-        {inV2 ? "Switch to V1 Stable" : "Switch to V2 Beta"}
-      </Link>
-
       <button
         onClick={toggleMode}
-        className="text-[9px] tracking-[0.14em] uppercase px-2.5 py-1 rounded"
+        className="ml-auto text-[9px] tracking-[0.14em] uppercase px-2.5 py-1 rounded"
         style={{
           color: crisisMode ? "#ff1a3c" : "#00b4d8",
           border: `1px solid ${crisisMode ? "#ff1a3c55" : "#00b4d855"}`,
