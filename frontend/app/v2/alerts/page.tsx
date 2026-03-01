@@ -83,6 +83,7 @@ export default function AlertsPage() {
   const [role, setRole] = useState("viewer")
   const [verifyingId, setVerifyingId] = useState<string | null>(null)
   const [verifyById, setVerifyById] = useState<Record<string, VerifyResult>>({})
+  const [briefBusy, setBriefBusy] = useState<"" | "SITREP" | "INTSUM">("")
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const lastRefreshTsRef = useRef(0)
 
@@ -172,7 +173,58 @@ export default function AlertsPage() {
   const strikeCount = useMemo(() => alerts.filter((a) => a.type === "STRIKE").length, [alerts])
   const canReview = role === "analyst" || role === "admin"
 
-  const exportReport = (mode: "SITREP" | "INTSUM") => {
+  const exportReport = async (mode: "SITREP" | "INTSUM") => {
+    setBriefBusy(mode)
+    try {
+      const res = await fetch("http://localhost:8000/api/v2/ai/ops-brief", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode, limit: 22 }),
+      })
+      if (res.ok) {
+        const data = await res.json()
+        const now = new Date()
+        const lines: string[] = []
+        lines.push("SECRET // NOFORN // REL TO FVEY")
+        lines.push(`${mode} // OSINT NEXUS AI OPS BRIEF`)
+        lines.push(`GENERATED_AT: ${data.generated_at || now.toISOString()}`)
+        lines.push(`MODELS: chat=${data?.model_policy?.task_models?.chat || "-"} verify=${data?.model_policy?.task_models?.verify || "-"} report=${data?.model_policy?.task_models?.report || "-"}`)
+        lines.push("")
+        lines.push(`TITLE: ${data?.report?.title || mode}`)
+        lines.push(`SUMMARY: ${data?.report?.summary || ""}`)
+        lines.push("")
+        lines.push("PARAGRAPHS:")
+        for (const p of (data?.report?.paragraphs || [])) lines.push(`- ${p}`)
+        lines.push("")
+        lines.push("PRIORITY ACTIONS:")
+        for (const a of (data?.report?.priority_actions || [])) lines.push(`- ${a}`)
+        lines.push("")
+        lines.push("COMMANDER NOTE:")
+        lines.push(`- ${data?.commander_chat?.one_line_risk || ""}`)
+        for (const a of (data?.commander_chat?.next_actions || [])) lines.push(`- ${a}`)
+        lines.push("")
+        lines.push("TOP VERIFY RESULTS:")
+        for (const v of (data?.verify || [])) {
+          lines.push(`- ${v?.event_id}: ${v?.result?.classification || "unknown"} (${v?.result?.confidence_0_to_100 || "-"})`)
+        }
+        lines.push("")
+        lines.push("SECRET // NOFORN // REL TO FVEY")
+        const text = lines.join("\n")
+        const blob = new Blob([text], { type: "text/plain;charset=utf-8" })
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement("a")
+        a.href = url
+        a.download = `${mode.toLowerCase()}_${now.toISOString().replace(/[:.]/g, "-")}.txt`
+        document.body.appendChild(a)
+        a.click()
+        a.remove()
+        URL.revokeObjectURL(url)
+        return
+      }
+    } catch (_) {
+      // fall back to local report render below
+    }
+
     const now = new Date()
     const day = String(now.getUTCDate()).padStart(2, "0")
     const hh = String(now.getUTCHours()).padStart(2, "0")
@@ -216,7 +268,14 @@ export default function AlertsPage() {
     a.click()
     a.remove()
     URL.revokeObjectURL(url)
+    setBriefBusy("")
   }
+
+  useEffect(() => {
+    if (!briefBusy) return
+    const t = setTimeout(() => setBriefBusy(""), 400)
+    return () => clearTimeout(t)
+  }, [briefBusy])
 
   const setReview = async (eventId: string, status: ReviewState) => {
     if (!canReview) return
@@ -279,10 +338,10 @@ export default function AlertsPage() {
               <div>Critical cards: {criticalCount}</div>
               <div className="mt-2 flex items-center justify-end gap-2">
                 <button className="text-[10px] px-2 py-1 rounded border border-osint-blue/40 text-osint-blue" onClick={() => exportReport("SITREP")}>
-                  Generate SITREP
+                  {briefBusy === "SITREP" ? "Generating..." : "Generate SITREP"}
                 </button>
                 <button className="text-[10px] px-2 py-1 rounded border border-osint-purple/40 text-osint-purple" onClick={() => exportReport("INTSUM")}>
-                  Generate INTSUM
+                  {briefBusy === "INTSUM" ? "Generating..." : "Generate INTSUM"}
                 </button>
               </div>
             </div>

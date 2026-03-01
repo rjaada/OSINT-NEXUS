@@ -192,9 +192,10 @@ function createCircle(lng: number, lat: number, radiusKm: number, points = 48): 
   return coords
 }
 
-export function MapArea({ events, onEventClick }: {
+export function MapArea({ events, onEventClick, showWeatherOverlay = false }: {
   events?: IntelEvent[]
   onEventClick?: (evt: IntelEvent) => void
+  showWeatherOverlay?: boolean
 }) {
   const containerRef    = useRef<HTMLDivElement>(null)
   const mapRef          = useRef<maplibregl.Map | null>(null)
@@ -202,6 +203,7 @@ export function MapArea({ events, onEventClick }: {
   const eventMarkersRef = useRef<Record<string, maplibregl.Marker>>({})
   const hoverPopupRef   = useRef<maplibregl.Popup | null>(null)
   const zoneLabelsRef   = useRef<maplibregl.Marker[]>([])
+  const overlayIdsRef   = useRef<string[]>([])
   const [isSatellite, setIsSatellite] = useState(false)
   const [mapError, setMapError] = useState<string | null>(null)
 
@@ -268,6 +270,46 @@ export function MapArea({ events, onEventClick }: {
       })
     }
 
+    // ── METOC weather overlay (simulated radar cells) ───────────────────────
+    if (!map.getSource("weather-overlay")) {
+      const weatherCells = [
+        { lng: 35.20, lat: 31.85, intensity: 0.68 },
+        { lng: 36.12, lat: 33.10, intensity: 0.54 },
+        { lng: 39.30, lat: 34.55, intensity: 0.74 },
+        { lng: 44.20, lat: 33.70, intensity: 0.60 },
+        { lng: 51.45, lat: 25.35, intensity: 0.49 },
+      ].map((x) => ({
+        type: "Feature" as const,
+        properties: x,
+        geometry: { type: "Point" as const, coordinates: [x.lng, x.lat] },
+      }))
+      map.addSource("weather-overlay", {
+        type: "geojson",
+        data: { type: "FeatureCollection", features: weatherCells },
+      })
+      map.addLayer({
+        id: "weather-overlay-layer",
+        type: "circle",
+        source: "weather-overlay",
+        paint: {
+          "circle-radius": ["interpolate", ["linear"], ["get", "intensity"], 0.3, 18, 0.9, 44],
+          "circle-color": [
+            "interpolate",
+            ["linear"],
+            ["get", "intensity"],
+            0.3, "rgba(0,180,216,0.12)",
+            0.6, "rgba(0,180,216,0.22)",
+            0.8, "rgba(255,166,48,0.28)",
+            0.9, "rgba(255,26,60,0.32)",
+          ],
+          "circle-stroke-width": 1,
+          "circle-stroke-color": "rgba(0,180,216,0.28)",
+          "circle-opacity": 0.9,
+        },
+        layout: { visibility: "none" },
+      })
+    }
+
     // ── Zone label markers ───────────────────────────────────────────────────
     zoneLabelsRef.current.forEach((m) => m.remove())
     zoneLabelsRef.current = []
@@ -297,6 +339,49 @@ export function MapArea({ events, onEventClick }: {
     })
   }
 
+  const loadOverlayFiles = async (map: maplibregl.Map) => {
+    try {
+      overlayIdsRef.current.forEach((id) => {
+        if (map.getLayer(`${id}-line`)) map.removeLayer(`${id}-line`)
+        if (map.getLayer(`${id}-fill`)) map.removeLayer(`${id}-fill`)
+        if (map.getSource(id)) map.removeSource(id)
+      })
+      overlayIdsRef.current = []
+      const res = await fetch("http://localhost:8000/api/v2/overlays", { cache: "no-store" })
+      if (!res.ok) return
+      const data = await res.json()
+      const items = Array.isArray(data?.items) ? data.items : []
+      items.forEach((ov: { id?: string; source?: unknown }) => {
+        const id = String(ov?.id || "").trim()
+        if (!id || !ov?.source) return
+        if (map.getSource(id)) return
+        map.addSource(id, { type: "geojson", data: ov.source as any })
+        map.addLayer({
+          id: `${id}-fill`,
+          type: "fill",
+          source: id,
+          paint: {
+            "fill-color": "rgba(255,166,48,0.12)",
+            "fill-outline-color": "rgba(255,166,48,0.48)",
+          },
+        })
+        map.addLayer({
+          id: `${id}-line`,
+          type: "line",
+          source: id,
+          paint: {
+            "line-color": "rgba(255,166,48,0.62)",
+            "line-width": 1.8,
+            "line-dasharray": [5, 3],
+          },
+        })
+        overlayIdsRef.current.push(id)
+      })
+    } catch (_) {
+      // Overlay files are optional
+    }
+  }
+
   // ── Init map ──────────────────────────────────────────────────────────────
   useEffect(() => {
     if (mapRef.current || !containerRef.current) return
@@ -313,6 +398,7 @@ export function MapArea({ events, onEventClick }: {
         mapReadyRef.current = true
         setMapError(null)
         addCustomLayers(map)
+        void loadOverlayFiles(map)
       })
       map.on("error", (evt) => {
         const msg = String(evt?.error ?? "")
@@ -348,7 +434,10 @@ export function MapArea({ events, onEventClick }: {
     const next = !isSatellite
     setIsSatellite(next)
     map.setStyle(next ? SATELLITE_STYLE : DARK_STYLE)
-    map.once("style.load", () => addCustomLayers(map))
+    map.once("style.load", () => {
+      addCustomLayers(map)
+      void loadOverlayFiles(map)
+    })
   }
 
   // ── Event markers + heat + threat radius ─────────────────────────────────
@@ -394,12 +483,25 @@ export function MapArea({ events, onEventClick }: {
       const isCritical = evt.type === "CRITICAL"
       const size = isCritical ? 13 : 8
       const el = document.createElement("div")
+      const symbolKind = evt.type === "STRIKE" || evt.type === "CRITICAL" ? "hostile" : evt.type === "MOVEMENT" ? "friendly" : "unknown"
       el.style.cssText = `
-        width:${size}px;height:${size}px;border-radius:50%;
-        background:${color};cursor:${onEventClick ? "pointer" : "default"};
+        width:${size}px;height:${size}px;cursor:${onEventClick ? "pointer" : "default"};
         box-shadow:0 0 ${isCritical ? 14 : 7}px ${isCritical ? 3 : 2}px ${color}99;
         border: 1px solid ${color};
+        background:${color};
       `
+      if (symbolKind === "hostile") {
+        el.style.transform = "rotate(45deg)"
+        el.style.borderRadius = "2px"
+      } else if (symbolKind === "friendly") {
+        el.style.borderRadius = "2px"
+        el.style.width = `${Math.max(8, size + 2)}px`
+        el.style.height = `${Math.max(6, size - 1)}px`
+        el.style.background = "rgba(0,180,216,0.85)"
+        el.style.border = "1px solid rgba(0,180,216,1)"
+      } else {
+        el.style.borderRadius = "999px"
+      }
       if (!document.getElementById("osint-kf")) {
         const s = document.createElement("style"); s.id = "osint-kf"
         s.textContent = `
@@ -521,6 +623,14 @@ export function MapArea({ events, onEventClick }: {
     })
   }, [events, isSatellite, onEventClick])
 
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || !mapReadyRef.current) return
+    if (map.getLayer("weather-overlay-layer")) {
+      map.setLayoutProperty("weather-overlay-layer", "visibility", showWeatherOverlay ? "visible" : "none")
+    }
+  }, [showWeatherOverlay, isSatellite])
+
   const evtCount  = events?.length ?? 0
   const strikeCnt = events?.filter((e) => e.type === "STRIKE" || e.type === "CRITICAL").length ?? 0
 
@@ -581,6 +691,9 @@ export function MapArea({ events, onEventClick }: {
         ))}
         <div className="text-[7px] text-muted-foreground/40 mt-1 border-t border-white/5 pt-1">
           ● Events · ◌ Strike radius
+        </div>
+        <div className="text-[7px] text-muted-foreground/40">
+          {showWeatherOverlay ? "◉ Weather radar overlay enabled" : "◉ Weather radar overlay disabled"}
         </div>
       </div>
 

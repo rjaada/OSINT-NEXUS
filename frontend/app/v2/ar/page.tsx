@@ -14,7 +14,10 @@ export default function ArabicHomePage() {
     setUser(userCookie ? decodeURIComponent(userCookie.split("=")[1]) : "user")
   }, [])
 
-  const logout = () => {
+  const logout = async () => {
+    try {
+      await fetch("http://localhost:8000/api/auth/logout", { method: "POST", credentials: "include" })
+    } catch (_) {}
     document.cookie = "osint_session=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; SameSite=Lax"
     document.cookie = "osint_role=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; SameSite=Lax"
     document.cookie = "osint_user=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; SameSite=Lax"

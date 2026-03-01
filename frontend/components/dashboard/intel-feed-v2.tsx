@@ -1,10 +1,8 @@
 "use client"
 
-import { useEffect, useState, useCallback, useRef } from "react"
+import { useEffect, useState, useCallback, useRef, useMemo } from "react"
 import { MapArea } from "./map-area"
 import { AiAnalyst } from "./ai-analyst-v2"
-import { AiChatV2 } from "./ai-chat-v2"
-import { ConflictTimeline } from "./conflict-timeline"
 import { VideoModal } from "@/components/system/video-modal"
 
 type EventType = "STRIKE" | "MOVEMENT" | "NOTAM" | "CLASH" | "CRITICAL"
@@ -29,6 +27,7 @@ export interface IntelEvent {
   corroborating_sources?: string[]
   video_assessment?: string
   video_confidence?: string
+  mgrs?: string
 }
 
 export interface Aircraft {
@@ -213,14 +212,20 @@ export function Dashboard() {
   const [events, setEvents] = useState<IntelEvent[]>([])
   const [aircraft, setAircraft] = useState<Aircraft[]>([])
   const [headlines, setHeadlines] = useState<string[]>([])
-  const [filter, setFilter] = useState<"ALL" | EventType>("ALL")
   const [wsStatus, setWsStatus] = useState<"connecting" | "live" | "offline">("connecting")
-  const [newIds, setNewIds] = useState<Set<string>>(new Set())
   const [crisisMode, setCrisisMode] = useState(false)
   const [activeVideo, setActiveVideo] = useState<{ eventId: string; videoUrl: string; title: string } | null>(null)
   const [selectedMapEvent, setSelectedMapEvent] = useState<IntelEvent | null>(null)
+  const [showWeatherOverlay, setShowWeatherOverlay] = useState(false)
+  const [defcon, setDefcon] = useState<number>(5)
+  const [metoc, setMetoc] = useState({ windKts: 0, visibilityKm: 0, ceilingFt: 0, condition: "Loading...", source: "open-meteo" })
   const seenIdsRef = useRef<Set<string>>(new Set())
   const hasInteractedRef = useRef(false)
+  const eventsRef = useRef<IntelEvent[]>([])
+
+  useEffect(() => {
+    eventsRef.current = events
+  }, [events])
 
   useEffect(() => {
     const handler = () => { hasInteractedRef.current = true }
@@ -234,13 +239,49 @@ export function Dashboard() {
 
   useEffect(() => {
     try {
+      const lv = Number(localStorage.getItem("osint_defcon") || "5")
+      setDefcon(Number.isFinite(lv) ? Math.min(5, Math.max(1, lv)) : 5)
+    } catch (_) {}
+    const onDefcon = (e: Event) => {
+      const custom = e as CustomEvent<{ level: number }>
+      const lv = Number(custom.detail?.level || 5)
+      setDefcon(Math.min(5, Math.max(1, lv)))
+    }
+    window.addEventListener("osint:defcon", onDefcon)
+    return () => window.removeEventListener("osint:defcon", onDefcon)
+  }, [])
+
+  useEffect(() => {
+    const pull = async () => {
+      const ref = selectedMapEvent || eventsRef.current[0]
+      const qp = ref ? `?lat=${ref.lat}&lng=${ref.lng}` : ""
+      try {
+        const res = await fetch(`http://localhost:8000/api/v2/metoc${qp}`, { cache: "no-store" })
+        if (!res.ok) return
+        const data = await res.json()
+        const vis = Number(data?.visibility_km ?? 0)
+        const wind = Number(data?.wind_speed_kts ?? 0)
+        setMetoc({
+          windKts: Number.isFinite(wind) ? wind : 0,
+          visibilityKm: Number.isFinite(vis) ? vis : 0,
+          ceilingFt: Number(data?.cloud_ceiling_ft_est ?? 0) || 0,
+          condition: vis < 3 ? "Low visibility" : wind > 28 ? "High crosswind" : "Moderate conditions",
+          source: String(data?.source || "open-meteo"),
+        })
+      } catch (_) {}
+    }
+    void pull()
+    const t = setInterval(() => void pull(), 30000)
+    return () => clearInterval(t)
+  }, [selectedMapEvent])
+
+  useEffect(() => {
+    try {
       setCrisisMode(localStorage.getItem("osint_crisis_mode") === "1")
     } catch (_) {}
     const onMode = (e: Event) => {
       const custom = e as CustomEvent<{ crisis: boolean }>
       setCrisisMode(Boolean(custom.detail?.crisis))
-      if (custom.detail?.crisis) setFilter("CRITICAL")
-      else setFilter("ALL")
     }
     window.addEventListener("osint:mode", onMode)
     return () => window.removeEventListener("osint:mode", onMode)
@@ -260,13 +301,6 @@ export function Dashboard() {
     setHeadlines((prev) => [evt.desc, ...prev].slice(0, 40))
 
     if (!fromBackfill) {
-      setNewIds((prev) => new Set(prev).add(evt.id))
-      setTimeout(() => setNewIds((prev) => {
-        const next = new Set(prev)
-        next.delete(evt.id)
-        return next
-      }), 2000)
-
       if (hasInteractedRef.current && (evt.type === "CRITICAL" || evt.type === "STRIKE")) {
         playAlertBeep(evt.type)
       }
@@ -356,39 +390,43 @@ export function Dashboard() {
     }
   }, [addEvent, crisisMode])
 
-  const base = filter === "ALL" ? events : events.filter((e) => e.type === filter)
-  const filtered = crisisMode ? base.filter((e) => e.type === "CRITICAL" || e.type === "STRIKE") : base
-
-  const FILTERS: Array<"ALL" | EventType> = crisisMode
-    ? ["CRITICAL", "STRIKE", "CLASH"]
-    : ["ALL", "CRITICAL", "STRIKE", "CLASH", "MOVEMENT", "NOTAM"]
-
-  const FILTER_COLORS: Record<string, string> = {
-    ALL: "#ffffff",
-    CRITICAL: "#b24bff",
-    STRIKE: "#ff1a3c",
-    CLASH: "#00ff88",
-    MOVEMENT: "#00b4d8",
-    NOTAM: "#ffa630",
-  }
-
-  const handleEventClick = (evt: IntelEvent) => {
-    if (evt.url) {
-      window.open(evt.url, "_blank", "noopener,noreferrer")
-      return
-    }
-    window.open("https://twitter.com/spectatorindex", "_blank", "noopener,noreferrer")
-  }
-
   const handleMapEventClick = (evt: IntelEvent) => {
     setSelectedMapEvent(evt)
   }
+
+  const bftRows = useMemo(() => {
+    return aircraft.slice(0, 8).map((ac, i) => {
+      const status = ac.military
+        ? (ac.speed > 420 ? "Mission Ready" : ac.alt < 2000 ? "Degraded" : "Mission Ready")
+        : (i % 3 === 0 ? "Degraded" : "Mission Ready")
+      return {
+        id: ac.id,
+        unit: ac.callsign || `UNIT-${i + 1}`,
+        type: ac.military ? "AIR" : "CIV",
+        status,
+        lat: ac.lat,
+        lng: ac.lng,
+      }
+    })
+  }, [aircraft])
+
+  const isrTasks = useMemo(() => {
+    const sectors = ["Gaza Corridor", "South Lebanon", "West Bank", "Red Sea Lane"]
+    const assets = ["RQ-4B", "MQ-9", "E-8C", "P-8A"]
+    return sectors.map((sector, i) => ({
+      sector,
+      asset: assets[i % assets.length],
+      pattern: i % 2 === 0 ? "Racetrack Orbit" : "Figure-8 Orbit",
+      tos: `${35 - i * 6}m`,
+      assigned: events.filter((e) => i === 0 ? e.type === "CRITICAL" : e.type === "STRIKE").length,
+    }))
+  }, [events])
 
   return (
     <>
       <div className="flex-1 min-w-0 flex flex-col">
         <div className="flex-1 min-h-0 p-2 flex flex-col relative">
-          <MapArea events={events} onEventClick={handleMapEventClick} />
+          <MapArea events={events} onEventClick={handleMapEventClick} showWeatherOverlay={showWeatherOverlay} />
           {selectedMapEvent && (
             <div className="absolute top-5 left-5 z-30 w-[min(420px,calc(100%-2.5rem))] rounded-xl border border-cyan-500/35 bg-[rgba(5,8,14,0.94)] shadow-[0_14px_30px_rgba(0,0,0,0.55)] backdrop-blur-md">
               <div className="flex items-start gap-2 border-b border-white/10 px-4 py-3">
@@ -433,6 +471,7 @@ export function Dashboard() {
               <div className="grid grid-cols-2 gap-y-2 border-t border-white/10 px-4 py-3 text-[10px] text-muted-foreground">
                 <p className="truncate">time: {selectedMapEvent.timestamp ?? "--"}</p>
                 <p className="text-right truncate">coords: {selectedMapEvent.lat.toFixed(3)}N {selectedMapEvent.lng.toFixed(3)}E</p>
+                <p className="truncate">MGRS: {selectedMapEvent.mgrs || "N/A"}</p>
                 <p className="truncate">source: {selectedMapEvent.source}</p>
                 <p className="text-right truncate">corroboration: {(selectedMapEvent.corroborating_sources?.length ?? 0) > 0 ? selectedMapEvent.corroborating_sources?.length : "single-source"}</p>
                 {selectedMapEvent.confidence_reason ? (
@@ -445,7 +484,6 @@ export function Dashboard() {
             </div>
           )}
         </div>
-        <ConflictTimeline events={events} />
       </div>
 
       <aside className={`flex flex-col border-l border-[rgba(255,255,255,0.06)] overflow-hidden ${crisisMode ? "w-[420px]" : "w-[340px]"}`} style={{ background: "rgba(7,8,12,0.92)", backdropFilter: "blur(16px)" }}>
@@ -463,49 +501,73 @@ export function Dashboard() {
           }}>
             {wsStatus === "live" ? "LIVE" : wsStatus.toUpperCase()}
           </span>
-          <span className="ml-auto text-[9px] text-muted-foreground tabular-nums">{filtered.length} items</span>
+          <span className="ml-auto text-[9px] text-muted-foreground tabular-nums">{events.length} items</span>
+        </div>
+
+        <div className="px-3 pt-2 pb-1">
+          <div className="rounded-lg border border-white/10 bg-black/25 p-2 text-[10px]">
+            <div className="flex items-center justify-between mb-1">
+              <p className="uppercase tracking-[0.16em] text-osint-amber">Operational Tempo</p>
+              <span className={`px-1.5 py-0.5 rounded border text-[9px] ${defcon <= 2 ? "border-osint-red/50 text-osint-red" : defcon <= 3 ? "border-osint-amber/50 text-osint-amber" : "border-osint-blue/40 text-osint-blue"}`}>
+                DEFCON {defcon}
+              </span>
+            </div>
+            <p className="text-muted-foreground">Battle rhythm synced to ZULU and theater clocks.</p>
+          </div>
         </div>
 
         <div className="px-3 pt-3 pb-1">
           <AiAnalyst />
         </div>
-        <div className="px-3 pt-1 pb-2">
-          <AiChatV2 />
-        </div>
 
-        <div className="px-3 pb-1 text-[10px] text-muted-foreground">
-          Separation rule: <span className="text-osint-green">Observed</span> vs <span className="text-osint-amber">Model Inference</span>
-        </div>
+        <div className="px-3 pb-2 space-y-2">
+            <div className="rounded-lg border border-white/10 bg-black/25 p-2">
+              <div className="flex items-center justify-between mb-1">
+                <p className="text-[9px] uppercase tracking-[0.16em] text-osint-blue">METOC</p>
+              <button
+                onClick={() => setShowWeatherOverlay((v) => !v)}
+                className={`text-[9px] px-1.5 py-0.5 rounded border ${showWeatherOverlay ? "border-osint-green/40 text-osint-green" : "border-white/15 text-muted-foreground"}`}
+              >
+                {showWeatherOverlay ? "Radar ON" : "Radar OFF"}
+              </button>
+            </div>
+            <div className="grid grid-cols-2 gap-1 text-[10px] text-muted-foreground">
+              <p>Wind: <span className="text-[#d4dbe8]">{metoc.windKts} kts</span></p>
+              <p className="text-right">Visibility: <span className="text-[#d4dbe8]">{metoc.visibilityKm} km</span></p>
+              <p>Ceiling: <span className="text-[#d4dbe8]">{metoc.ceilingFt} ft</span></p>
+              <p className="text-right">Condition: <span className="text-[#d4dbe8]">{metoc.condition}</span></p>
+              <p className="col-span-2 text-[9px] text-muted-foreground">source: {metoc.source}</p>
+            </div>
+          </div>
 
-        <div className="flex gap-1 px-3 py-2 border-b border-[rgba(255,255,255,0.05)] flex-wrap">
-          {FILTERS.map((f) => (
-            <button
-              key={f}
-              onClick={() => setFilter(f)}
-              className="text-[8px] font-bold tracking-widest px-2 py-1 rounded transition-all"
-              style={{
-                color: filter === f ? FILTER_COLORS[f] : "#50505f",
-                background: filter === f ? `${FILTER_COLORS[f]}18` : "transparent",
-                border: `1px solid ${filter === f ? `${FILTER_COLORS[f]}40` : "transparent"}`,
-              }}
-            >
-              {f}
-            </button>
-          ))}
         </div>
 
         <div className="flex-1 min-h-0 overflow-y-auto osint-feed-scroll">
           <div className="flex flex-col gap-2 p-3">
-            {filtered.map((evt) => (
-              <IntelCard
-                key={evt.id}
-                event={evt}
-                isNew={newIds.has(evt.id)}
-                onClick={() => handleEventClick(evt)}
-                crisisMode={crisisMode}
-                onOpenVideo={(eventId, videoUrl, title) => setActiveVideo({ eventId, videoUrl, title })}
-              />
-            ))}
+            <div className="rounded-lg border border-white/10 bg-black/25 p-2">
+              <p className="mb-2 text-[9px] uppercase tracking-[0.16em] text-osint-purple">Blue Force Tracker</p>
+              <div className="max-h-28 overflow-y-auto osint-feed-scroll pr-1">
+                {(bftRows.length > 0 ? bftRows : [{ id: "none", unit: "No tracks", type: "--", status: "Degraded", lat: 0, lng: 0 }]).map((row) => (
+                  <div key={row.id} className="flex items-center justify-between border-b border-white/5 py-1 text-[10px]">
+                    <span className="text-[#d5dcf0]">{row.unit}</span>
+                    <span className="text-muted-foreground">{row.type}</span>
+                    <span className={row.status === "Mission Ready" ? "text-osint-green" : "text-osint-amber"}>{row.status}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="rounded-lg border border-white/10 bg-black/25 p-2">
+              <p className="mb-2 text-[9px] uppercase tracking-[0.16em] text-osint-amber">ISR Tasking</p>
+              <div className="space-y-1">
+                {isrTasks.map((task) => (
+                  <div key={task.sector} className="rounded border border-white/10 px-2 py-1 text-[10px]">
+                    <p className="text-[#d6dbea]">{task.asset} - {task.sector}</p>
+                    <p className="text-muted-foreground">{task.pattern} • TOS {task.tos} • assigned {task.assigned}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
           </div>
         </div>
       </aside>
