@@ -17,6 +17,7 @@ export function CommandNav() {
         { href: `${prefix}/ar/operations`, label: "العمليات" },
         { href: `${prefix}/ar/alerts`, label: "الإنذارات" },
         { href: `${prefix}/ar/sources`, label: "المصادر" },
+        ...(inV2 ? [{ href: `${prefix}/ar/health`, label: "الصحة" }] : []),
       ]
     }
     return [
@@ -24,8 +25,9 @@ export function CommandNav() {
       { href: `${prefix}/operations`, label: "Operations" },
       { href: `${prefix}/alerts`, label: "Alerts" },
       { href: `${prefix}/sources`, label: "Sources" },
+      ...(inV2 ? [{ href: `${prefix}/health`, label: "Health" }] : []),
     ]
-  }, [isArabic, prefix])
+  }, [inV2, isArabic, prefix])
 
   const [crisisMode, setCrisisMode] = useState(false)
 

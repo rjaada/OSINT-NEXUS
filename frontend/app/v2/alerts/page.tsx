@@ -1,15 +1,22 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { TopBar } from "@/components/dashboard/top-bar"
 import { CommandNav } from "@/components/dashboard/command-nav"
+import { VideoModal } from "@/components/system/video-modal"
 
 type Confidence = "LOW" | "MEDIUM" | "HIGH"
+type ReviewState = "confirm" | "reject" | "needs_review"
+
+interface MediaCred {
+  claim_alignment?: string
+  credibility_note?: string
+}
 
 interface AlertAssessment {
   id: string
   incident_id?: string
-  type: "STRIKE" | "CRITICAL"
+  type: "STRIKE" | "CRITICAL" | "CLASH"
   desc: string
   timestamp: string
   lat: number
@@ -27,6 +34,18 @@ interface AlertAssessment {
   video_url?: string
   video_assessment?: string
   video_confidence?: string
+  media?: MediaCred
+  review?: { status?: string; analyst?: string; note?: string }
+}
+
+interface VerifyResult {
+  classification: string
+  confidence_0_to_100: number
+  reasoning: string[]
+  required_follow_up: string[]
+  insufficient_evidence: boolean
+  model: string
+  generated_at: string
 }
 
 const CONF_STYLE: Record<Confidence, { text: string; bg: string; border: string }> = {
@@ -34,17 +53,42 @@ const CONF_STYLE: Record<Confidence, { text: string; bg: string; border: string 
   MEDIUM: { text: "#00b4d8", bg: "#00b4d820", border: "#00b4d840" },
   HIGH: { text: "#00ff88", bg: "#00ff8820", border: "#00ff8840" },
 }
+const ALERTS_REFRESH_MS = 5000
+
+function cookie(name: string) {
+  if (typeof document === "undefined") return ""
+  const row = document.cookie.split("; ").find((x) => x.startsWith(`${name}=`))
+  return row ? decodeURIComponent(row.split("=")[1]) : ""
+}
+
+function requestHeaders() {
+  let apiKey = ""
+  try {
+    apiKey = localStorage.getItem("osint_v2_api_key") || ""
+  } catch (_) {}
+  return {
+    "Content-Type": "application/json",
+    "x-role": cookie("osint_role") || "viewer",
+    "x-actor": cookie("osint_user") || "local-user",
+    "x-api-key": apiKey,
+  }
+}
 
 export default function AlertsPage() {
   const [alerts, setAlerts] = useState<AlertAssessment[]>([])
   const [loading, setLoading] = useState(true)
   const [lastSync, setLastSync] = useState("")
   const [crisisMode, setCrisisMode] = useState(false)
+  const [activeVideo, setActiveVideo] = useState<{ eventId: string; videoUrl: string; title: string } | null>(null)
+  const [role, setRole] = useState("viewer")
+  const [verifyingId, setVerifyingId] = useState<string | null>(null)
+  const [verifyById, setVerifyById] = useState<Record<string, VerifyResult>>({})
 
   useEffect(() => {
     try {
       setCrisisMode(localStorage.getItem("osint_crisis_mode") === "1")
     } catch (_) {}
+    setRole(cookie("osint_role") || "viewer")
 
     const onMode = (e: Event) => {
       const custom = e as CustomEvent<{ crisis: boolean }>
@@ -54,26 +98,67 @@ export default function AlertsPage() {
     return () => window.removeEventListener("osint:mode", onMode)
   }, [])
 
-  useEffect(() => {
-    const load = async () => {
-      try {
-        const res = await fetch(`http://localhost:8000/api/alerts/assessment?limit=${crisisMode ? 60 : 40}`)
-        if (!res.ok) return
-        const data: AlertAssessment[] = await res.json()
-        const normalized = crisisMode
-          ? data.filter((a) => a.type === "CRITICAL" || a.type === "STRIKE")
-          : data
-        setAlerts(normalized)
-        setLastSync(new Date().toISOString().slice(11, 19) + "Z")
-      } finally {
-        setLoading(false)
-      }
+  const loadMain = async () => {
+    try {
+      const res = await fetch(`http://localhost:8000/api/v2/alerts?limit=${crisisMode ? 80 : 60}`, { cache: "no-store" })
+      if (!res.ok) return
+      const data: AlertAssessment[] = await res.json()
+      const normalized = crisisMode ? data.filter((a) => a.type === "CRITICAL" || a.type === "STRIKE") : data
+      setAlerts(normalized)
+      setLastSync(new Date().toISOString().slice(11, 19) + "Z")
+    } finally {
+      setLoading(false)
     }
+  }
 
-    load()
-    const interval = setInterval(load, crisisMode ? 7000 : 15000)
+  useEffect(() => {
+    loadMain()
+    const interval = setInterval(loadMain, ALERTS_REFRESH_MS)
     return () => clearInterval(interval)
   }, [crisisMode])
+
+  const criticalCount = useMemo(() => alerts.filter((a) => a.type === "CRITICAL").length, [alerts])
+  const canReview = role === "analyst" || role === "admin"
+
+  const setReview = async (eventId: string, status: ReviewState) => {
+    if (!canReview) return
+    try {
+      await fetch("http://localhost:8000/api/v2/reviews", {
+        method: "POST",
+        headers: requestHeaders(),
+        body: JSON.stringify({ event_id: eventId, status, note: "set from v2 alert board" }),
+      })
+      await loadMain()
+    } catch (_) {}
+  }
+
+  const runVerify = async (a: AlertAssessment) => {
+    setVerifyingId(a.id)
+    try {
+      const bodyPayload = [
+        a.desc.replace(/^\[.+?\]\s*/, ""),
+        (a.observed_facts || []).slice(0, 3).join("; "),
+        (a.model_inference || []).slice(0, 3).join("; "),
+      ].filter(Boolean).join(" | ")
+      const res = await fetch("http://localhost:8000/api/v2/ai/verify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title: a.desc.replace(/^\[.+?\]\s*/, "").slice(0, 220),
+          body: bodyPayload.slice(0, 1200),
+          source: a.source,
+          published_at: a.timestamp,
+        }),
+      })
+      if (!res.ok) return
+      const data: VerifyResult = await res.json()
+      setVerifyById((prev) => ({ ...prev, [a.id]: data }))
+    } catch (_) {
+      // keep page usable if verify endpoint is unavailable
+    } finally {
+      setVerifyingId(null)
+    }
+  }
 
   return (
     <div className="min-h-screen bg-background text-foreground">
@@ -84,48 +169,39 @@ export default function AlertsPage() {
         <div className="max-w-7xl mx-auto">
           <header className="mb-5 flex items-end justify-between gap-3 flex-wrap">
             <div>
-              <p className="text-[10px] tracking-[0.18em] uppercase text-osint-amber mb-1">Alert Intel</p>
+              <p className="text-[10px] tracking-[0.18em] uppercase text-osint-amber mb-1">Alert Intel v2</p>
               <h1 className="text-2xl md:text-3xl font-semibold">Confidence and ETA Board</h1>
               <p className="text-xs text-muted-foreground mt-2">
-                Advisory only. ETA is estimated. Follow official civil-defense instructions for safety decisions.
+                Advisory only. Treat ETA as estimate and always prioritize official civil-defense instructions.
               </p>
             </div>
-            <div className="text-[11px] text-muted-foreground">
-              {loading ? "Syncing..." : `Last sync: ${lastSync || "--:--:--Z"}`}
+            <div className="text-[11px] text-muted-foreground text-right">
+              <div>Role: {role}</div>
+              <div>{loading ? "Syncing..." : `Last sync: ${lastSync || "--:--:--Z"}`}</div>
+              <div>Critical cards: {criticalCount}</div>
             </div>
           </header>
 
           <section className="grid gap-3">
             {alerts.map((a) => {
               const c = CONF_STYLE[a.confidence]
-              const cardPad = crisisMode ? "p-5" : "p-4"
+              const videoHref = a.video_url ? (a.video_url.startsWith("/media/") ? `http://localhost:8000${a.video_url}` : a.video_url) : null
+              const review = a.review?.status || "unreviewed"
+              const verify = verifyById[a.id]
               return (
                 <article
                   key={a.id}
-                  className={`rounded-xl ${cardPad}`}
+                  className={`rounded-xl ${crisisMode ? "p-5" : "p-4"}`}
                   style={{ background: "rgba(7,8,12,0.92)", border: "1px solid rgba(255,255,255,0.08)" }}
                 >
                   <div className="flex items-center gap-2 flex-wrap mb-2">
-                    <span className="text-[9px] px-2 py-0.5 rounded border border-white/10 tracking-[0.14em] uppercase">
-                      {a.type}
-                    </span>
-                    <span className="text-[9px] px-2 py-0.5 rounded border border-white/10 tracking-[0.14em] uppercase text-muted-foreground">
-                      {a.source}
-                    </span>
-                    <span
-                      className="text-[9px] px-2 py-0.5 rounded tracking-[0.14em] uppercase"
-                      style={{ color: c.text, background: c.bg, border: `1px solid ${c.border}` }}
-                    >
+                    <span className="text-[9px] px-2 py-0.5 rounded border border-white/10 tracking-[0.14em] uppercase">{a.type}</span>
+                    <span className="text-[9px] px-2 py-0.5 rounded border border-white/10 tracking-[0.14em] uppercase text-muted-foreground">{a.source}</span>
+                    <span className="text-[9px] px-2 py-0.5 rounded tracking-[0.14em] uppercase" style={{ color: c.text, background: c.bg, border: `1px solid ${c.border}` }}>
                       Confidence {a.confidence} ({a.confidence_score})
                     </span>
-                    <span className="text-[9px] px-2 py-0.5 rounded tracking-[0.14em] uppercase border border-osint-red/30 text-osint-red">
-                      ETA {a.eta_band}
-                    </span>
-                    {a.insufficient_evidence ? (
-                      <span className="text-[9px] px-2 py-0.5 rounded tracking-[0.14em] uppercase border border-osint-amber/40 text-osint-amber">
-                        Limited Evidence
-                      </span>
-                    ) : null}
+                    <span className="text-[9px] px-2 py-0.5 rounded tracking-[0.14em] uppercase border border-osint-red/30 text-osint-red">ETA {a.eta_band}</span>
+                    <span className="text-[9px] px-2 py-0.5 rounded tracking-[0.14em] uppercase border border-osint-blue/30 text-osint-blue">{review}</span>
                     <span className="ml-auto text-[10px] text-muted-foreground">{a.age_minutes}m ago</span>
                   </div>
 
@@ -133,16 +209,23 @@ export default function AlertsPage() {
                     {a.desc.replace(/^\[.+?\]\s*/, "")}
                   </p>
 
-                  <p className="text-[11px] text-osint-blue mb-3">Why this confidence: {a.confidence_reason || "insufficient data"}</p>
+                  <div className="flex items-center gap-2 flex-wrap mb-2 text-[10px]">
+                    <span className="px-2 py-0.5 rounded border border-osint-blue/30 text-osint-blue">{a.confidence_reason || "no reason"}</span>
+                    {a.insufficient_evidence ? <span className="px-2 py-0.5 rounded border border-osint-amber/40 text-osint-amber">limited evidence</span> : null}
+                    {a.video_assessment ? <span className="px-2 py-0.5 rounded border border-osint-green/30 text-osint-green">video {a.video_assessment}</span> : null}
+                    {a.media?.claim_alignment ? (
+                      <span className="px-2 py-0.5 rounded border border-osint-purple/40 text-osint-purple">media {a.media.claim_alignment}</span>
+                    ) : null}
+                  </div>
 
-                  <div className="grid md:grid-cols-2 gap-3 text-[11px] mb-3">
+                  <div className="grid md:grid-cols-3 gap-3 text-[11px] mb-3">
                     <div className="rounded-md border border-white/10 p-2 bg-black/20">
                       <p className="text-[10px] uppercase tracking-[0.12em] text-osint-green mb-1">Observed Facts</p>
                       {(a.observed_facts && a.observed_facts.length > 0) ? (
                         <ul className="text-[#b7d7c1] list-disc pl-4 space-y-1">
                           {a.observed_facts.slice(0, 3).map((x, i) => <li key={i}>{x}</li>)}
                         </ul>
-                      ) : <p className="text-muted-foreground">No direct extracted facts.</p>}
+                      ) : <p className="text-muted-foreground">No direct facts extracted.</p>}
                     </div>
 
                     <div className="rounded-md border border-white/10 p-2 bg-black/20">
@@ -151,36 +234,83 @@ export default function AlertsPage() {
                         <ul className="text-[#d7c6a8] list-disc pl-4 space-y-1">
                           {a.model_inference.slice(0, 3).map((x, i) => <li key={i}>{x}</li>)}
                         </ul>
-                      ) : <p className="text-muted-foreground">No model inference attached.</p>}
+                      ) : <p className="text-muted-foreground">No model inference.</p>}
+                    </div>
+
+                    <div className="rounded-md border border-white/10 p-2 bg-black/20">
+                      <p className="text-[10px] uppercase tracking-[0.12em] text-osint-purple mb-1">Media Credibility</p>
+                      <p className="text-[#c7b9dd] line-clamp-3">{a.media?.credibility_note || "Pending media analysis."}</p>
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-4 text-[11px] text-muted-foreground flex-wrap">
+                  <div className="flex items-center gap-2 flex-wrap text-[11px] text-muted-foreground">
                     <span>{Number(a.lat).toFixed(3)}N {Number(a.lng).toFixed(3)}E</span>
                     <span>{a.timestamp}</span>
-                    <span>
-                      Corroboration: {a.corroborating_sources.length > 0 ? a.corroborating_sources.join(", ") : "single-source"}
-                    </span>
-                    {a.video_assessment ? (
-                      <span>Video: {a.video_assessment} ({a.video_confidence || "LOW"})</span>
-                    ) : null}
-                    {a.video_url && (
-                      <a
-                        href={a.video_url.startsWith("/media/") ? `http://localhost:8000${a.video_url}` : a.video_url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-osint-green underline underline-offset-2"
+                    <span>Corroboration: {a.corroborating_sources.length > 0 ? a.corroborating_sources.join(", ") : "single-source"}</span>
+                    {videoHref ? (
+                      <button
+                        onClick={() => setActiveVideo({ eventId: a.id, videoUrl: a.video_url || "", title: a.desc.replace(/^\[.+?\]\s*/, "") })}
+                        className="text-osint-green underline"
                       >
                         Latest Video
-                      </a>
+                      </button>
+                    ) : null}
+
+                    {canReview ? (
+                      <>
+                        <button
+                          className="ml-auto text-[10px] px-2 py-1 rounded border border-osint-blue/40 text-osint-blue"
+                          onClick={() => runVerify(a)}
+                          disabled={verifyingId === a.id}
+                        >
+                          {verifyingId === a.id ? "Verifying..." : "AI Verify"}
+                        </button>
+                        <button className="ml-auto text-[10px] px-2 py-1 rounded border border-osint-green/40 text-osint-green" onClick={() => setReview(a.id, "confirm")}>Confirm</button>
+                        <button className="text-[10px] px-2 py-1 rounded border border-osint-red/40 text-osint-red" onClick={() => setReview(a.id, "reject")}>Reject</button>
+                        <button className="text-[10px] px-2 py-1 rounded border border-osint-amber/40 text-osint-amber" onClick={() => setReview(a.id, "needs_review")}>Needs Review</button>
+                      </>
+                    ) : (
+                      <button
+                        className="ml-auto text-[10px] px-2 py-1 rounded border border-osint-blue/40 text-osint-blue"
+                        onClick={() => runVerify(a)}
+                        disabled={verifyingId === a.id}
+                      >
+                        {verifyingId === a.id ? "Verifying..." : "AI Verify"}
+                      </button>
                     )}
                   </div>
+
+                  {verify ? (
+                    <div className="mt-3 rounded-md border border-osint-blue/30 bg-osint-blue/10 p-2 text-[10px]">
+                      <div className="flex items-center gap-2 flex-wrap mb-1">
+                        <span className="uppercase tracking-[0.14em] text-osint-blue">verify</span>
+                        <span className="text-[#d0d6e8]">{verify.classification}</span>
+                        <span className="text-[#d0d6e8]">({verify.confidence_0_to_100})</span>
+                        <span className="text-muted-foreground">{verify.model}</span>
+                      </div>
+                      {(verify.reasoning || []).length > 0 ? (
+                        <p className="text-[#c4cad9]">Reason: {verify.reasoning.slice(0, 2).join(" | ")}</p>
+                      ) : null}
+                      {(verify.required_follow_up || []).length > 0 ? (
+                        <p className="text-osint-amber">Follow-up: {verify.required_follow_up.slice(0, 2).join(" | ")}</p>
+                      ) : null}
+                    </div>
+                  ) : null}
                 </article>
               )
             })}
           </section>
         </div>
       </main>
+
+      <VideoModal
+        open={Boolean(activeVideo)}
+        eventId={activeVideo?.eventId}
+        videoUrl={activeVideo?.videoUrl}
+        title={activeVideo?.title}
+        onClose={() => setActiveVideo(null)}
+        onConsumed={() => loadMain()}
+      />
     </div>
   )
 }

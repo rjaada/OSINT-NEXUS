@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react"
 import { TopBar } from "@/components/dashboard/top-bar"
 import { CommandNav } from "@/components/dashboard/command-nav"
+import { VideoModal } from "@/components/system/video-modal"
 
 type Confidence = "LOW" | "MEDIUM" | "HIGH"
 
@@ -28,10 +29,15 @@ const CONF_STYLE: Record<Confidence, { text: string; bg: string; border: string 
   HIGH: { text: "#00ff88", bg: "#00ff8820", border: "#00ff8840" },
 }
 
+function isTelegramSource(source: string) {
+  return source.includes("(TG)") || source === "AJ Mubasher (TG)" || source === "Roaa War Studies (TG)"
+}
+
 export default function ArabicAlertsPage() {
   const [alerts, setAlerts] = useState<AlertAssessment[]>([])
   const [loading, setLoading] = useState(true)
   const [lastSync, setLastSync] = useState("")
+  const [activeVideo, setActiveVideo] = useState<{ eventId: string; videoUrl: string; title: string } | null>(null)
 
   useEffect(() => {
     const load = async () => {
@@ -39,7 +45,7 @@ export default function ArabicAlertsPage() {
         const res = await fetch("http://localhost:8000/api/alerts/assessment?limit=40")
         if (!res.ok) return
         const data: AlertAssessment[] = await res.json()
-        setAlerts(data)
+        setAlerts(data.filter((item) => isTelegramSource(item.source)))
         setLastSync(new Date().toISOString().slice(11, 19) + "Z")
       } finally {
         setLoading(false)
@@ -65,6 +71,7 @@ export default function ArabicAlertsPage() {
               <p className="text-xs text-muted-foreground mt-2">
                 هذا التقدير استرشادي. اعتمد دائمًا على تعليمات الدفاع المدني الرسمية.
               </p>
+              <p className="text-xs text-osint-blue mt-1">نطاق v1: قنوات تيليجرام فقط.</p>
             </div>
             <div className="text-[11px] text-muted-foreground">
               {loading ? "جاري التحديث..." : `آخر مزامنة: ${lastSync || "--:--:--Z"}`}
@@ -108,14 +115,12 @@ export default function ArabicAlertsPage() {
                       التحقق المتقاطع: {a.corroborating_sources.length > 0 ? a.corroborating_sources.join(", ") : "مصدر واحد"}
                     </span>
                     {a.video_url && (
-                      <a
-                        href={a.video_url.startsWith("/media/") ? `http://localhost:8000${a.video_url}` : a.video_url}
-                        target="_blank"
-                        rel="noopener noreferrer"
+                      <button
+                        onClick={() => setActiveVideo({ eventId: a.id, videoUrl: a.video_url || "", title: a.desc.replace(/^\[.+?\]\s*/, "") })}
                         className="text-osint-green underline underline-offset-2"
                       >
                         أحدث فيديو
-                      </a>
+                      </button>
                     )}
                   </div>
                 </article>
@@ -124,6 +129,23 @@ export default function ArabicAlertsPage() {
           </section>
         </div>
       </main>
+
+      <VideoModal
+        open={Boolean(activeVideo)}
+        eventId={activeVideo?.eventId}
+        videoUrl={activeVideo?.videoUrl}
+        title={activeVideo?.title}
+        onClose={() => setActiveVideo(null)}
+        onConsumed={async () => {
+          try {
+            const res = await fetch("http://localhost:8000/api/alerts/assessment?limit=40", { cache: "no-store" })
+            if (res.ok) {
+              const data: AlertAssessment[] = await res.json()
+              setAlerts(data.filter((item) => isTelegramSource(item.source)))
+            }
+          } catch (_) {}
+        }}
+      />
     </div>
   )
 }

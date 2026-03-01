@@ -17,13 +17,7 @@ const THREAT_COLORS: Record<"LOW" | "MEDIUM" | "HIGH" | "CRITICAL", { text: stri
   CRITICAL: { text: "#b24bff", bg: "#b24bff20", border: "#b24bff40" },
 }
 
-// Refresh intervals in ms
-const REFRESH_INTERVALS = {
-  LOW:      5 * 60 * 1000,  // 5 min
-  MEDIUM:   3 * 60 * 1000,  // 3 min
-  HIGH:     2 * 60 * 1000,  // 2 min
-  CRITICAL: 1 * 60 * 1000,  // 1 min
-}
+const REFRESH_INTERVAL_MS = 5 * 60 * 1000
 
 type ThreatLevel = keyof typeof THREAT_COLORS
 
@@ -49,10 +43,10 @@ export function AiAnalyst() {
   const [agoText, setAgoText]   = useState("")
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
-  const fetchReport = async () => {
+  const fetchReport = async (force = false) => {
     setLoading(true)
     try {
-      const res = await fetch(`http://localhost:8000/api/analyst`)
+      const res = await fetch(`http://localhost:8000/api/analyst${force ? "?force=true" : ""}`, { cache: "no-store" })
       if (res.ok) {
         const data = await res.json()
         setReport(data)
@@ -65,20 +59,18 @@ export function AiAnalyst() {
     }
   }
 
-  // Fetch on mount + adaptive refresh based on threat level, and refetch on language change
+  // Fetch on mount + fixed refresh cadence.
   useEffect(() => {
     fetchReport()
-    
-    // Clear old interval if exists
+
     if (intervalRef.current) clearInterval(intervalRef.current)
-    
-    const intervalTime = report ? REFRESH_INTERVALS[normalizeThreatLevel(report.threat_level)] : REFRESH_INTERVALS.MEDIUM
-    intervalRef.current = setInterval(fetchReport, intervalTime)
-    
+
+    intervalRef.current = setInterval(fetchReport, REFRESH_INTERVAL_MS)
+
     return () => {
       if (intervalRef.current) clearInterval(intervalRef.current)
     }
-  }, [report?.threat_level])
+  }, [])
 
   // Update relative time every 15s
   useEffect(() => {
@@ -128,7 +120,7 @@ export function AiAnalyst() {
           {report?.threat_level ?? "—"}
         </span>
         <button
-          onClick={(e) => { e.stopPropagation(); fetchReport() }}
+          onClick={(e) => { e.stopPropagation(); fetchReport(true) }}
           className={`ml-1 text-muted-foreground hover:text-white transition-all ${loading ? "animate-spin" : ""}`}
         >
           <RefreshCw className="h-3.5 w-3.5" />
@@ -161,7 +153,7 @@ export function AiAnalyst() {
           <div className="flex items-center justify-between text-[8px] text-muted-foreground pt-1">
             <span>
               {hasKey
-                ? `Updated ${agoText} · Refreshes every ${REFRESH_INTERVALS[level] / 60000}m`
+                ? `Updated ${agoText} · Refreshes every ${REFRESH_INTERVAL_MS / 60000}m`
                 : "Add GROQ_API_KEY → console.groq.com (free)"
               }
             </span>

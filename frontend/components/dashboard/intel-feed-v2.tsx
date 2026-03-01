@@ -3,9 +3,10 @@
 import { useEffect, useState, useCallback, useRef } from "react"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { MapArea } from "./map-area"
-import { TopBar } from "./top-bar"
 import { AiAnalyst } from "./ai-analyst-v2"
+import { AiChatV2 } from "./ai-chat-v2"
 import { ConflictTimeline } from "./conflict-timeline"
+import { VideoModal } from "@/components/system/video-modal"
 
 type EventType = "STRIKE" | "MOVEMENT" | "NOTAM" | "CLASH" | "CRITICAL"
 
@@ -24,6 +25,9 @@ export interface IntelEvent {
   observed_facts?: string[]
   model_inference?: string[]
   confidence_reason?: string
+  confidence?: "LOW" | "MEDIUM" | "HIGH"
+  confidence_score?: number
+  corroborating_sources?: string[]
   video_assessment?: string
   video_confidence?: string
 }
@@ -60,6 +64,11 @@ const SOURCE_COLORS: Record<string, string> = {
   "Roaa War Studies (TG)": "#00b4d8",
 }
 
+function isTelegramSource(src?: string): boolean {
+  const s = (src || "").trim()
+  return s.endsWith("(TG)") || s === "AJ Mubasher (TG)" || s === "Roaa War Studies (TG)"
+}
+
 function playAlertBeep(type: "CRITICAL" | "STRIKE") {
   try {
     const ctx = new (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)()
@@ -93,6 +102,41 @@ function playAlertBeep(type: "CRITICAL" | "STRIKE") {
   } catch (_) {}
 }
 
+function clusterForMap(events: IntelEvent[]): IntelEvent[] {
+  const buckets = new Map<string, IntelEvent[]>()
+  for (const evt of events) {
+    const key = `${evt.type}:${Math.round(evt.lat * 2) / 2}:${Math.round(evt.lng * 2) / 2}`
+    const arr = buckets.get(key) || []
+    arr.push(evt)
+    buckets.set(key, arr)
+  }
+  const out: IntelEvent[] = []
+  for (const [key, members] of buckets.entries()) {
+    if (members.length <= 1) {
+      out.push(members[0])
+      continue
+    }
+    const [rawType] = key.split(":")
+    const type = (rawType || "CLASH") as EventType
+    const lat = members.reduce((s, x) => s + x.lat, 0) / members.length
+    const lng = members.reduce((s, x) => s + x.lng, 0) / members.length
+    out.push({
+      id: `cluster-${key}`,
+      type,
+      lat,
+      lng,
+      source: "Clustered",
+      desc: `${members.length} merged nearby events (${type})`,
+      timestamp: members[0].timestamp,
+      confidence: members.some((m) => m.confidence === "HIGH") ? "HIGH" : members.some((m) => m.confidence === "MEDIUM") ? "MEDIUM" : "LOW",
+      confidence_score: Math.round(members.reduce((s, x) => s + (x.confidence_score || 40), 0) / members.length),
+      observed_facts: [`Clustered ${members.length} nearby events to reduce map clutter.`],
+      model_inference: [],
+    })
+  }
+  return out
+}
+
 function SourceBadge({ source }: { source: string }) {
   const color = SOURCE_COLORS[source] ?? "#808090"
   return (
@@ -105,7 +149,19 @@ function SourceBadge({ source }: { source: string }) {
   )
 }
 
-function IntelCard({ event, isNew, onClick, crisisMode }: { event: IntelEvent; isNew?: boolean; onClick: () => void; crisisMode: boolean }) {
+function IntelCard({
+  event,
+  isNew,
+  onClick,
+  crisisMode,
+  onOpenVideo,
+}: {
+  event: IntelEvent
+  isNew?: boolean
+  onClick: () => void
+  crisisMode: boolean
+  onOpenVideo: (eventId: string, videoUrl: string, title: string) => void
+}) {
   const style = TYPE_STYLES[event.type] ?? TYPE_STYLES.CLASH
   const isCritical = event.type === "CRITICAL"
   const displayDesc = event.desc.replace(/^\[.+?\]\s*/, "")
@@ -127,11 +183,16 @@ function IntelCard({ event, isNew, onClick, crisisMode }: { event: IntelEvent; i
     >
       <div className="flex items-center gap-2 mb-2 flex-wrap">
         <span className="text-[9px] font-bold tracking-[0.15em] px-2 py-0.5 rounded" style={{ background: style.bg, border: `1px solid ${style.border}`, color: style.text }}>
-          {isCritical ? "⚠ CRITICAL" : event.type}
+          {isCritical ? "CRITICAL" : event.type}
         </span>
         <SourceBadge source={sourceTag} />
         {event.video_assessment ? (
           <span className="text-[8px] px-1.5 py-0.5 rounded border border-osint-green/30 text-osint-green">{event.video_assessment}</span>
+        ) : null}
+        {event.confidence ? (
+          <span className="text-[8px] px-1.5 py-0.5 rounded border border-osint-blue/30 text-osint-blue">
+            {event.confidence} {typeof event.confidence_score === "number" ? `(${event.confidence_score})` : ""}
+          </span>
         ) : null}
         <span className="text-[9px] text-muted-foreground tabular-nums ml-auto shrink-0">{event.timestamp ?? "--:--:--Z"}</span>
       </div>
@@ -157,15 +218,15 @@ function IntelCard({ event, isNew, onClick, crisisMode }: { event: IntelEvent; i
         <span className="text-[9px] text-muted-foreground tabular-nums">{event.lat.toFixed(3)}N {event.lng.toFixed(3)}E</span>
         <div className="flex items-center gap-2">
           {videoHref && (
-            <a
-              href={videoHref}
-              target="_blank"
-              rel="noopener noreferrer"
-              onClick={(e) => e.stopPropagation()}
+            <button
               className="text-[9px] text-osint-green hover:text-osint-green/80 underline underline-offset-2"
+              onClick={(e) => {
+                e.stopPropagation()
+                onOpenVideo(event.id, event.video_url || "", displayDesc)
+              }}
             >
-              latest video ↗
-            </a>
+              latest video
+            </button>
           )}
           {event.url && (
             <a
@@ -175,7 +236,7 @@ function IntelCard({ event, isNew, onClick, crisisMode }: { event: IntelEvent; i
               onClick={(e) => e.stopPropagation()}
               className="text-[9px] text-osint-blue hover:text-osint-blue/80 underline underline-offset-2"
             >
-              source ↗
+              source
             </a>
           )}
         </div>
@@ -192,6 +253,7 @@ export function Dashboard() {
   const [wsStatus, setWsStatus] = useState<"connecting" | "live" | "offline">("connecting")
   const [newIds, setNewIds] = useState<Set<string>>(new Set())
   const [crisisMode, setCrisisMode] = useState(false)
+  const [activeVideo, setActiveVideo] = useState<{ eventId: string; videoUrl: string; title: string } | null>(null)
   const seenIdsRef = useRef<Set<string>>(new Set())
   const hasInteractedRef = useRef(false)
 
@@ -220,7 +282,8 @@ export function Dashboard() {
   }, [])
 
   const addEvent = useCallback((evt: IntelEvent, fromBackfill = false) => {
-    if (seenIdsRef.current.has(evt.id)) return
+    if (!isTelegramSource(evt.source)) return
+    if (!evt?.id || seenIdsRef.current.has(evt.id)) return
     seenIdsRef.current.add(evt.id)
     evt.timestamp = evt.timestamp ? new Date(evt.timestamp).toISOString().slice(11, 19) + "Z" : new Date().toISOString().slice(11, 19) + "Z"
 
@@ -240,7 +303,7 @@ export function Dashboard() {
       }), 2000)
 
       if (hasInteractedRef.current && (evt.type === "CRITICAL" || evt.type === "STRIKE")) {
-        playAlertBeep(evt.type as "CRITICAL" | "STRIKE")
+        playAlertBeep(evt.type)
       }
     }
   }, [crisisMode])
@@ -248,13 +311,13 @@ export function Dashboard() {
   useEffect(() => {
     const backfill = async () => {
       try {
-        const res = await fetch(`http://localhost:8000/api/events?limit=${crisisMode ? 140 : 90}`)
+        const res = await fetch(`http://localhost:8000/api/v2/events?limit=${crisisMode ? 160 : 110}`)
         if (res.ok) {
           const data: IntelEvent[] = await res.json()
           seenIdsRef.current.clear()
           setEvents([])
           setHeadlines([])
-          data.forEach((evt) => addEvent(evt, true))
+          data.filter((evt) => isTelegramSource(evt.source)).forEach((evt) => addEvent(evt, true))
         }
       } catch (_) {}
     }
@@ -267,7 +330,7 @@ export function Dashboard() {
 
     const connect = () => {
       try {
-        const wsUrl = (process.env.NEXT_PUBLIC_WS_URL ?? "ws://localhost:8000") + "/ws/live"
+        const wsUrl = (process.env.NEXT_PUBLIC_WS_URL ?? "ws://localhost:8000") + "/ws/live/v2"
         ws = new WebSocket(wsUrl)
         ws.onopen = () => setWsStatus("live")
         ws.onclose = () => {
@@ -279,7 +342,23 @@ export function Dashboard() {
           try {
             const payload = JSON.parse(e.data)
             if (payload.type === "NEW_EVENT") {
-              addEvent(payload.data as IntelEvent)
+              const evt = payload.data as IntelEvent
+              if (isTelegramSource(evt?.source)) addEvent(evt)
+            } else if (payload.type === "NEW_EVENT_DIFF") {
+              const d = payload.data || {}
+              if (!isTelegramSource(d.source)) return
+              addEvent({
+                id: d.id,
+                incident_id: d.incident_id,
+                type: d.type || "CLASH",
+                desc: `[${d.source || "Source"}] update`,
+                source: d.source || "Source",
+                lat: Number(d.lat || 0),
+                lng: Number(d.lng || 0),
+                timestamp: d.timestamp,
+                observed_facts: ["Diff update from ingestion queue"],
+                model_inference: [],
+              })
             } else if (payload.type === "AIRCRAFT_UPDATE") {
               setAircraft(payload.data as Aircraft[])
             }
@@ -321,11 +400,13 @@ export function Dashboard() {
     window.open("https://twitter.com/spectatorindex", "_blank", "noopener,noreferrer")
   }
 
+  const mapEvents = crisisMode ? events : clusterForMap(events)
+
   return (
     <>
       <div className="flex-1 min-w-0 flex flex-col">
         <div className="flex-1 min-h-0 p-2 flex flex-col">
-          <MapArea events={events} onEventClick={handleEventClick} />
+          <MapArea events={mapEvents} onEventClick={handleEventClick} />
         </div>
         <ConflictTimeline events={events} />
       </div>
@@ -350,6 +431,9 @@ export function Dashboard() {
 
         <div className="px-3 pt-3 pb-1">
           <AiAnalyst />
+        </div>
+        <div className="px-3 pt-1 pb-2">
+          <AiChatV2 />
         </div>
 
         <div className="px-3 pb-1 text-[10px] text-muted-foreground">
@@ -382,11 +466,20 @@ export function Dashboard() {
                 isNew={newIds.has(evt.id)}
                 onClick={() => handleEventClick(evt)}
                 crisisMode={crisisMode}
+                onOpenVideo={(eventId, videoUrl, title) => setActiveVideo({ eventId, videoUrl, title })}
               />
             ))}
           </div>
         </ScrollArea>
       </aside>
+
+      <VideoModal
+        open={Boolean(activeVideo)}
+        eventId={activeVideo?.eventId}
+        videoUrl={activeVideo?.videoUrl}
+        title={activeVideo?.title}
+        onClose={() => setActiveVideo(null)}
+      />
 
       <style>{`
         @keyframes flash-in {
@@ -399,5 +492,4 @@ export function Dashboard() {
   )
 }
 
-export { TopBar }
 export function IntelFeed() { return null }
