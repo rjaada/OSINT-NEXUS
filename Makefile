@@ -26,6 +26,7 @@ help:
 	@echo "  make health          Check key HTTP endpoints"
 	@echo "  make analyst         Query /api/analyst once"
 	@echo "  make migrate-pg      Migrate SQLite events into Postgres events_v2"
+	@echo "  make test-auth       Run critical auth/admin backend tests"
 	@echo ""
 	@echo "Kubernetes (Minikube)"
 	@echo "  make k8s-start       Start minikube"
@@ -39,7 +40,7 @@ help:
 	@echo "  make clean           Remove local build artifacts (.next, node_modules, pycache)"
 	@echo "  make clean-docker    Remove compose stack + project containers/images"
 
-.PHONY: build up up-p2 up-ai pull-model start stop down restart ps logs logs-backend logs-frontend logs-ollama health analyst migrate-pg
+.PHONY: build up up-p2 up-ai pull-model start stop down restart ps logs logs-backend logs-frontend logs-ollama health analyst migrate-pg test-auth
 build:
 	$(COMPOSE) build backend frontend
 
@@ -96,6 +97,9 @@ analyst:
 
 migrate-pg:
 	$(COMPOSE) exec -T backend python scripts/migrate_sqlite_to_postgres.py
+
+test-auth:
+	$(COMPOSE) exec -T backend python tests/test_auth_access.py -v
 
 .PHONY: k8s-start k8s-build k8s-deploy k8s-status k8s-pf k8s-stop
 k8s-start:
