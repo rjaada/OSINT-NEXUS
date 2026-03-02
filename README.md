@@ -19,6 +19,34 @@ It is designed for decision support, not for authoritative command-and-control.
 - `v2` is now the primary workspace (`/` redirects to `/v2`).
 - `v1` remains in the codebase but is hidden from the main navigation.
 
+Current engineering focus (feature freeze):
+
+- reliability and auth/session stability,
+- role/access correctness,
+- persistence behavior across restarts,
+- test coverage for critical paths.
+
+## 10-Minute Local Onboarding
+
+```bash
+make up-p2
+make up-ai MODEL=deepseek-r1:8b
+make pull-model MODEL=phi4-mini
+make health
+```
+
+Open:
+
+- Frontend: `http://localhost:3000`
+- Backend: `http://localhost:8000`
+- Login: `http://localhost:3000/login`
+
+Run critical auth/admin tests:
+
+```bash
+make test-auth
+```
+
 UI entry points:
 
 - Root (V2): `http://localhost:3000/`
@@ -244,6 +272,7 @@ make ps
 make logs
 make logs-backend
 make health
+make test-auth
 make down
 ```
 

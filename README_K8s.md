@@ -49,6 +49,13 @@ Optional AI acceleration:
 minikube start --driver=docker --memory=8192
 ```
 
+Fast-path (about 10 minutes after images are built):
+
+1. `make k8s-build`
+2. `make k8s-deploy`
+3. `make k8s-pf`
+4. Open `http://127.0.0.1:3000/login`
+
 ## 2) Build Images into Minikube Docker
 
 ```bash
