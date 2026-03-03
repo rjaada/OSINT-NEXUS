@@ -439,6 +439,59 @@ def auth_user_from_request(request: Request) -> dict:
     return verified
 
 
+def build_auth_card_payload(verified: dict) -> dict:
+    username = str(verified.get("username", "")).strip().lower()
+    role = str(verified.get("role", "viewer")).strip().lower()
+    expires = int(verified.get("expires", 0))
+    sig = str(verified.get("sig", ""))
+    theater = os.getenv("AUTH_CARD_THEATER", "SECTOR-CENTCOM")
+    base = f"{username}|{role}|{expires}|{sig}"
+    session_digest = hashlib.sha256(base.encode("utf-8")).hexdigest()
+    operator_id = f"NX-{session_digest[:4].upper()}-{session_digest[4:8].upper()}"
+    signature_preview = f"{sig[:12]}...{sig[-8:]}" if len(sig) > 24 else sig
+    token_preview = f"{session_digest[:20]}...{session_digest[-12:]}"
+
+    hash_lines: List[str] = []
+    for i in range(7):
+        chain = hmac.new(
+            AUTH_SECRET.encode("utf-8"),
+            f"{base}|{i}".encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+        hash_lines.append(chain)
+
+    bit_source = bin(int(session_digest, 16))[2:].zfill(256)
+    grid_bits = [1 if ch == "1" else 0 for ch in bit_source[:100]]
+    issued_epoch = max(0, expires - AUTH_ACCESS_HOURS * 3600)
+    now_epoch = int(time.time())
+
+    session_state = "verified" if expires > now_epoch else "expired"
+    fingerprint_source = f"{username}|{issued_epoch}|{expires}|{sig[:16]}"
+    fingerprint_digest = hashlib.sha256(fingerprint_source.encode("utf-8")).hexdigest()
+    fingerprint_id = f"FP-{fingerprint_digest[:12].upper()}"
+    audit_source = f"audit|{username}|{role}|{issued_epoch}|{expires}"
+    audit_stamp = hmac.new(AUTH_SECRET.encode("utf-8"), audit_source.encode("utf-8"), hashlib.sha256).hexdigest()[:20].upper()
+
+    return {
+        "username": username,
+        "role": role,
+        "operator_id": operator_id,
+        "theater": theater,
+        "issued_at": datetime.fromtimestamp(issued_epoch, tz=timezone.utc).isoformat(),
+        "expires_at": datetime.fromtimestamp(expires, tz=timezone.utc).isoformat() if expires > 0 else None,
+        "expires_in_sec": max(0, expires - now_epoch),
+        "token_preview": token_preview,
+        "signature_preview": signature_preview,
+        "hash_lines": hash_lines,
+        "grid_bits": grid_bits,
+        "chain_status": session_state,
+        "fingerprint_id": fingerprint_id,
+        "audit_stamp": audit_stamp,
+        "security_grade": "S3" if role == "viewer" else ("S4" if role == "analyst" else "S5"),
+        "generated_at": utc_now_iso(),
+    }
+
+
 def require_admin(request: Request) -> dict:
     verified = auth_user_from_request(request)
     if str(verified.get("role", "")).lower() != "admin":
@@ -2390,6 +2443,12 @@ async def auth_session(request: Request):
         "expires": int(verified.get("expires", 0)),
         "csrf": request.cookies.get("osint_csrf", ""),
     }
+
+
+@app.get("/api/auth/card")
+async def auth_card(request: Request):
+    verified = auth_user_from_request(request)
+    return {"card": build_auth_card_payload(verified)}
 
 
 @app.get("/api/admin/users")

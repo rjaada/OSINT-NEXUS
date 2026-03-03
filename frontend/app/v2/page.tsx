@@ -96,6 +96,18 @@ export default function HomePage() {
             </p>
           </Link>
 
+          <Link
+            href="/v2/card"
+            className="rounded-xl p-6 transition-all hover:bg-white/[0.03]"
+            style={{ background: "rgba(7,8,12,0.92)", border: "1px solid rgba(255,255,255,0.08)" }}
+          >
+            <p className="text-[10px] tracking-[0.18em] uppercase text-osint-blue mb-2">Identity</p>
+            <h2 className="text-xl font-semibold mb-2">My Access Card</h2>
+            <p className="text-sm text-muted-foreground">
+              Interactive 3D operator credential card with live signed chain metadata.
+            </p>
+          </Link>
+
           {role === "admin" ? (
             <Link
               href="/v2/admin"

@@ -192,3 +192,21 @@ body.defcon-1 {
   pointer-events: none;
   z-index: 1;
 }
+
+@keyframes login-holo-shift {
+  0% { background-position: 0% 0%; }
+  100% { background-position: 0% 200%; }
+}
+
+@keyframes login-holo-sweep {
+  0% { transform: translateY(-100%); }
+  100% { transform: translateY(100%); }
+}
+
+.login-holo-shift {
+  animation: login-holo-shift 3s linear infinite;
+}
+
+.login-holo-sweep {
+  animation: login-holo-sweep 2s linear infinite;
+}

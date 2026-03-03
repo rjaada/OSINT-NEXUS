@@ -23,6 +23,7 @@ export function CommandNav() {
         { href: `${prefix}/ar/operations`, label: "العمليات" },
         { href: `${prefix}/ar/alerts`, label: "الإنذارات" },
         { href: `${prefix}/ar/sources`, label: "المصادر" },
+        ...(inV2 ? [{ href: `${prefix}/ar/card`, label: "بطاقة" }] : []),
         ...(inV2 ? [{ href: `${prefix}/ar/health`, label: "الصحة" }] : []),
         ...(inV2 && role === "admin" ? [{ href: `${prefix}/ar/admin`, label: "المشرف" }] : []),
       ]
@@ -32,6 +33,7 @@ export function CommandNav() {
       { href: `${prefix}/operations`, label: "Operations" },
       { href: `${prefix}/alerts`, label: "Alerts" },
       { href: `${prefix}/sources`, label: "Sources" },
+      ...(inV2 ? [{ href: `${prefix}/card`, label: "My Card" }] : []),
       ...(inV2 ? [{ href: `${prefix}/health`, label: "Health" }] : []),
       ...(inV2 && role === "admin" ? [{ href: `${prefix}/admin`, label: "Admin" }] : []),
     ]
