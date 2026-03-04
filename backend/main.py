@@ -4,8 +4,8 @@ OSINT NEXUS — Real-time Intelligence Engine
 
 import asyncio
 import hashlib
+import hmac
 import json
-import math
 import os
 import re
 import secrets
@@ -38,12 +38,43 @@ try:
     from .analyst import generate_analyst_report  # type: ignore
     from . import auth_security as authsec  # type: ignore
     from . import auth_store as authstore  # type: ignore
+    from . import auth_passkey as authpasskey  # type: ignore
+    from . import auth_handlers as authhandlers  # type: ignore
+    from . import mfa_totp  # type: ignore
+    from . import media_hooks  # type: ignore
+    from . import osint_layers  # type: ignore
+    from . import intel_utils as iutils  # type: ignore
+    from . import v2_store  # type: ignore
 except ImportError:
     from analyst import generate_analyst_report
     import auth_security as authsec
     import auth_store as authstore
+    import auth_passkey as authpasskey
+    import auth_handlers as authhandlers
+    import mfa_totp
+    import media_hooks
+    import osint_layers
+    import intel_utils as iutils
+    import v2_store
 
 app = FastAPI(title="OSINT Nexus Engine v3")
+
+try:
+    from webauthn import (
+        generate_authentication_options,
+        generate_registration_options,
+        verify_authentication_response,
+        verify_registration_response,
+    )
+    from webauthn.helpers import base64url_to_bytes, bytes_to_base64url, options_to_json
+    from webauthn.helpers.structs import (
+        PublicKeyCredentialDescriptor,
+        PublicKeyCredentialType,
+        UserVerificationRequirement,
+    )
+    WEBAUTHN_AVAILABLE = True
+except Exception:
+    WEBAUTHN_AVAILABLE = False
 
 CORS_ORIGINS = [x.strip() for x in os.getenv("CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000").split(",") if x.strip()]
 app.add_middleware(
@@ -61,6 +92,7 @@ TELEGRAM_MEDIA_DIR.mkdir(parents=True, exist_ok=True)
 DOWNLOAD_TELEGRAM_MEDIA = os.getenv("DOWNLOAD_TELEGRAM_MEDIA", "true").lower() in ("1", "true", "yes", "on")
 TELEGRAM_LOOKBACK_POSTS = int(os.getenv("TELEGRAM_LOOKBACK_POSTS", "20"))
 TELEGRAM_MAX_NEW_PER_POLL = int(os.getenv("TELEGRAM_MAX_NEW_PER_POLL", "8"))
+TELEGRAM_MAX_MEDIA_MB = int(os.getenv("TELEGRAM_MAX_MEDIA_MB", "60"))
 
 DB_PATH = os.getenv("OSINT_DB_PATH", "/tmp/osint_nexus.db")
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://ollama:11434/api/generate")
@@ -90,6 +122,37 @@ AUTH_RATE_REGISTER_PER_IP = int(os.getenv("AUTH_RATE_REGISTER_PER_IP", "8"))
 ALLOW_INSECURE_DEFAULTS = os.getenv("ALLOW_INSECURE_DEFAULTS", "0").lower() in ("1", "true", "yes", "on")
 OVERLAY_DIR = Path(os.getenv("OVERLAY_DIR", "/tmp/osint_overlays"))
 OVERLAY_DIR.mkdir(parents=True, exist_ok=True)
+
+ENABLE_ADSBLOL = os.getenv("ENABLE_ADSBLOL", "0").lower() in ("1", "true", "yes", "on")
+ADSBLOL_API_URL = os.getenv("ADSBLOL_API_URL", "")
+ADSBLOL_POLL_INTERVAL_SEC = int(os.getenv("ADSBLOL_POLL_INTERVAL_SEC", "10"))
+ENABLE_AISSTREAM = os.getenv("ENABLE_AISSTREAM", "0").lower() in ("1", "true", "yes", "on")
+AISSTREAM_WS_URL = os.getenv("AISSTREAM_WS_URL", "wss://stream.aisstream.io/v0/stream")
+AISSTREAM_API_KEY = os.getenv("AISSTREAM_API_KEY", "")
+AISSTREAM_BBOX = os.getenv("AISSTREAM_BBOX", "30,12,63,40")
+ENABLE_FIRMS = os.getenv("ENABLE_FIRMS", "0").lower() in ("1", "true", "yes", "on")
+FIRMS_MAP_KEY = os.getenv("FIRMS_MAP_KEY", "")
+FIRMS_SOURCE = os.getenv("FIRMS_SOURCE", "VIIRS_SNPP_NRT")
+FIRMS_BBOX = os.getenv("FIRMS_BBOX", "30,12,63,40")
+FIRMS_DAYS = int(os.getenv("FIRMS_DAYS", "1"))
+FIRMS_POLL_INTERVAL_SEC = int(os.getenv("FIRMS_POLL_INTERVAL_SEC", "180"))
+
+WHISPER_HOOK_URL = os.getenv("WHISPER_HOOK_URL", "")
+DEEPFAKE_HOOK_URL = os.getenv("DEEPFAKE_HOOK_URL", "")
+MEDIA_HOOK_TIMEOUT_SEC = int(os.getenv("MEDIA_HOOK_TIMEOUT_SEC", "35"))
+
+AUTH_ENABLE_TOTP = os.getenv("AUTH_ENABLE_TOTP", "1").lower() in ("1", "true", "yes", "on")
+AUTH_TOTP_REQUIRED_ROLES = {
+    r.strip().lower()
+    for r in os.getenv("AUTH_TOTP_REQUIRED_ROLES", "analyst,admin").split(",")
+    if r.strip()
+}
+AUTH_ADMIN_REQUIRE_PASSKEY = os.getenv("AUTH_ADMIN_REQUIRE_PASSKEY", "1").lower() in ("1", "true", "yes", "on")
+AUTH_BREAK_GLASS_CODE = os.getenv("AUTH_BREAK_GLASS_CODE", "")
+PASSKEY_RP_ID = os.getenv("PASSKEY_RP_ID", "localhost")
+PASSKEY_RP_NAME = os.getenv("PASSKEY_RP_NAME", "OSINT Nexus")
+PASSKEY_ORIGINS = [x.strip() for x in os.getenv("PASSKEY_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000").split(",") if x.strip()]
+PASSKEY_CHALLENGE_TTL_SEC = int(os.getenv("PASSKEY_CHALLENGE_TTL_SEC", "180"))
 
 app.mount("/media", StaticFiles(directory=str(MEDIA_DIR)), name="media")
 
@@ -151,10 +214,16 @@ metrics = {
     "telegram_polls": 0,
     "flight_polls": 0,
     "red_alert_polls": 0,
+    "adsblol_polls": 0,
+    "ais_polls": 0,
+    "firms_polls": 0,
     "rss_errors": 0,
     "telegram_errors": 0,
     "flight_errors": 0,
     "red_alert_errors": 0,
+    "adsblol_errors": 0,
+    "ais_errors": 0,
+    "firms_errors": 0,
     "db_writes": 0,
     "dedup_dropped": 0,
     "watchdog_warnings": 0,
@@ -163,6 +232,9 @@ metrics = {
         "telegram": None,
         "flights": None,
         "red_alert": None,
+        "adsblol": None,
+        "ais": None,
+        "firms": None,
     },
 }
 
@@ -186,6 +258,8 @@ _v2_report_state: Dict[str, Any] = {
     "last_event_fp": "",
     "report": None,
 }
+_passkey_reg_challenges: Dict[str, Dict[str, Any]] = {}
+_passkey_auth_challenges: Dict[str, Dict[str, Any]] = {}
 
 
 SOURCE_RELIABILITY = {
@@ -199,6 +273,9 @@ SOURCE_RELIABILITY = {
     "AJ Mubasher (TG)": 60,
     "Roaa War Studies (TG)": 55,
     "FR24-MIL": 65,
+    "ADSB.lol": 68,
+    "AISStream": 66,
+    "NASA FIRMS": 72,
 }
 
 BBOX = "40.0,12.0,30.0,63.0"
@@ -604,7 +681,22 @@ def init_db() -> sqlite3.Connection:
         """
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_revoked_tokens_expires ON revoked_tokens(expires_epoch)")
+    # Backward-compatible schema expansion for optional media hook outputs.
+    for stmt in [
+        "ALTER TABLE media_analysis ADD COLUMN transcript_text TEXT DEFAULT ''",
+        "ALTER TABLE media_analysis ADD COLUMN transcript_language TEXT DEFAULT ''",
+        "ALTER TABLE media_analysis ADD COLUMN transcript_error TEXT DEFAULT ''",
+        "ALTER TABLE media_analysis ADD COLUMN deepfake_score TEXT DEFAULT ''",
+        "ALTER TABLE media_analysis ADD COLUMN deepfake_label TEXT DEFAULT ''",
+        "ALTER TABLE media_analysis ADD COLUMN deepfake_error TEXT DEFAULT ''",
+    ]:
+        try:
+            conn.execute(stmt)
+        except sqlite3.OperationalError:
+            pass
     conn.commit()
+    mfa_totp.ensure_table(conn)
+    authpasskey.ensure_table(conn)
     return conn
 
 
@@ -801,6 +893,27 @@ def run_media_analysis(event: dict) -> dict:
     if not stt_ok:
         stt_lines.append("whisper_unavailable")
 
+    hook_data: Dict[str, Any] = {}
+    hook_data.update(
+        media_hooks.whisper_transcribe(
+            whisper_url=WHISPER_HOOK_URL,
+            media_local_path=local_file,
+            media_remote_url=str(video_url),
+            timeout_sec=MEDIA_HOOK_TIMEOUT_SEC,
+        )
+    )
+    hook_data.update(
+        media_hooks.deepfake_analyze(
+            deepfake_url=DEEPFAKE_HOOK_URL,
+            media_local_path=local_file,
+            media_remote_url=str(video_url),
+            timeout_sec=MEDIA_HOOK_TIMEOUT_SEC,
+        )
+    )
+    transcript = str(hook_data.get("transcript_text", "")).strip()
+    if transcript:
+        stt_lines.insert(0, transcript[:180])
+
     align, note = evaluate_claim_alignment(str(event.get("desc", "")), ocr_lines, stt_lines)
     return {
         "status": status,
@@ -809,6 +922,12 @@ def run_media_analysis(event: dict) -> dict:
         "stt_snippets": stt_lines[:6],
         "claim_alignment": align,
         "credibility_note": note,
+        "transcript_text": str(hook_data.get("transcript_text", "")),
+        "transcript_language": str(hook_data.get("transcript_language", "")),
+        "transcript_error": str(hook_data.get("transcript_error", "")),
+        "deepfake_score": str(hook_data.get("deepfake_score", "")),
+        "deepfake_label": str(hook_data.get("deepfake_label", "")),
+        "deepfake_error": str(hook_data.get("deepfake_error", "")),
     }
 
 
@@ -819,8 +938,9 @@ def persist_media_analysis(event_id: str, data: dict):
         """
         INSERT OR REPLACE INTO media_analysis (
             event_id, status, keyframes_json, ocr_snippets_json, stt_snippets_json,
-            claim_alignment, credibility_note, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            claim_alignment, credibility_note, transcript_text, transcript_language,
+            transcript_error, deepfake_score, deepfake_label, deepfake_error, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             event_id,
@@ -830,6 +950,12 @@ def persist_media_analysis(event_id: str, data: dict):
             json.dumps(data.get("stt_snippets", []), ensure_ascii=False),
             data.get("claim_alignment", "UNVERIFIED_VISUAL"),
             data.get("credibility_note", ""),
+            str(data.get("transcript_text", "")),
+            str(data.get("transcript_language", "")),
+            str(data.get("transcript_error", "")),
+            str(data.get("deepfake_score", "")),
+            str(data.get("deepfake_label", "")),
+            str(data.get("deepfake_error", "")),
             utc_now_iso(),
         ),
     )
@@ -849,6 +975,12 @@ def get_media_analysis(event_id: str) -> dict:
         "stt_snippets": json.loads(row["stt_snippets_json"] or "[]"),
         "claim_alignment": row["claim_alignment"],
         "credibility_note": row["credibility_note"],
+        "transcript_text": str(row["transcript_text"] or ""),
+        "transcript_language": str(row["transcript_language"] or ""),
+        "transcript_error": str(row["transcript_error"] or ""),
+        "deepfake_score": str(row["deepfake_score"] or ""),
+        "deepfake_label": str(row["deepfake_label"] or ""),
+        "deepfake_error": str(row["deepfake_error"] or ""),
         "updated_at": row["updated_at"],
     }
 
@@ -906,33 +1038,7 @@ def source_ops_metrics(window_minutes: int = 120) -> dict:
 
 
 def postgres_status() -> dict:
-    configured = DATABASE_URL.startswith("postgres")
-    if not configured:
-        return {"configured": False, "connected": False, "events_count": None, "error": "DATABASE_URL not set to postgres"}
-    if psycopg is None:
-        return {"configured": True, "connected": False, "events_count": None, "error": "psycopg unavailable"}
-    try:
-        with psycopg.connect(DATABASE_URL, connect_timeout=3) as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS events_v2 (
-                        id TEXT PRIMARY KEY,
-                        type TEXT,
-                        source TEXT,
-                        timestamp TIMESTAMPTZ,
-                        lat DOUBLE PRECISION,
-                        lng DOUBLE PRECISION,
-                        description TEXT,
-                        payload_json JSONB
-                    )
-                    """
-                )
-                cur.execute("SELECT COUNT(*) FROM events_v2")
-                count = int(cur.fetchone()[0])
-                return {"configured": True, "connected": True, "events_count": count, "error": None}
-    except Exception as e:
-        return {"configured": True, "connected": False, "events_count": None, "error": str(e)}
+    return v2_store.postgres_status(DATABASE_URL, psycopg)
 
 
 def ensure_default_admin() -> None:
@@ -949,6 +1055,76 @@ def get_user(username: str) -> Optional[sqlite3.Row]:
     return authstore.get_user(_db, username)
 
 
+def mfa_required_for_role(role: str) -> bool:
+    if not AUTH_ENABLE_TOTP:
+        return False
+    return str(role or "").strip().lower() in AUTH_TOTP_REQUIRED_ROLES
+
+
+def mfa_enabled_for_user(username: str) -> bool:
+    if not AUTH_ENABLE_TOTP:
+        return False
+    return mfa_totp.is_enabled(_db, username.strip().lower())
+
+
+def mfa_verify_user_code(username: str, code: str) -> bool:
+    if not AUTH_ENABLE_TOTP:
+        return True
+    secret = mfa_totp.get_secret(_db, username.strip().lower())
+    if not secret:
+        return False
+    return mfa_totp.verify_code(secret, code)
+
+
+def passkey_count_for_user(username: str) -> int:
+    return authpasskey.count_for_user(_db, username.strip().lower())
+
+
+def admin_password_block_reason(username: str, role: str, break_glass_code: str) -> Optional[str]:
+    if str(role).strip().lower() != "admin":
+        return None
+    if not AUTH_ADMIN_REQUIRE_PASSKEY:
+        return None
+    if AUTH_BREAK_GLASS_CODE and break_glass_code and hmac.compare_digest(AUTH_BREAK_GLASS_CODE, break_glass_code):
+        return None
+    if passkey_count_for_user(username) <= 0:
+        return "Admin passkey is required. Enroll passkey first or use break-glass."
+    return "Admin password login is disabled. Use passkey authentication."
+
+
+def _prune_passkey_challenges() -> None:
+    now = time.time()
+    for bag in (_passkey_reg_challenges, _passkey_auth_challenges):
+        stale = [k for k, v in bag.items() if float(v.get("expires_at", 0)) < now]
+        for k in stale:
+            bag.pop(k, None)
+
+
+def _set_auth_cookies(response: Response, username: str, role: str) -> dict:
+    expiry_dt = datetime.now(timezone.utc) + timedelta(hours=AUTH_ACCESS_HOURS)
+    expires_epoch = int(expiry_dt.timestamp())
+    token = auth_sign(username, role, expires_epoch)
+    csrf_token = secrets.token_urlsafe(24)
+    cookie_expires = expiry_dt.strftime("%a, %d %b %Y %H:%M:%S GMT")
+    for key, value in [
+        ("osint_session", "1"),
+        ("osint_role", role),
+        ("osint_user", username),
+        ("osint_auth", token),
+        ("osint_csrf", csrf_token),
+    ]:
+        response.set_cookie(
+            key=key,
+            value=value,
+            path="/",
+            expires=cookie_expires,
+            httponly=(key == "osint_auth"),
+            samesite="lax",
+            secure=AUTH_COOKIE_SECURE,
+        )
+    return {"ok": True, "username": username, "role": role, "expires_at": expiry_dt.isoformat(), "csrf": csrf_token}
+
+
 class AuthRegisterPayload(BaseModel):
     username: str
     password: str
@@ -958,6 +1134,26 @@ class AuthRegisterPayload(BaseModel):
 class AuthLoginPayload(BaseModel):
     username: str
     password: str
+    mfa_code: Optional[str] = None
+    break_glass_code: Optional[str] = None
+
+
+class AuthTotpCodePayload(BaseModel):
+    code: str
+
+
+class PasskeyUserPayload(BaseModel):
+    username: str
+
+
+class PasskeyRegisterVerifyPayload(BaseModel):
+    credential: Dict[str, Any]
+    label: Optional[str] = None
+
+
+class PasskeyLoginVerifyPayload(BaseModel):
+    username: str
+    credential: Dict[str, Any]
 
 
 class AdminSetRolePayload(BaseModel):
@@ -970,100 +1166,13 @@ class OpsBriefPayload(BaseModel):
 
 
 def persist_event_v2_pg(event: dict):
-    if not DATABASE_URL.startswith("postgres") or psycopg is None:
-        return
-    try:
-        payload = {
-            "incident_id": event.get("incident_id"),
-            "url": event.get("url"),
-            "video_url": event.get("video_url"),
-            "lang": event.get("lang"),
-            "insufficient_evidence": bool(event.get("insufficient_evidence", False)),
-            "observed_facts": event.get("observed_facts", []),
-            "model_inference": event.get("model_inference", []),
-            "confidence_score": int(event.get("confidence_score", 0) or 0),
-            "confidence_reason": event.get("confidence_reason"),
-            "video_assessment": event.get("video_assessment"),
-            "video_confidence": event.get("video_confidence"),
-            "video_clues": event.get("video_clues", []),
-            "source": _extract_source(event),
-            "updated_at": utc_now_iso(),
-        }
-        with psycopg.connect(DATABASE_URL, connect_timeout=3) as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS events_v2 (
-                        id TEXT PRIMARY KEY,
-                        type TEXT,
-                        source TEXT,
-                        timestamp TIMESTAMPTZ,
-                        lat DOUBLE PRECISION,
-                        lng DOUBLE PRECISION,
-                        description TEXT,
-                        payload_json JSONB
-                    )
-                    """
-                )
-                cur.execute(
-                    """
-                    INSERT INTO events_v2 (id, type, source, timestamp, lat, lng, description, payload_json)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb)
-                    ON CONFLICT (id) DO UPDATE SET
-                        type = EXCLUDED.type,
-                        source = EXCLUDED.source,
-                        timestamp = EXCLUDED.timestamp,
-                        lat = EXCLUDED.lat,
-                        lng = EXCLUDED.lng,
-                        description = EXCLUDED.description,
-                        payload_json = EXCLUDED.payload_json
-                    """,
-                    (
-                        str(event.get("id")),
-                        str(event.get("type", "CLASH")),
-                        _extract_source(event),
-                        str(event.get("timestamp") or utc_now_iso()),
-                        float(event.get("lat", 0.0)),
-                        float(event.get("lng", 0.0)),
-                        str(event.get("desc", "")),
-                        json.dumps(payload, ensure_ascii=False),
-                    ),
-                )
-    except Exception:
-        # Keep ingestion non-blocking if Postgres is unavailable.
-        return
-
-
-def _decode_pg_event(row: Any) -> dict:
-    payload = row[7] if isinstance(row[7], dict) else {}
-    if not isinstance(payload, dict):
-        payload = {}
-    ts = row[3]
-    if ts is None:
-        ts_iso = utc_now_iso()
-    else:
-        ts_iso = ts.isoformat() if hasattr(ts, "isoformat") else str(ts)
-    return {
-        "id": row[0],
-        "type": row[1] or "CLASH",
-        "source": row[2] or payload.get("source") or "Unknown",
-        "timestamp": ts_iso,
-        "lat": float(row[4] or 0.0),
-        "lng": float(row[5] or 0.0),
-        "desc": row[6] or "",
-        "incident_id": payload.get("incident_id"),
-        "url": payload.get("url"),
-        "video_url": payload.get("video_url"),
-        "lang": payload.get("lang"),
-        "insufficient_evidence": bool(payload.get("insufficient_evidence", False)),
-        "observed_facts": payload.get("observed_facts", []),
-        "model_inference": payload.get("model_inference", []),
-        "confidence_score": int(payload.get("confidence_score", 0) or 0),
-        "confidence_reason": payload.get("confidence_reason"),
-        "video_assessment": payload.get("video_assessment"),
-        "video_confidence": payload.get("video_confidence"),
-        "video_clues": payload.get("video_clues", []),
-    }
+    v2_store.persist_event_v2_pg(
+        event,
+        database_url=DATABASE_URL,
+        psycopg_mod=psycopg,
+        extract_source=_extract_source,
+        now_iso=utc_now_iso,
+    )
 
 
 def fetch_recent_v2_events_pg(
@@ -1071,99 +1180,38 @@ def fetch_recent_v2_events_pg(
     source_whitelist: Optional[Sequence[str]] = None,
     type_whitelist: Optional[Sequence[str]] = None,
 ) -> List[dict]:
-    if not DATABASE_URL.startswith("postgres") or psycopg is None:
-        return []
-    try:
-        with psycopg.connect(DATABASE_URL, connect_timeout=3) as conn:
-            with conn.cursor() as cur:
-                query = [
-                    "SELECT id, type, source, timestamp, lat, lng, description, payload_json",
-                    "FROM events_v2",
-                    "WHERE 1=1",
-                ]
-                params: List[Any] = []
-                if source_whitelist:
-                    query.append("AND source = ANY(%s)")
-                    params.append(list(source_whitelist))
-                if type_whitelist:
-                    query.append("AND type = ANY(%s)")
-                    params.append(list(type_whitelist))
-                query.append("ORDER BY timestamp DESC")
-                query.append("LIMIT %s")
-                params.append(limit)
-                cur.execute("\n".join(query), tuple(params))
-                rows = cur.fetchall()
-                return [_decode_pg_event(r) for r in rows]
-    except Exception:
-        return []
+    return v2_store.fetch_recent_v2_events_pg(
+        database_url=DATABASE_URL,
+        psycopg_mod=psycopg,
+        now_iso=utc_now_iso,
+        limit=limit,
+        source_whitelist=source_whitelist,
+        type_whitelist=type_whitelist,
+    )
 
 
 def cluster_events_for_map(items: List[dict], zoom_bucket: int = 2) -> List[dict]:
-    clusters: Dict[Tuple[int, int, str], dict] = {}
-    for e in items:
-        lat = float(e.get("lat", 0.0))
-        lng = float(e.get("lng", 0.0))
-        t = str(e.get("type", "CLASH"))
-        k = (int(lat * zoom_bucket), int(lng * zoom_bucket), t)
-        c = clusters.setdefault(k, {"count": 0, "lat_sum": 0.0, "lng_sum": 0.0, "type": t, "members": []})
-        c["count"] += 1
-        c["lat_sum"] += lat
-        c["lng_sum"] += lng
-        c["members"].append(e.get("id"))
-    out = []
-    for key, c in clusters.items():
-        out.append(
-            {
-                "cluster_id": f"cl_{key[0]}_{key[1]}_{key[2]}",
-                "count": c["count"],
-                "lat": c["lat_sum"] / c["count"],
-                "lng": c["lng_sum"] / c["count"],
-                "type": c["type"],
-                "members": c["members"][:40],
-            }
-        )
-    return out
+    return iutils.cluster_events_for_map(items, zoom_bucket=zoom_bucket)
 
 
 def assess_confidence_v2(event: dict, nearby: list, age_min: float) -> Tuple[int, str, List[str]]:
-    base, reason, corroborating = assess_confidence(event, nearby, age_min)
-    # v2 stricter rules:
-    # - single-source CRITICAL events are capped
-    # - weak geolocation reduces score harder
-    if event.get("type") == "CRITICAL" and len(corroborating) == 0:
-        base = min(base, 62)
-    if event.get("insufficient_evidence"):
-        base = max(0, base - 10)
-    if len(corroborating) >= 2:
-        base = min(100, base + 6)
-    return base, reason, corroborating
+    return iutils.assess_confidence_v2(event, nearby, age_min, assess_confidence_fn=assess_confidence)
 
 
 def is_military(callsign: str, icao24: str) -> bool:
-    if not callsign:
-        return False
-    cs = callsign.strip().upper()
-    return any(cs.startswith(p) for p in MILITARY_PREFIXES)
+    return iutils.is_military(callsign, icao24, MILITARY_PREFIXES)
 
 
 def _parse_iso(ts: str) -> datetime:
-    try:
-        return datetime.fromisoformat(ts.replace("Z", "+00:00"))
-    except Exception:
-        return datetime.now(timezone.utc)
+    return iutils.parse_iso(ts, now_iso=utc_now_iso)
 
 
 def _extract_source(event: dict) -> str:
-    desc = str(event.get("desc", ""))
-    m = re.match(r"^\[(.+?)\]", desc)
-    if m:
-        return m.group(1)
-    return str(event.get("source", "Unknown"))
+    return iutils.extract_source(event)
 
 
 def _is_telegram_source(event: dict) -> bool:
-    src = _extract_source(event).strip()
-    return src in TELEGRAM_SOURCE_SET or src.endswith("(TG)")
+    return iutils.is_telegram_source(event, TELEGRAM_SOURCE_SET)
 
 
 def _get_ollama_client() -> httpx.AsyncClient:
@@ -1222,54 +1270,23 @@ async def sync_ollama_runtime_models() -> None:
 
 
 def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    r = 6371.0
-    dlat = math.radians(lat2 - lat1)
-    dlon = math.radians(lon2 - lon1)
-    a = (
-        math.sin(dlat / 2) ** 2
-        + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon / 2) ** 2
-    )
-    return 2 * r * math.asin(math.sqrt(a))
+    return iutils.haversine_km(lat1, lon1, lat2, lon2)
 
 
 def normalize_desc(desc: str) -> str:
-    s = re.sub(r"^\[.+?\]\s*", "", (desc or "").lower())
-    s = re.sub(r"https?://\S+", "", s)
-    s = re.sub(r"[^\w\s\u0600-\u06FF]+", " ", s)
-    s = re.sub(r"\s+", " ", s).strip()
-    return s
+    return iutils.normalize_desc(desc)
 
 
 def article_id(entry) -> str:
-    key = getattr(entry, "link", "") or getattr(entry, "title", "") or str(entry)
-    return hashlib.md5(key.encode()).hexdigest()
+    return iutils.article_id(entry)
 
 
 def classify_event(title: str, summary: str) -> str:
-    text = (title + " " + summary).lower()
-
-    for etype, words in EVENT_TYPE_KEYWORDS_AR.items():
-        if any(w in text for w in words):
-            return etype
-
-    if any(kw in text for kw in ["war", "invasion", "declaration of war", "martial law", "all-out", "nuclear strike"]):
-        return "CRITICAL"
-    if any(kw in text for kw in ["airstrike", "bombed", "strike", "explosion", "blast", "missile", "drone"]):
-        return "STRIKE"
-    if any(kw in text for kw in ["troops", "convoy", "vessel", "fleet", "deploy", "movement", "advance"]):
-        return "MOVEMENT"
-    if any(kw in text for kw in ["airspace", "notam", "flight ban", "restricted", "gps jam", "naval warning"]):
-        return "NOTAM"
-    return "CLASH"
+    return iutils.classify_event(title, summary, EVENT_TYPE_KEYWORDS_AR)
 
 
 def extract_place_candidates(text: str) -> List[str]:
-    t = (text or "").lower()
-    hits = []
-    for p in PLACE_COORDS:
-        if p in t:
-            hits.append(p)
-    return hits
+    return iutils.extract_place_candidates(text, PLACE_COORDS)
 
 
 async def geocode_place(place: str) -> Optional[Tuple[float, float]]:
@@ -1705,6 +1722,10 @@ def download_telegram_video(post_url: str, event_id: str) -> Optional[str]:
         for ext in ("mp4", "webm", "mkv", "mov"):
             candidate = TELEGRAM_MEDIA_DIR / f"{event_id}.{ext}"
             if candidate.exists():
+                size_mb = candidate.stat().st_size / (1024 * 1024)
+                if size_mb > TELEGRAM_MAX_MEDIA_MB:
+                    candidate.unlink(missing_ok=True)
+                    return None
                 return f"/media/telegram/{candidate.name}"
     except Exception:
         return None
@@ -2092,13 +2113,22 @@ async def poll_red_alert():
 def _watchdog_check() -> list:
     warnings = []
     now = datetime.now(timezone.utc)
-    for feed in ["rss", "telegram", "flights", "red_alert"]:
+    feeds = ["rss", "telegram", "flights", "red_alert"]
+    if ENABLE_ADSBLOL:
+        feeds.append("adsblol")
+    if ENABLE_AISSTREAM:
+        feeds.append("ais")
+    if ENABLE_FIRMS and FIRMS_MAP_KEY and FIRMS_BBOX:
+        feeds.append("firms")
+    for feed in feeds:
         ts = metrics["last_success"].get(feed)
         if not ts:
             warnings.append(f"{feed}: no successful poll yet")
             continue
         age = (now - _parse_iso(ts)).total_seconds()
         threshold = 240 if feed in {"rss", "telegram"} else 90
+        if feed == "firms":
+            threshold = max(300, FIRMS_POLL_INTERVAL_SEC * 3)
         if age > threshold:
             warnings.append(f"{feed}: stale ({int(age)}s)")
     metrics["watchdog_warnings"] = len(warnings)
@@ -2160,6 +2190,15 @@ def render_prometheus_metrics() -> str:
         "# HELP osint_red_alert_polls_total Total red alert polling cycles",
         "# TYPE osint_red_alert_polls_total counter",
         f"osint_red_alert_polls_total {metrics.get('red_alert_polls', 0)}",
+        "# HELP osint_adsblol_polls_total Total ADSB.lol polling cycles",
+        "# TYPE osint_adsblol_polls_total counter",
+        f"osint_adsblol_polls_total {metrics.get('adsblol_polls', 0)}",
+        "# HELP osint_ais_polls_total Total AIS stream message cycles",
+        "# TYPE osint_ais_polls_total counter",
+        f"osint_ais_polls_total {metrics.get('ais_polls', 0)}",
+        "# HELP osint_firms_polls_total Total FIRMS polling cycles",
+        "# TYPE osint_firms_polls_total counter",
+        f"osint_firms_polls_total {metrics.get('firms_polls', 0)}",
         "# HELP osint_rss_errors_total Total RSS polling errors",
         "# TYPE osint_rss_errors_total counter",
         f"osint_rss_errors_total {metrics.get('rss_errors', 0)}",
@@ -2172,6 +2211,15 @@ def render_prometheus_metrics() -> str:
         "# HELP osint_red_alert_errors_total Total red alert polling errors",
         "# TYPE osint_red_alert_errors_total counter",
         f"osint_red_alert_errors_total {metrics.get('red_alert_errors', 0)}",
+        "# HELP osint_adsblol_errors_total Total ADSB.lol polling errors",
+        "# TYPE osint_adsblol_errors_total counter",
+        f"osint_adsblol_errors_total {metrics.get('adsblol_errors', 0)}",
+        "# HELP osint_ais_errors_total Total AIS polling errors",
+        "# TYPE osint_ais_errors_total counter",
+        f"osint_ais_errors_total {metrics.get('ais_errors', 0)}",
+        "# HELP osint_firms_errors_total Total FIRMS polling errors",
+        "# TYPE osint_firms_errors_total counter",
+        f"osint_firms_errors_total {metrics.get('firms_errors', 0)}",
     ]
     pg = postgres_status()
     lines.extend(
@@ -2207,6 +2255,42 @@ async def startup_event():
     asyncio.create_task(poll_rss())
     asyncio.create_task(poll_telegram())
     asyncio.create_task(poll_red_alert())
+    asyncio.create_task(
+        osint_layers.poll_adsblol(
+            enabled=ENABLE_ADSBLOL,
+            api_url=ADSBLOL_API_URL,
+            interval_sec=ADSBLOL_POLL_INTERVAL_SEC,
+            metrics=metrics,
+            last_aircraft=last_aircraft,
+            military_prefixes=MILITARY_PREFIXES,
+            now_iso=utc_now_iso,
+            broadcast=manager.broadcast,
+        )
+    )
+    asyncio.create_task(
+        osint_layers.poll_aisstream(
+            enabled=ENABLE_AISSTREAM,
+            ws_url=AISSTREAM_WS_URL,
+            api_key=AISSTREAM_API_KEY,
+            bbox=AISSTREAM_BBOX,
+            metrics=metrics,
+            now_iso=utc_now_iso,
+            broadcast=manager.broadcast,
+        )
+    )
+    asyncio.create_task(
+        osint_layers.poll_firms(
+            enabled=ENABLE_FIRMS,
+            map_key=FIRMS_MAP_KEY,
+            source=FIRMS_SOURCE,
+            bbox=FIRMS_BBOX,
+            days=FIRMS_DAYS,
+            interval_sec=FIRMS_POLL_INTERVAL_SEC,
+            metrics=metrics,
+            now_iso=utc_now_iso,
+            ingest_event=ingest_event,
+        )
+    )
     asyncio.create_task(media_worker())
     print("[OSINT] Engine started — pollers + DB persistence active")
 
@@ -2229,123 +2313,70 @@ async def root():
 
 @app.post("/api/auth/register")
 async def auth_register(payload: AuthRegisterPayload, request: Request):
-    if _db is None:
-        raise HTTPException(status_code=503, detail="Database unavailable")
-    enforce_rate_limit("register_ip", _client_ip(request), AUTH_RATE_REGISTER_PER_IP, AUTH_RATE_WINDOW_SEC)
-    username = payload.username.strip().lower()
-    password = payload.password
-    role = (payload.role or "viewer").strip().lower()
-    if not re.match(r"^[a-z0-9_.-]{3,32}$", username):
-        raise HTTPException(status_code=400, detail="Username must be 3-32 chars [a-z0-9_.-]")
-    password_error = check_password_policy(password)
-    if password_error:
-        raise HTTPException(status_code=400, detail=password_error)
-    if role not in {"viewer", "analyst", "admin"}:
-        raise HTTPException(status_code=400, detail="Invalid role")
-    if get_user(username):
-        raise HTTPException(status_code=409, detail="Username already exists")
-    now = utc_now_iso()
-    authstore.create_user(
-        _db,
-        username=username,
-        password_hash=hash_password(password),
-        role=role,
+    return authhandlers.register_user(
+        db=_db,
+        payload=payload,
+        request=request,
+        enforce_rate_limit=enforce_rate_limit,
+        client_ip=_client_ip,
+        rate_register_per_ip=AUTH_RATE_REGISTER_PER_IP,
+        rate_window_sec=AUTH_RATE_WINDOW_SEC,
+        check_password_policy=check_password_policy,
+        get_user=get_user,
+        hash_password=hash_password,
+        create_user=authstore.create_user,
         now_iso=utc_now_iso,
     )
-    return {"ok": True, "username": username, "role": role, "created_at": now}
 
 
 @app.post("/api/auth/login")
 async def auth_login(payload: AuthLoginPayload, request: Request, response: Response):
-    if _db is None:
-        raise HTTPException(status_code=503, detail="Database unavailable")
-    cleanup_revoked_tokens()
-    ip = _client_ip(request)
-    enforce_rate_limit("login_ip", ip, AUTH_RATE_LOGIN_PER_IP, AUTH_RATE_WINDOW_SEC)
-    username = payload.username.strip().lower()
-    lock_key = f"{username}|{ip}"
-    lock_state = _failed_logins.get(lock_key) or {}
-    lock_until = float(lock_state.get("lock_until", 0))
-    if lock_until > time.time():
-        wait_sec = max(1, int(lock_until - time.time()))
-        raise HTTPException(status_code=429, detail=f"Too many failed attempts. Retry in {wait_sec}s")
-    user = get_user(username)
-    if not user:
-        state = _failed_logins.get(lock_key, {"count": 0, "lock_until": 0.0})
-        state["count"] = int(state.get("count", 0)) + 1
-        if state["count"] >= AUTH_LOGIN_MAX_ATTEMPTS:
-            state["lock_until"] = time.time() + AUTH_LOGIN_LOCK_SEC
-            state["count"] = 0
-        _failed_logins[lock_key] = state
-        raise HTTPException(status_code=401, detail="Invalid credentials")
-    if not verify_password(payload.password, str(user["password_hash"])):
-        state = _failed_logins.get(lock_key, {"count": 0, "lock_until": 0.0})
-        state["count"] = int(state.get("count", 0)) + 1
-        if state["count"] >= AUTH_LOGIN_MAX_ATTEMPTS:
-            state["lock_until"] = time.time() + AUTH_LOGIN_LOCK_SEC
-            state["count"] = 0
-        _failed_logins[lock_key] = state
-        raise HTTPException(status_code=401, detail="Invalid credentials")
-    _failed_logins.pop(lock_key, None)
-    role = str(user["role"])
-    expiry_dt = datetime.now(timezone.utc) + timedelta(hours=AUTH_ACCESS_HOURS)
-    expires_epoch = int(expiry_dt.timestamp())
-    token = auth_sign(username, role, expires_epoch)
-    csrf_token = secrets.token_urlsafe(24)
-    cookie_expires = expiry_dt.strftime("%a, %d %b %Y %H:%M:%S GMT")
-    for key, value in [
-        ("osint_session", "1"),
-        ("osint_role", role),
-        ("osint_user", username),
-        ("osint_auth", token),
-        ("osint_csrf", csrf_token),
-    ]:
-        response.set_cookie(
-            key=key,
-            value=value,
-            path="/",
-            expires=cookie_expires,
-            httponly=(key == "osint_auth"),
-            samesite="lax",
-            secure=AUTH_COOKIE_SECURE,
-        )
-    return {"ok": True, "username": username, "role": role, "expires_at": expiry_dt.isoformat(), "csrf": csrf_token}
+    return authhandlers.login_user(
+        db=_db,
+        payload=payload,
+        request=request,
+        response=response,
+        cleanup_revoked_tokens=cleanup_revoked_tokens,
+        client_ip=_client_ip,
+        enforce_rate_limit=enforce_rate_limit,
+        rate_login_per_ip=AUTH_RATE_LOGIN_PER_IP,
+        rate_window_sec=AUTH_RATE_WINDOW_SEC,
+        failed_logins=_failed_logins,
+        login_max_attempts=AUTH_LOGIN_MAX_ATTEMPTS,
+        login_lock_sec=AUTH_LOGIN_LOCK_SEC,
+        get_user=get_user,
+        verify_password=verify_password,
+        access_hours=AUTH_ACCESS_HOURS,
+        auth_sign=auth_sign,
+        auth_cookie_secure=AUTH_COOKIE_SECURE,
+        mfa_required_for_role=mfa_required_for_role,
+        mfa_enabled_for_user=mfa_enabled_for_user,
+        mfa_verify_user_code=mfa_verify_user_code,
+        admin_password_block_reason=admin_password_block_reason,
+    )
 
 
 @app.post("/api/auth/logout")
 async def auth_logout(request: Request, response: Response):
-    enforce_csrf(request)
-    token = request.cookies.get("osint_auth") or ""
-    verified = auth_verify(token) if token else None
-    if verified:
-        authstore.revoke_token(
-            _db,
-            sig=str(verified.get("sig", "")),
-            expires_epoch=int(verified.get("expires", 0)),
-            now_iso=utc_now_iso,
-        )
-    for key in ["osint_session", "osint_role", "osint_user", "osint_auth", "osint_csrf"]:
-        response.delete_cookie(key=key, path="/", samesite="lax", secure=AUTH_COOKIE_SECURE)
-    return {"ok": True}
+    return authhandlers.logout_user(
+        request=request,
+        response=response,
+        enforce_csrf=enforce_csrf,
+        auth_verify=auth_verify,
+        revoke_token=authstore.revoke_token,
+        db=_db,
+        now_iso=utc_now_iso,
+        auth_cookie_secure=AUTH_COOKIE_SECURE,
+    )
 
 
 @app.get("/api/auth/session")
 async def auth_session(request: Request):
-    token = request.cookies.get("osint_auth") or ""
-    if not token:
-        return {"authenticated": False}
-    verified = auth_verify(token)
-    if not verified:
-        return {"authenticated": False}
-    if is_token_revoked(str(verified.get("sig", ""))):
-        return {"authenticated": False}
-    return {
-        "authenticated": True,
-        "username": str(verified.get("username", "")),
-        "role": str(verified.get("role", "")),
-        "expires": int(verified.get("expires", 0)),
-        "csrf": request.cookies.get("osint_csrf", ""),
-    }
+    return authhandlers.session_user(
+        request=request,
+        auth_verify=auth_verify,
+        is_token_revoked=is_token_revoked,
+    )
 
 
 @app.get("/api/auth/card")
@@ -2354,18 +2385,262 @@ async def auth_card(request: Request):
     return {"card": build_auth_card_payload(verified)}
 
 
+@app.get("/api/auth/mfa/totp/status")
+async def auth_mfa_totp_status(request: Request):
+    verified = auth_user_from_request(request)
+    username = str(verified.get("username", "")).strip().lower()
+    role = str(verified.get("role", "viewer")).strip().lower()
+    return {
+        "enabled": mfa_enabled_for_user(username),
+        "required_for_role": mfa_required_for_role(role),
+        "role": role,
+        "method": "totp",
+    }
+
+
+@app.post("/api/auth/mfa/totp/setup")
+async def auth_mfa_totp_setup(request: Request):
+    enforce_csrf(request)
+    verified = auth_user_from_request(request)
+    username = str(verified.get("username", "")).strip().lower()
+    if not AUTH_ENABLE_TOTP:
+        raise HTTPException(status_code=400, detail="TOTP is disabled by configuration")
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    secret = mfa_totp.create_or_rotate_secret(_db, username, utc_now_iso())
+    uri = f"otpauth://totp/OSINT%20Nexus:{username}?secret={secret}&issuer=OSINT%20Nexus"
+    audit_log(
+        "auth.mfa.totp.setup",
+        actor=username,
+        role=str(verified.get("role", "viewer")),
+        payload={"enabled": False},
+        target_id=username,
+    )
+    return {"secret": secret, "otpauth_uri": uri, "enabled": False}
+
+
+@app.post("/api/auth/mfa/totp/enable")
+async def auth_mfa_totp_enable(payload: AuthTotpCodePayload, request: Request):
+    enforce_csrf(request)
+    verified = auth_user_from_request(request)
+    username = str(verified.get("username", "")).strip().lower()
+    if not AUTH_ENABLE_TOTP:
+        raise HTTPException(status_code=400, detail="TOTP is disabled by configuration")
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    secret = mfa_totp.get_secret(_db, username)
+    if not secret:
+        raise HTTPException(status_code=400, detail="Setup required before enabling TOTP")
+    if not mfa_totp.verify_code(secret, payload.code):
+        raise HTTPException(status_code=400, detail="Invalid TOTP code")
+    mfa_totp.enable_totp(_db, username, utc_now_iso())
+    audit_log(
+        "auth.mfa.totp.enable",
+        actor=username,
+        role=str(verified.get("role", "viewer")),
+        payload={"enabled": True},
+        target_id=username,
+    )
+    return {"ok": True, "enabled": True}
+
+
+@app.post("/api/auth/mfa/totp/disable")
+async def auth_mfa_totp_disable(request: Request):
+    enforce_csrf(request)
+    verified = auth_user_from_request(request)
+    username = str(verified.get("username", "")).strip().lower()
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    mfa_totp.disable_totp(_db, username, utc_now_iso())
+    audit_log(
+        "auth.mfa.totp.disable",
+        actor=username,
+        role=str(verified.get("role", "viewer")),
+        payload={"enabled": False},
+        target_id=username,
+    )
+    return {"ok": True, "enabled": False}
+
+
+@app.post("/api/auth/passkey/register/options")
+async def auth_passkey_register_options(request: Request):
+    if not WEBAUTHN_AVAILABLE:
+        raise HTTPException(status_code=503, detail="Passkey support unavailable on server")
+    enforce_csrf(request)
+    verified = auth_user_from_request(request)
+    username = str(verified.get("username", "")).strip().lower()
+    existing = authpasskey.list_for_user(_db, username)
+    exclude = [
+        PublicKeyCredentialDescriptor(
+            id=base64url_to_bytes(str(x.get("credential_id", ""))),
+            type=PublicKeyCredentialType.PUBLIC_KEY,
+        )
+        for x in existing
+        if str(x.get("credential_id", "")).strip()
+    ]
+    options = generate_registration_options(
+        rp_id=PASSKEY_RP_ID,
+        rp_name=PASSKEY_RP_NAME,
+        user_name=username,
+        user_id=username.encode("utf-8"),
+        user_display_name=username,
+        exclude_credentials=exclude,
+        authenticator_selection=None,
+    )
+    _prune_passkey_challenges()
+    _passkey_reg_challenges[username] = {
+        "challenge": options.challenge,
+        "expires_at": time.time() + PASSKEY_CHALLENGE_TTL_SEC,
+    }
+    return {"options": json.loads(options_to_json(options))}
+
+
+@app.get("/api/auth/passkey/status")
+async def auth_passkey_status(request: Request):
+    verified = auth_user_from_request(request)
+    username = str(verified.get("username", "")).strip().lower()
+    role = str(verified.get("role", "viewer")).strip().lower()
+    return {
+        "enabled": passkey_count_for_user(username) > 0,
+        "count": passkey_count_for_user(username),
+        "required_for_role": role == "admin" and AUTH_ADMIN_REQUIRE_PASSKEY,
+    }
+
+
+@app.post("/api/auth/passkey/register/verify")
+async def auth_passkey_register_verify(payload: PasskeyRegisterVerifyPayload, request: Request):
+    if not WEBAUTHN_AVAILABLE:
+        raise HTTPException(status_code=503, detail="Passkey support unavailable on server")
+    enforce_csrf(request)
+    verified = auth_user_from_request(request)
+    username = str(verified.get("username", "")).strip().lower()
+    _prune_passkey_challenges()
+    ch = _passkey_reg_challenges.get(username)
+    if not ch:
+        raise HTTPException(status_code=400, detail="Passkey registration challenge expired")
+    try:
+        vr = verify_registration_response(
+            credential=payload.credential,
+            expected_challenge=ch["challenge"],
+            expected_rp_id=PASSKEY_RP_ID,
+            expected_origin=PASSKEY_ORIGINS,
+            require_user_verification=True,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Passkey registration failed: {e}")
+    cred_id_b64 = bytes_to_base64url(vr.credential_id)
+    pub_b64 = bytes_to_base64url(vr.credential_public_key)
+    authpasskey.upsert_passkey(
+        _db,
+        username=username,
+        credential_id=cred_id_b64,
+        public_key_b64=pub_b64,
+        sign_count=int(vr.sign_count),
+        label=str(payload.label or "primary"),
+        now_iso=utc_now_iso(),
+    )
+    _passkey_reg_challenges.pop(username, None)
+    audit_log(
+        "auth.passkey.register",
+        actor=username,
+        role=str(verified.get("role", "viewer")),
+        payload={"credential_id": cred_id_b64[:14] + "..."},
+        target_id=username,
+    )
+    return {"ok": True, "credential_id": cred_id_b64}
+
+
+@app.post("/api/auth/passkey/login/options")
+async def auth_passkey_login_options(payload: PasskeyUserPayload):
+    if not WEBAUTHN_AVAILABLE:
+        raise HTTPException(status_code=503, detail="Passkey support unavailable on server")
+    username = payload.username.strip().lower()
+    user = get_user(username)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    if str(user["role"]).strip().lower() != "admin":
+        raise HTTPException(status_code=403, detail="Passkey login is currently required for admin users")
+    creds = authpasskey.list_for_user(_db, username)
+    if not creds:
+        raise HTTPException(status_code=400, detail="No passkey enrolled for this account")
+    allow = [
+        PublicKeyCredentialDescriptor(
+            id=base64url_to_bytes(str(c.get("credential_id", ""))),
+            type=PublicKeyCredentialType.PUBLIC_KEY,
+        )
+        for c in creds
+    ]
+    options = generate_authentication_options(
+        rp_id=PASSKEY_RP_ID,
+        allow_credentials=allow,
+        user_verification=UserVerificationRequirement.REQUIRED,
+    )
+    _prune_passkey_challenges()
+    _passkey_auth_challenges[username] = {
+        "challenge": options.challenge,
+        "expires_at": time.time() + PASSKEY_CHALLENGE_TTL_SEC,
+    }
+    return {"options": json.loads(options_to_json(options))}
+
+
+@app.post("/api/auth/passkey/login/verify")
+async def auth_passkey_login_verify(payload: PasskeyLoginVerifyPayload, response: Response):
+    if not WEBAUTHN_AVAILABLE:
+        raise HTTPException(status_code=503, detail="Passkey support unavailable on server")
+    username = payload.username.strip().lower()
+    user = get_user(username)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    role = str(user["role"]).strip().lower()
+    if role != "admin":
+        raise HTTPException(status_code=403, detail="Passkey login is currently required for admin users")
+    _prune_passkey_challenges()
+    ch = _passkey_auth_challenges.get(username)
+    if not ch:
+        raise HTTPException(status_code=400, detail="Passkey authentication challenge expired")
+
+    cred_id = str(payload.credential.get("id") or "").strip()
+    row = authpasskey.get_by_credential_id(_db, cred_id)
+    if not row or str(row.get("username", "")).strip().lower() != username:
+        raise HTTPException(status_code=401, detail="Unknown passkey")
+    try:
+        va = verify_authentication_response(
+            credential=payload.credential,
+            expected_challenge=ch["challenge"],
+            expected_rp_id=PASSKEY_RP_ID,
+            expected_origin=PASSKEY_ORIGINS,
+            credential_public_key=base64url_to_bytes(str(row.get("public_key_b64", ""))),
+            credential_current_sign_count=int(row.get("sign_count") or 0),
+            require_user_verification=True,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=401, detail=f"Passkey verification failed: {e}")
+    authpasskey.update_sign_count(
+        _db,
+        credential_id=cred_id,
+        sign_count=int(va.new_sign_count),
+        now_iso=utc_now_iso(),
+    )
+    _passkey_auth_challenges.pop(username, None)
+    audit_log(
+        "auth.passkey.login",
+        actor=username,
+        role=role,
+        payload={"credential_id": cred_id[:14] + "..."},
+        target_id=username,
+    )
+    return _set_auth_cookies(response, username, role)
+
+
 @app.get("/api/admin/users")
 async def admin_list_users(request: Request):
     actor = require_admin(request)
-    try:
-        items = authstore.list_users(_db)
-    except RuntimeError:
-        raise HTTPException(status_code=503, detail="Database unavailable")
-    return {
-        "items": items,
-        "actor": str(actor.get("username", "")),
-        "generated_at": utc_now_iso(),
-    }
+    return authhandlers.admin_list_users(
+        actor=actor,
+        list_users=authstore.list_users,
+        db=_db,
+        now_iso=utc_now_iso,
+    )
 
 
 @app.patch("/api/admin/users/{username}/role")
@@ -2374,33 +2649,15 @@ async def admin_set_user_role(username: str, payload: AdminSetRolePayload, reque
     actor = require_admin(request)
     if _db is None:
         raise HTTPException(status_code=503, detail="Database unavailable")
-    target = username.strip().lower()
-    if not re.match(r"^[a-z0-9_.-]{3,32}$", target):
-        raise HTTPException(status_code=400, detail="Invalid username")
-    next_role = str(payload.role or "").strip().lower()
-    if next_role not in {"viewer", "analyst", "admin"}:
-        raise HTTPException(status_code=400, detail="Invalid role")
-    try:
-        result = authstore.set_user_role(_db, username=target, next_role=next_role, now_iso=utc_now_iso)
-    except LookupError:
-        raise HTTPException(status_code=404, detail="User not found")
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-    audit_log(
-        "admin.role.set",
-        str(actor.get("username", "")),
-        str(actor.get("role", "admin")),
-        {"username": result["username"], "from": result["from"], "to": result["to"]},
-        target_id=target,
+    return authhandlers.admin_set_role(
+        username=username,
+        role=payload.role,
+        actor=actor,
+        db=_db,
+        now_iso=utc_now_iso,
+        set_user_role=authstore.set_user_role,
+        audit_log=audit_log,
     )
-    return {
-        "ok": True,
-        "username": result["username"],
-        "role": result["to"],
-        "updated_at": result["updated_at"],
-        "updated_by": str(actor.get("username", "")),
-    }
 
 
 @app.delete("/api/admin/users/{username}")
@@ -2409,36 +2666,14 @@ async def admin_delete_user(username: str, request: Request):
     actor = require_admin(request)
     if _db is None:
         raise HTTPException(status_code=503, detail="Database unavailable")
-    target = username.strip().lower()
-    if not re.match(r"^[a-z0-9_.-]{3,32}$", target):
-        raise HTTPException(status_code=400, detail="Invalid username")
-
-    actor_username = str(actor.get("username", "")).strip().lower()
-    try:
-        result = authstore.delete_user(
-            _db,
-            username=target,
-            actor_username=actor_username,
-            now_iso=utc_now_iso,
-        )
-    except LookupError:
-        raise HTTPException(status_code=404, detail="User not found")
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-    audit_log(
-        "admin.user.delete",
-        str(actor.get("username", "")),
-        str(actor.get("role", "admin")),
-        {"username": result["username"], "role": result["role"]},
-        target_id=target,
+    return authhandlers.admin_delete(
+        username=username,
+        actor=actor,
+        db=_db,
+        now_iso=utc_now_iso,
+        delete_user=authstore.delete_user,
+        audit_log=audit_log,
     )
-    return {
-        "ok": True,
-        "username": result["username"],
-        "deleted_at": result["deleted_at"],
-        "deleted_by": str(actor.get("username", "")),
-    }
 
 
 @app.get("/api/health")
@@ -2611,6 +2846,44 @@ def _safe_v2_report(message: str) -> Dict[str, Any]:
     }
 
 
+def build_event_graph(items: List[dict]) -> dict:
+    nodes: Dict[str, dict] = {}
+    edges: Dict[str, dict] = {}
+
+    def _node(node_id: str, label: str, kind: str) -> None:
+        if node_id not in nodes:
+            nodes[node_id] = {"id": node_id, "label": label, "kind": kind}
+
+    for e in items:
+        event_id = str(e.get("id") or "")
+        if not event_id:
+            continue
+        incident_id = str(e.get("incident_id") or "")
+        source = _extract_source(e)
+        etype = str(e.get("type") or "UNKNOWN")
+        _node(f"event:{event_id}", event_id, "event")
+        _node(f"type:{etype}", etype, "type")
+        _node(f"source:{source}", source, "source")
+        if incident_id:
+            _node(f"incident:{incident_id}", incident_id, "incident")
+
+        links = [
+            (f"event:{event_id}", f"type:{etype}", "classified_as"),
+            (f"event:{event_id}", f"source:{source}", "reported_by"),
+        ]
+        if incident_id:
+            links.append((f"event:{event_id}", f"incident:{incident_id}", "part_of"))
+
+        for src, dst, rel in links:
+            key = f"{src}|{rel}|{dst}"
+            if key not in edges:
+                edges[key] = {"source": src, "target": dst, "relation": rel, "weight": 1}
+            else:
+                edges[key]["weight"] += 1
+
+    return {"nodes": list(nodes.values()), "edges": list(edges.values())}
+
+
 @app.get("/api/v2/ai/policy")
 async def v2_ai_policy():
     return _v2_ai_scheduler.status()
@@ -2737,6 +3010,15 @@ BODY: {body}
         "model": V2_MODEL_VERIFY,
         "generated_at": utc_now_iso(),
     }
+
+
+@app.get("/api/v2/graph")
+async def v2_event_graph(limit: int = 350):
+    safe_limit = min(max(limit, 30), 1500)
+    rows = fetch_recent_v2_events_pg(limit=safe_limit)
+    if not rows:
+        rows = events_history[-safe_limit:]
+    return build_event_graph(rows)
 
 
 @app.post("/api/media/consume")

@@ -23,6 +23,7 @@ class AuthAccessTests(unittest.TestCase):
         os.environ["OSINT_DB_PATH"] = str(Path(cls.tmp.name) / "auth_test.db")
         os.environ["AUTH_DEFAULT_ADMIN_USER"] = "admin"
         os.environ["AUTH_DEFAULT_ADMIN_PASSWORD"] = "AdminPass123!"
+        os.environ["AUTH_ADMIN_REQUIRE_PASSKEY"] = "0"
         global backend_main
         backend_main = importlib.reload(backend_main)
         backend_main.app.router.on_startup.clear()
@@ -127,6 +128,31 @@ class AuthAccessTests(unittest.TestCase):
             headers={"x-csrf-token": csrf},
         )
         self.assertEqual(delete_self.status_code, 400)
+
+    def test_admin_password_requires_passkey_or_break_glass(self):
+        prev_require = backend_main.AUTH_ADMIN_REQUIRE_PASSKEY
+        prev_break = backend_main.AUTH_BREAK_GLASS_CODE
+        backend_main.AUTH_ADMIN_REQUIRE_PASSKEY = True
+        backend_main.AUTH_BREAK_GLASS_CODE = "emergency-123"
+        try:
+            blocked = self.client.post(
+                "/api/auth/login",
+                json={"username": "admin", "password": "AdminPass123!"},
+            )
+            self.assertEqual(blocked.status_code, 401)
+
+            allowed = self.client.post(
+                "/api/auth/login",
+                json={
+                    "username": "admin",
+                    "password": "AdminPass123!",
+                    "break_glass_code": "emergency-123",
+                },
+            )
+            self.assertEqual(allowed.status_code, 200)
+        finally:
+            backend_main.AUTH_ADMIN_REQUIRE_PASSKEY = prev_require
+            backend_main.AUTH_BREAK_GLASS_CODE = prev_break
 
 
 if __name__ == "__main__":
