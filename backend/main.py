@@ -19,6 +19,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import Lock
 from typing import Any, Dict, List, Optional, Sequence, Tuple
+from urllib.parse import urlparse
 
 import feedparser
 import httpx
@@ -72,9 +73,9 @@ GEOCODE_URL = os.getenv("GEOCODE_URL", "https://nominatim.openstreetmap.org/sear
 V2_API_KEY = os.getenv("V2_API_KEY", "")
 STORAGE_BACKEND = "postgres" if os.getenv("DATABASE_URL", "").startswith("postgres") else "sqlite"
 DATABASE_URL = os.getenv("DATABASE_URL", "")
-AUTH_SECRET = os.getenv("AUTH_SECRET", "dev-change-me")
+AUTH_SECRET = os.getenv("AUTH_SECRET", "")
 AUTH_DEFAULT_ADMIN_USER = os.getenv("AUTH_DEFAULT_ADMIN_USER", "admin")
-AUTH_DEFAULT_ADMIN_PASSWORD = os.getenv("AUTH_DEFAULT_ADMIN_PASSWORD", "osint123")
+AUTH_DEFAULT_ADMIN_PASSWORD = os.getenv("AUTH_DEFAULT_ADMIN_PASSWORD", "")
 AUTH_COOKIE_SECURE = os.getenv("AUTH_COOKIE_SECURE", "0").lower() in ("1", "true", "yes", "on")
 AUTH_ACCESS_HOURS = int(os.getenv("AUTH_ACCESS_HOURS", "8"))
 AUTH_LOGIN_MAX_ATTEMPTS = int(os.getenv("AUTH_LOGIN_MAX_ATTEMPTS", "5"))
@@ -82,6 +83,7 @@ AUTH_LOGIN_LOCK_SEC = int(os.getenv("AUTH_LOGIN_LOCK_SEC", "300"))
 AUTH_RATE_WINDOW_SEC = int(os.getenv("AUTH_RATE_WINDOW_SEC", "60"))
 AUTH_RATE_LOGIN_PER_IP = int(os.getenv("AUTH_RATE_LOGIN_PER_IP", "20"))
 AUTH_RATE_REGISTER_PER_IP = int(os.getenv("AUTH_RATE_REGISTER_PER_IP", "8"))
+ALLOW_INSECURE_DEFAULTS = os.getenv("ALLOW_INSECURE_DEFAULTS", "0").lower() in ("1", "true", "yes", "on")
 OVERLAY_DIR = Path(os.getenv("OVERLAY_DIR", "/tmp/osint_overlays"))
 OVERLAY_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -390,6 +392,44 @@ def check_password_policy(password: str) -> Optional[str]:
     return None
 
 
+def _is_local_origin(origin: str) -> bool:
+    try:
+        parsed = urlparse(origin)
+        host = (parsed.hostname or "").lower()
+        return host in {"localhost", "127.0.0.1"}
+    except Exception:
+        return False
+
+
+def _is_local_dev_mode() -> bool:
+    if not CORS_ORIGINS:
+        return False
+    return all(_is_local_origin(o) for o in CORS_ORIGINS)
+
+
+def validate_security_config() -> None:
+    insecure_reasons: List[str] = []
+    blocked_secrets = {"", "dev-change-me", "change-me", "secret", "osint"}
+    if AUTH_SECRET.strip() in blocked_secrets or len(AUTH_SECRET.strip()) < 32:
+        insecure_reasons.append("AUTH_SECRET must be set and at least 32 chars (non-default)")
+    password_error = check_password_policy(AUTH_DEFAULT_ADMIN_PASSWORD or "")
+    if password_error:
+        insecure_reasons.append(f"AUTH_DEFAULT_ADMIN_PASSWORD invalid: {password_error}")
+    if not AUTH_COOKIE_SECURE and not _is_local_dev_mode():
+        insecure_reasons.append("AUTH_COOKIE_SECURE must be enabled outside local localhost dev mode")
+
+    if insecure_reasons and not ALLOW_INSECURE_DEFAULTS:
+        raise RuntimeError(
+            "Security configuration invalid: "
+            + "; ".join(insecure_reasons)
+            + ". For local-only experiments you may set ALLOW_INSECURE_DEFAULTS=1."
+        )
+    if insecure_reasons and ALLOW_INSECURE_DEFAULTS:
+        print("[SECURITY][WARNING] Insecure configuration allowed via ALLOW_INSECURE_DEFAULTS=1")
+        for reason in insecure_reasons:
+            print(f"[SECURITY][WARNING] {reason}")
+
+
 def _client_ip(request: Request) -> str:
     forwarded = request.headers.get("x-forwarded-for", "").strip()
     if forwarded:
@@ -436,6 +476,18 @@ def auth_user_from_request(request: Request) -> dict:
         raise HTTPException(status_code=401, detail="Authentication required")
     if is_token_revoked(str(verified.get("sig", ""))):
         raise HTTPException(status_code=401, detail="Session revoked")
+    return verified
+
+
+def auth_user_from_websocket(websocket: WebSocket) -> Optional[dict]:
+    token = websocket.cookies.get("osint_auth") or websocket.query_params.get("token", "")
+    if not token:
+        return None
+    verified = auth_verify(token)
+    if not verified:
+        return None
+    if is_token_revoked(str(verified.get("sig", ""))):
+        return None
     return verified
 
 
@@ -2289,6 +2341,7 @@ def render_prometheus_metrics() -> str:
 async def startup_event():
     global _start_time, _db, _ollama_http_client, _geocode_http_client
     _start_time = time.time()
+    validate_security_config()
     _db = init_db()
     _ollama_http_client = httpx.AsyncClient(timeout=30)
     _geocode_http_client = httpx.AsyncClient(
@@ -3526,6 +3579,9 @@ async def metrics_endpoint():
 
 @app.websocket("/ws/live/v2")
 async def ws_endpoint_v2(websocket: WebSocket):
+    if not auth_user_from_websocket(websocket):
+        await websocket.close(code=1008, reason="Authentication required")
+        return
     await manager.connect(websocket)
     try:
         await websocket.send_text(
@@ -3544,6 +3600,9 @@ async def ws_endpoint_v2(websocket: WebSocket):
 
 @app.websocket("/ws/live")
 async def ws_endpoint(websocket: WebSocket):
+    if not auth_user_from_websocket(websocket):
+        await websocket.close(code=1008, reason="Authentication required")
+        return
     await manager.connect(websocket)
     try:
         await websocket.send_text(json.dumps({

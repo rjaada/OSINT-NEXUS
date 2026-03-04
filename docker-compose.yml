@@ -20,8 +20,13 @@ services:
     environment:
       - REDIS_URL=redis://redis:6379
       - GROQ_API_KEY=${GROQ_API_KEY:-}
-      - DATABASE_URL=${DATABASE_URL:-postgresql://osint:osint@postgres:5432/osint}
+      - DATABASE_URL=${DATABASE_URL:-postgresql://osint:${POSTGRES_PASSWORD:-change-me-postgres-password}@postgres:5432/osint}
       - OSINT_DB_PATH=/data/osint_nexus.db
+      - AUTH_SECRET=${AUTH_SECRET:-replace-with-min-32-char-random-secret}
+      - AUTH_DEFAULT_ADMIN_USER=${AUTH_DEFAULT_ADMIN_USER:-admin}
+      - AUTH_DEFAULT_ADMIN_PASSWORD=${AUTH_DEFAULT_ADMIN_PASSWORD:-Admin!ChangeMe123}
+      - AUTH_COOKIE_SECURE=${AUTH_COOKIE_SECURE:-0}
+      - ALLOW_INSECURE_DEFAULTS=${ALLOW_INSECURE_DEFAULTS:-0}
     depends_on:
       - redis
       - postgres
@@ -52,7 +57,7 @@ services:
     environment:
       - POSTGRES_DB=osint
       - POSTGRES_USER=osint
-      - POSTGRES_PASSWORD=osint
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-change-me-postgres-password}
     ports:
       - "5432:5432"
     volumes:

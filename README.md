@@ -230,6 +230,7 @@ Important variables:
 - `AUTH_DEFAULT_ADMIN_USER`
 - `AUTH_DEFAULT_ADMIN_PASSWORD`
 - `AUTH_COOKIE_SECURE` (`1/true` in HTTPS deployments)
+- `ALLOW_INSECURE_DEFAULTS` (optional, local-only bypass; do **not** use in production)
 - `CORS_ORIGINS` (comma-separated)
 
 Telegram/media tuning:
@@ -237,6 +238,15 @@ Telegram/media tuning:
 - `DOWNLOAD_TELEGRAM_MEDIA`
 - `TELEGRAM_LOOKBACK_POSTS`
 - `TELEGRAM_MAX_NEW_PER_POLL`
+
+Security startup checks:
+
+- Backend now validates auth security configuration at startup.
+- It will fail startup if:
+  - `AUTH_SECRET` is missing/weak/default
+  - `AUTH_DEFAULT_ADMIN_PASSWORD` fails policy
+  - `AUTH_COOKIE_SECURE` is disabled outside localhost-only dev mode
+- Local-only override exists via `ALLOW_INSECURE_DEFAULTS=1` for temporary development.
 
 ## Local Run (Docker Compose)
 
