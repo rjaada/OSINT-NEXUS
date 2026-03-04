@@ -75,12 +75,29 @@ function placeholderHashLines() {
   return Array.from({ length: 7 }, (_, i) => `${i}f9d0cc9a6e7f2aa34b92c5e2ad91b0f52a9d2e5acfb1f3e77${i}d4ae02${i}dd`)
 }
 
+function b64urlToBytes(input: string): Uint8Array {
+  const base64 = input.replace(/-/g, "+").replace(/_/g, "/") + "=".repeat((4 - (input.length % 4 || 4)) % 4)
+  const binary = atob(base64)
+  const out = new Uint8Array(binary.length)
+  for (let i = 0; i < binary.length; i++) out[i] = binary.charCodeAt(i)
+  return out
+}
+
+function bytesToB64url(buf: ArrayBuffer): string {
+  const bytes = new Uint8Array(buf)
+  let binary = ""
+  for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i])
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "")
+}
+
 export function OperatorAccessCard({ nextPath = "/", displayOnly = false }: OperatorAccessCardProps) {
   const [mode, setMode] = useState<Mode>("login")
   const [phase, setPhase] = useState<Phase>(displayOnly ? "ready" : "boot")
   const [username, setUsername] = useState("")
   const [password, setPassword] = useState("")
   const [confirm, setConfirm] = useState("")
+  const [mfaCode, setMfaCode] = useState("")
+  const [breakGlassCode, setBreakGlassCode] = useState("")
   const [role, setRole] = useState<Role>("viewer")
   const [resolvedRole, setResolvedRole] = useState<Role>("viewer")
   const [error, setError] = useState("")
@@ -296,6 +313,108 @@ export function OperatorAccessCard({ nextPath = "/", displayOnly = false }: Oper
     snapToNearestFace()
   }
 
+  const completeLogin = async (loginJson: Record<string, unknown>) => {
+    const sessionRes = await fetch(`${API_BASE}/api/auth/session`, { credentials: "include", cache: "no-store" })
+    const sessionJson = await sessionRes.json().catch(() => ({}))
+    const expires = new Date(Date.now() + 1000 * 60 * 60 * 8).toUTCString()
+    const finalRole = String(sessionJson?.role || loginJson?.role || role || "viewer").toLowerCase() as Role
+    const finalUser = String(sessionJson?.username || loginJson?.username || username).toLowerCase()
+    setResolvedRole(finalRole)
+    document.cookie = `osint_session=1; Path=/; Expires=${expires}; SameSite=Lax`
+    document.cookie = `osint_role=${finalRole}; Path=/; Expires=${expires}; SameSite=Lax`
+    document.cookie = `osint_user=${finalUser}; Path=/; Expires=${expires}; SameSite=Lax`
+    await fetchCardMeta()
+
+    setScanProgress(100)
+    setPhase("verified")
+    playBeep(950, 90)
+    setTimeout(() => {
+      setPhase("backflip")
+      setRotateY(-180)
+      setTimeout(() => {
+        setRotateY(-360)
+        setTimeout(() => {
+          setPhase("transition")
+          setTimeout(() => {
+            window.location.href = nextPath || "/"
+          }, 760)
+        }, 520)
+      }, 700)
+    }, 420)
+  }
+
+  const handlePasskeyLogin = async () => {
+    setError("")
+    setNote("")
+    if (!username.trim()) {
+      setError("Username is required for passkey login")
+      return
+    }
+    if (!window.PublicKeyCredential || !navigator.credentials) {
+      setError("Passkey not supported in this browser")
+      return
+    }
+    setPhase("scanning")
+    setRotateX(0)
+    setRotateY(0)
+    setScanProgress(0)
+    playBeep(700, 80)
+    const timer = window.setInterval(() => setScanProgress((v) => Math.min(100, v + 4)), 40)
+    try {
+      const optsRes = await fetch(`${API_BASE}/api/auth/passkey/login/options`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ username: username.trim() }),
+      })
+      const optsJson = await optsRes.json().catch(() => ({}))
+      if (!optsRes.ok) throw new Error(String(optsJson?.detail || "Passkey challenge failed"))
+      const options = optsJson?.options || {}
+      const publicKey: PublicKeyCredentialRequestOptions = {
+        ...options,
+        challenge: b64urlToBytes(String(options.challenge || "")),
+        allowCredentials: Array.isArray(options.allowCredentials)
+          ? options.allowCredentials.map((c: Record<string, unknown>) => ({
+              ...c,
+              id: b64urlToBytes(String(c.id || "")),
+            }))
+          : [],
+      }
+      const cred = (await navigator.credentials.get({ publicKey })) as PublicKeyCredential | null
+      if (!cred) throw new Error("Passkey assertion canceled")
+      const res = cred.response as AuthenticatorAssertionResponse
+      const credential = {
+        id: cred.id,
+        rawId: bytesToB64url(cred.rawId),
+        type: cred.type,
+        response: {
+          clientDataJSON: bytesToB64url(res.clientDataJSON),
+          authenticatorData: bytesToB64url(res.authenticatorData),
+          signature: bytesToB64url(res.signature),
+          userHandle: res.userHandle ? bytesToB64url(res.userHandle) : null,
+        },
+      }
+      const verify = await fetch(`${API_BASE}/api/auth/passkey/login/verify`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ username: username.trim(), credential }),
+      })
+      const verifyJson = await verify.json().catch(() => ({}))
+      if (!verify.ok) throw new Error(String(verifyJson?.detail || "Passkey verification failed"))
+      window.clearInterval(timer)
+      await completeLogin(verifyJson as Record<string, unknown>)
+    } catch (err) {
+      window.clearInterval(timer)
+      setScanProgress(0)
+      setError(err instanceof Error ? err.message : "Passkey authentication failed")
+      setPhase("failed")
+      setRotateX(0)
+      setRotateY(0)
+      playBeep(250, 140)
+    }
+  }
+
   const onSubmit = async (e: FormEvent) => {
     e.preventDefault()
     setError("")
@@ -337,39 +456,18 @@ export function OperatorAccessCard({ nextPath = "/", displayOnly = false }: Oper
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({ username: username.trim(), password }),
+        body: JSON.stringify({
+          username: username.trim(),
+          password,
+          mfa_code: mfaCode.trim() || undefined,
+          break_glass_code: breakGlassCode.trim() || undefined,
+        }),
       })
       const loginJson = await login.json().catch(() => ({}))
       if (!login.ok) throw new Error(String(loginJson?.detail || "Invalid credentials"))
 
-      const sessionRes = await fetch(`${API_BASE}/api/auth/session`, { credentials: "include", cache: "no-store" })
-      const sessionJson = await sessionRes.json().catch(() => ({}))
-      const expires = new Date(Date.now() + 1000 * 60 * 60 * 8).toUTCString()
-      const finalRole = String(sessionJson?.role || loginJson?.role || role || "viewer").toLowerCase() as Role
-      const finalUser = String(sessionJson?.username || loginJson?.username || username).toLowerCase()
-      setResolvedRole(finalRole)
-      document.cookie = `osint_session=1; Path=/; Expires=${expires}; SameSite=Lax`
-      document.cookie = `osint_role=${finalRole}; Path=/; Expires=${expires}; SameSite=Lax`
-      document.cookie = `osint_user=${finalUser}; Path=/; Expires=${expires}; SameSite=Lax`
-      await fetchCardMeta()
-
       window.clearInterval(timer)
-      setScanProgress(100)
-      setPhase("verified")
-      playBeep(950, 90)
-      setTimeout(() => {
-        setPhase("backflip")
-        setRotateY(-180)
-        setTimeout(() => {
-          setRotateY(-360)
-          setTimeout(() => {
-            setPhase("transition")
-            setTimeout(() => {
-              window.location.href = nextPath || "/"
-            }, 760)
-          }, 520)
-        }, 700)
-      }, 420)
+      await completeLogin(loginJson as Record<string, unknown>)
     } catch (err) {
       window.clearInterval(timer)
       setScanProgress(0)
@@ -667,6 +765,36 @@ export function OperatorAccessCard({ nextPath = "/", displayOnly = false }: Oper
                 />
               </label>
 
+              {mode === "login" && (
+                <label className="block">
+                  <span className="text-[9px] text-muted-foreground font-mono tracking-[0.25em] uppercase">MFA Code (If Required)</span>
+                  <input
+                    type="text"
+                    value={mfaCode}
+                    onChange={(e) => setMfaCode(e.target.value)}
+                    placeholder="123456"
+                    className="mt-1 w-full bg-[#0a0a14] border border-[#1e1e36] rounded px-3 py-2 text-foreground font-mono text-sm tracking-wider placeholder:text-muted-foreground/35 focus:outline-none focus:border-osint-blue/50 focus:ring-1 focus:ring-osint-blue/20 transition-colors"
+                    autoComplete="one-time-code"
+                    disabled={phase === "scanning" || phase === "transition"}
+                  />
+                </label>
+              )}
+
+              {mode === "login" && (
+                <label className="block">
+                  <span className="text-[9px] text-muted-foreground font-mono tracking-[0.25em] uppercase">Break-Glass (Admin Emergency)</span>
+                  <input
+                    type="password"
+                    value={breakGlassCode}
+                    onChange={(e) => setBreakGlassCode(e.target.value)}
+                    placeholder="Optional emergency code"
+                    className="mt-1 w-full bg-[#0a0a14] border border-[#1e1e36] rounded px-3 py-2 text-foreground font-mono text-sm tracking-wider placeholder:text-muted-foreground/35 focus:outline-none focus:border-osint-amber/50 focus:ring-1 focus:ring-osint-amber/20 transition-colors"
+                    autoComplete="off"
+                    disabled={phase === "scanning" || phase === "transition"}
+                  />
+                </label>
+              )}
+
               {mode === "register" && (
                 <label className="block">
                   <span className="text-[9px] text-muted-foreground font-mono tracking-[0.25em] uppercase">Confirm Key</span>
@@ -692,6 +820,17 @@ export function OperatorAccessCard({ nextPath = "/", displayOnly = false }: Oper
               >
                 {phase === "scanning" ? "AUTHENTICATING..." : phase === "verified" || phase === "backflip" ? "IDENTITY VERIFIED" : mode === "login" ? "ACCESS CONSOLE" : "CREATE AND ACCESS"}
               </button>
+
+              {mode === "login" && (
+                <button
+                  type="button"
+                  disabled={phase === "scanning" || phase === "transition"}
+                  onClick={() => void handlePasskeyLogin()}
+                  className="w-full py-2 rounded font-mono text-[11px] tracking-[0.2em] uppercase transition-all border disabled:opacity-60 disabled:cursor-not-allowed bg-osint-green/10 border-osint-green/35 text-osint-green hover:bg-osint-green/20 hover:border-osint-green/55"
+                >
+                  ADMIN PASSKEY SIGN-IN
+                </button>
+              )}
 
               <div className="text-center text-[8px] text-muted-foreground/50 font-mono tracking-[0.2em]">
                 ESC TO SKIP READINESS // DRAG CARD TO INSPECT 360

@@ -14,6 +14,21 @@ interface AdminUser {
   updated_at: string
 }
 
+function b64urlToBytes(input: string): Uint8Array {
+  const base64 = input.replace(/-/g, "+").replace(/_/g, "/") + "=".repeat((4 - (input.length % 4 || 4)) % 4)
+  const binary = atob(base64)
+  const out = new Uint8Array(binary.length)
+  for (let i = 0; i < binary.length; i++) out[i] = binary.charCodeAt(i)
+  return out
+}
+
+function bytesToB64url(buf: ArrayBuffer): string {
+  const bytes = new Uint8Array(buf)
+  let binary = ""
+  for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i])
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "")
+}
+
 export default function AdminUsersPage() {
   const [role, setRole] = useState<Role>("viewer")
   const [actor, setActor] = useState("")
@@ -21,6 +36,8 @@ export default function AdminUsersPage() {
   const [loading, setLoading] = useState(false)
   const [msg, setMsg] = useState("")
   const [busyUser, setBusyUser] = useState("")
+  const [passkeyEnabled, setPasskeyEnabled] = useState(false)
+  const [passkeyCount, setPasskeyCount] = useState(0)
 
   useEffect(() => {
     const roleCookie = document.cookie.split("; ").find((x) => x.startsWith("osint_role="))
@@ -51,6 +68,88 @@ export default function AdminUsersPage() {
     if (role !== "admin") return
     void loadUsers()
   }, [role])
+
+  const loadPasskeyStatus = async () => {
+    try {
+      const res = await fetch("http://localhost:8000/api/auth/passkey/status", { credentials: "include", cache: "no-store" })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) return
+      setPasskeyEnabled(Boolean(data?.enabled))
+      setPasskeyCount(Number(data?.count || 0))
+    } catch {
+      // best effort
+    }
+  }
+
+  useEffect(() => {
+    if (role !== "admin") return
+    void loadPasskeyStatus()
+  }, [role])
+
+  const enrollPasskey = async () => {
+    if (!window.PublicKeyCredential || !navigator.credentials) {
+      setMsg("Passkey not supported in this browser")
+      return
+    }
+    setMsg("")
+    try {
+      const optsRes = await fetch("http://localhost:8000/api/auth/passkey/register/options", {
+        method: "POST",
+        headers: csrfHeaders(),
+        credentials: "include",
+      })
+      const optsJson = await optsRes.json().catch(() => ({}))
+      if (!optsRes.ok) {
+        setMsg(optsJson?.detail || "Failed to start passkey enrollment")
+        return
+      }
+      const options = optsJson?.options || {}
+      const publicKey: PublicKeyCredentialCreationOptions = {
+        ...options,
+        challenge: b64urlToBytes(String(options.challenge || "")),
+        user: {
+          ...(options.user || {}),
+          id: b64urlToBytes(String(options?.user?.id || "")),
+        },
+        excludeCredentials: Array.isArray(options.excludeCredentials)
+          ? options.excludeCredentials.map((c: Record<string, unknown>) => ({
+              ...c,
+              id: b64urlToBytes(String(c.id || "")),
+            }))
+          : [],
+      }
+      const cred = (await navigator.credentials.create({ publicKey })) as PublicKeyCredential | null
+      if (!cred) {
+        setMsg("Passkey enrollment cancelled")
+        return
+      }
+      const res = cred.response as AuthenticatorAttestationResponse
+      const credential = {
+        id: cred.id,
+        rawId: bytesToB64url(cred.rawId),
+        type: cred.type,
+        response: {
+          clientDataJSON: bytesToB64url(res.clientDataJSON),
+          attestationObject: bytesToB64url(res.attestationObject),
+        },
+      }
+      const verify = await fetch("http://localhost:8000/api/auth/passkey/register/verify", {
+        method: "POST",
+        headers: csrfHeaders({ "Content-Type": "application/json" }),
+        credentials: "include",
+        body: JSON.stringify({ credential, label: "admin" }),
+      })
+      const verifyJson = await verify.json().catch(() => ({}))
+      if (!verify.ok) {
+        setMsg(verifyJson?.detail || "Passkey enrollment failed")
+        return
+      }
+      setMsg("Passkey enrolled successfully")
+      void loadPasskeyStatus()
+    } catch {
+      setMsg("Passkey enrollment failed")
+    }
+  }
 
   const adminsCount = useMemo(() => users.filter((u) => u.role === "admin").length, [users])
   const actorNorm = actor.trim().toLowerCase()
@@ -127,6 +226,14 @@ export default function AdminUsersPage() {
                 <span className="text-osint-green">{actor || "admin"}</span>
                 <span className="ml-2 text-muted-foreground">Admins:</span>
                 <span className="text-osint-blue">{adminsCount}</span>
+                <span className="ml-2 text-muted-foreground">Passkeys:</span>
+                <span className={passkeyEnabled ? "text-osint-green" : "text-osint-amber"}>{passkeyCount}</span>
+                <button
+                  className="text-[10px] px-2 py-1 rounded border border-osint-green/40 text-osint-green"
+                  onClick={() => void enrollPasskey()}
+                >
+                  Enroll Passkey
+                </button>
                 <button
                   className="ml-auto text-[10px] px-2 py-1 rounded border border-osint-blue/40 text-osint-blue"
                   onClick={() => void loadUsers()}

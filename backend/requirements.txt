@@ -9,3 +9,5 @@ beautifulsoup4==4.12.3
 yt-dlp==2026.2.21
 psycopg[binary]==3.2.10
 mgrs==1.5.0
+pyotp==2.9.0
+webauthn==2.7.1

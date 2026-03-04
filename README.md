@@ -231,6 +231,14 @@ Important variables:
 - `AUTH_DEFAULT_ADMIN_PASSWORD`
 - `AUTH_COOKIE_SECURE` (`1/true` in HTTPS deployments)
 - `ALLOW_INSECURE_DEFAULTS` (optional, local-only bypass; do **not** use in production)
+- `AUTH_ENABLE_TOTP` (`1/0`, default enabled)
+- `AUTH_TOTP_REQUIRED_ROLES` (default: `analyst,admin`)
+- `AUTH_ADMIN_REQUIRE_PASSKEY` (`1/0`, default enabled)
+- `AUTH_BREAK_GLASS_CODE` (optional one-time emergency code for admin password login)
+- `PASSKEY_RP_ID` (default `localhost`)
+- `PASSKEY_RP_NAME` (default `OSINT Nexus`)
+- `PASSKEY_ORIGINS` (comma-separated allowed origins)
+- `PASSKEY_CHALLENGE_TTL_SEC`
 - `CORS_ORIGINS` (comma-separated)
 
 Telegram/media tuning:
@@ -238,6 +246,16 @@ Telegram/media tuning:
 - `DOWNLOAD_TELEGRAM_MEDIA`
 - `TELEGRAM_LOOKBACK_POSTS`
 - `TELEGRAM_MAX_NEW_PER_POLL`
+- `TELEGRAM_MAX_MEDIA_MB` (drops oversized downloaded media files)
+- `WHISPER_HOOK_URL` (optional external transcription hook)
+- `DEEPFAKE_HOOK_URL` (optional external authenticity hook)
+- `MEDIA_HOOK_TIMEOUT_SEC`
+
+Additional OSINT source layers (all optional, feature-flagged):
+
+- `ENABLE_ADSBLOL`, `ADSBLOL_API_URL`, `ADSBLOL_POLL_INTERVAL_SEC`
+- `ENABLE_AISSTREAM`, `AISSTREAM_WS_URL`, `AISSTREAM_API_KEY`, `AISSTREAM_BBOX`
+- `ENABLE_FIRMS`, `FIRMS_MAP_KEY`, `FIRMS_SOURCE`, `FIRMS_BBOX`, `FIRMS_DAYS`, `FIRMS_POLL_INTERVAL_SEC`
 
 Security startup checks:
 
@@ -247,6 +265,25 @@ Security startup checks:
   - `AUTH_DEFAULT_ADMIN_PASSWORD` fails policy
   - `AUTH_COOKIE_SECURE` is disabled outside localhost-only dev mode
 - Local-only override exists via `ALLOW_INSECURE_DEFAULTS=1` for temporary development.
+
+TOTP endpoints:
+
+- `GET /api/auth/mfa/totp/status`
+- `POST /api/auth/mfa/totp/setup`
+- `POST /api/auth/mfa/totp/enable`
+- `POST /api/auth/mfa/totp/disable`
+
+Passkey endpoints:
+
+- `GET /api/auth/passkey/status`
+- `POST /api/auth/passkey/register/options`
+- `POST /api/auth/passkey/register/verify`
+- `POST /api/auth/passkey/login/options`
+- `POST /api/auth/passkey/login/verify`
+
+Graph endpoint:
+
+- `GET /api/v2/graph?limit=350` (returns `nodes`/`edges` relationship graph for recent events)
 
 ## Local Run (Docker Compose)
 
