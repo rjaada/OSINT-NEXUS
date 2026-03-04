@@ -43,3 +43,4 @@ ollama_data/
 dist/
 build/
 coverage/
+Codex.md
