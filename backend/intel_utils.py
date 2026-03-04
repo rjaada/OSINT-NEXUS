@@ -46,7 +46,7 @@ def normalize_desc(desc: str) -> str:
 
 def article_id(entry) -> str:
     key = getattr(entry, "link", "") or getattr(entry, "title", "") or str(entry)
-    return hashlib.md5(key.encode()).hexdigest()
+    return hashlib.sha256(key.encode()).hexdigest()
 
 
 def classify_event(title: str, summary: str, event_type_keywords_ar: Dict[str, List[str]]) -> str:
