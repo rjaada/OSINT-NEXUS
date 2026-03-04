@@ -34,13 +34,26 @@
   --osint-green: #00ff88;
   --osint-amber: #ffa630;
   --osint-purple: #b24bff;
+  --paper: #f5f0e8;
+  --paper-dark: #e8e0d0;
+  --ink: #1a1a1a;
+  --red-official: #8b0000;
+  --red-critical: #cc0000;
+  --amber: #e85d00;
+  --yellow-med: #c9a800;
+  --green-low: #2d7a2d;
+  --banner-bg: #000000;
+  --banner-text: #cc0000;
+  --metadata-bg: #2a2a2a;
+  --metadata-text: #d4cfc5;
   --glass-bg: rgba(11, 12, 16, 0.85);
   --glass-border: rgba(255, 255, 255, 0.06);
 }
 
 @theme inline {
-  --font-sans: 'JetBrains Mono', 'Geist Mono', monospace;
-  --font-mono: 'JetBrains Mono', 'Geist Mono', monospace;
+  --font-sans: var(--font-serif), 'JetBrains Mono', 'Geist Mono', monospace;
+  --font-mono: var(--font-ibm-mono), 'JetBrains Mono', 'Geist Mono', monospace;
+  --font-stencil: var(--font-stencil), 'JetBrains Mono', monospace;
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-card: var(--card);
@@ -70,6 +83,18 @@
   --color-osint-green: var(--osint-green);
   --color-osint-amber: var(--osint-amber);
   --color-osint-purple: var(--osint-purple);
+  --color-paper: var(--paper);
+  --color-paper-dark: var(--paper-dark);
+  --color-ink: var(--ink);
+  --color-red-official: var(--red-official);
+  --color-red-critical: var(--red-critical);
+  --color-amber: var(--amber);
+  --color-yellow-med: var(--yellow-med);
+  --color-green-low: var(--green-low);
+  --color-banner-bg: var(--banner-bg);
+  --color-banner-text: var(--banner-text);
+  --color-metadata-bg: var(--metadata-bg);
+  --color-metadata-text: var(--metadata-text);
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
@@ -196,6 +221,54 @@ body.defcon-1 {
 @keyframes login-holo-shift {
   0% { background-position: 0% 0%; }
   100% { background-position: 0% 200%; }
+}
+
+@keyframes dust-float {
+  0%,
+  100% {
+    transform: translate(0, 0) scale(1);
+    opacity: 0.1;
+  }
+  25% {
+    transform: translate(15px, -20px) scale(1.2);
+    opacity: 0.25;
+  }
+  50% {
+    transform: translate(-10px, -40px) scale(0.8);
+    opacity: 0.15;
+  }
+  75% {
+    transform: translate(20px, -15px) scale(1.1);
+    opacity: 0.2;
+  }
+}
+
+@keyframes paper-peek {
+  from {
+    transform: translateY(20px) rotate(0deg);
+    opacity: 0;
+  }
+  to {
+    opacity: 0.9;
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes scan-line {
+  0% {
+    top: -2px;
+  }
+  100% {
+    top: 100%;
+  }
 }
 
 @keyframes login-holo-sweep {

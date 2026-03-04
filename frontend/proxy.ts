@@ -6,6 +6,8 @@ function isPublicPath(pathname: string): boolean {
   if (pathname.startsWith("/favicon")) return true
   if (pathname.startsWith("/icon")) return true
   if (pathname.startsWith("/apple-icon")) return true
+  if (pathname.startsWith("/fonts")) return true
+  if (pathname.startsWith("/v2/briefs/print")) return true
   if (pathname.startsWith("/media")) return true
   return false
 }

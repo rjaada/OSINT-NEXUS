@@ -4,14 +4,19 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { TopBar } from "@/components/dashboard/top-bar"
 import { CommandNav } from "@/components/dashboard/command-nav"
 import { VideoModal } from "@/components/system/video-modal"
-import { csrfHeaders, readCookie } from "@/lib/security"
+import { readCookie } from "@/lib/security"
 
 type Confidence = "LOW" | "MEDIUM" | "HIGH"
-type ReviewState = "confirm" | "reject" | "needs_review"
 
 interface MediaCred {
   claim_alignment?: string
   credibility_note?: string
+  transcript_text?: string
+  transcript_language?: string
+  transcript_error?: string
+  deepfake_score?: string
+  deepfake_label?: string
+  deepfake_error?: string
 }
 
 interface AlertAssessment {
@@ -39,16 +44,6 @@ interface AlertAssessment {
   review?: { status?: string; analyst?: string; note?: string }
 }
 
-interface VerifyResult {
-  classification: string
-  confidence_0_to_100: number
-  reasoning: string[]
-  required_follow_up: string[]
-  insufficient_evidence: boolean
-  model: string
-  generated_at: string
-}
-
 const CONF_STYLE: Record<Confidence, { text: string; bg: string; border: string }> = {
   LOW: { text: "#ffa630", bg: "#ffa63020", border: "#ffa63040" },
   MEDIUM: { text: "#00b4d8", bg: "#00b4d820", border: "#00b4d840" },
@@ -56,15 +51,10 @@ const CONF_STYLE: Record<Confidence, { text: string; bg: string; border: string 
 }
 const ALERTS_REFRESH_MS = 15000
 
-function requestHeaders() {
-  let apiKey = ""
-  try {
-    apiKey = localStorage.getItem("osint_v2_api_key") || ""
-  } catch (_) {}
-  return csrfHeaders({
-    "Content-Type": "application/json",
-    "x-api-key": apiKey,
-  })
+function isPlayableVideoUrl(url?: string | null): boolean {
+  if (!url) return false
+  if (url.startsWith("/media/telegram/")) return true
+  return /\.(mp4|webm|mov|m4v)(\?|$)/i.test(url)
 }
 
 export default function AlertsPage() {
@@ -74,9 +64,6 @@ export default function AlertsPage() {
   const [crisisMode, setCrisisMode] = useState(false)
   const [activeVideo, setActiveVideo] = useState<{ eventId: string; videoUrl: string; title: string } | null>(null)
   const [role, setRole] = useState("viewer")
-  const [verifyingId, setVerifyingId] = useState<string | null>(null)
-  const [verifyById, setVerifyById] = useState<Record<string, VerifyResult>>({})
-  const [briefBusy, setBriefBusy] = useState<"" | "SITREP" | "INTSUM">("")
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const lastRefreshTsRef = useRef(0)
 
@@ -163,154 +150,6 @@ export default function AlertsPage() {
   }, [loadMain])
 
   const criticalCount = useMemo(() => alerts.filter((a) => a.type === "CRITICAL").length, [alerts])
-  const strikeCount = useMemo(() => alerts.filter((a) => a.type === "STRIKE").length, [alerts])
-  const canReview = role === "analyst" || role === "admin"
-
-  const exportReport = async (mode: "SITREP" | "INTSUM") => {
-    setBriefBusy(mode)
-    try {
-      const res = await fetch("http://localhost:8000/api/v2/ai/ops-brief", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mode, limit: 22 }),
-      })
-      if (res.ok) {
-        const data = await res.json()
-        const now = new Date()
-        const lines: string[] = []
-        lines.push("SECRET // NOFORN // REL TO FVEY")
-        lines.push(`${mode} // OSINT NEXUS AI OPS BRIEF`)
-        lines.push(`GENERATED_AT: ${data.generated_at || now.toISOString()}`)
-        lines.push(`MODELS: verify=${data?.model_policy?.task_models?.verify || "-"} report=${data?.model_policy?.task_models?.report || "-"}`)
-        lines.push("")
-        lines.push(`TITLE: ${data?.report?.title || mode}`)
-        lines.push(`SUMMARY: ${data?.report?.summary || ""}`)
-        lines.push("")
-        lines.push("PARAGRAPHS:")
-        for (const p of (data?.report?.paragraphs || [])) lines.push(`- ${p}`)
-        lines.push("")
-        lines.push("PRIORITY ACTIONS:")
-        for (const a of (data?.report?.priority_actions || [])) lines.push(`- ${a}`)
-        lines.push("")
-        lines.push("COMMANDER NOTE:")
-        lines.push(`- ${data?.commander_chat?.one_line_risk || ""}`)
-        for (const a of (data?.commander_chat?.next_actions || [])) lines.push(`- ${a}`)
-        lines.push("")
-        lines.push("TOP VERIFY RESULTS:")
-        for (const v of (data?.verify || [])) {
-          lines.push(`- ${v?.event_id}: ${v?.result?.classification || "unknown"} (${v?.result?.confidence_0_to_100 || "-"})`)
-        }
-        lines.push("")
-        lines.push("SECRET // NOFORN // REL TO FVEY")
-        const text = lines.join("\n")
-        const blob = new Blob([text], { type: "text/plain;charset=utf-8" })
-        const url = URL.createObjectURL(blob)
-        const a = document.createElement("a")
-        a.href = url
-        a.download = `${mode.toLowerCase()}_${now.toISOString().replace(/[:.]/g, "-")}.txt`
-        document.body.appendChild(a)
-        a.click()
-        a.remove()
-        URL.revokeObjectURL(url)
-        return
-      }
-    } catch (_) {
-      // fall back to local report render below
-    }
-
-    const now = new Date()
-    const day = String(now.getUTCDate()).padStart(2, "0")
-    const hh = String(now.getUTCHours()).padStart(2, "0")
-    const mm = String(now.getUTCMinutes()).padStart(2, "0")
-    const months = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"]
-    const dtg = `${day}${hh}${mm}Z${months[now.getUTCMonth()]}${now.getUTCFullYear()}`
-
-    const lines: string[] = []
-    lines.push("SECRET // NOFORN // REL TO FVEY")
-    lines.push(`${mode} // OSINT NEXUS`)
-    lines.push(`DTG: ${dtg}`)
-    lines.push(`ROLE: ${role.toUpperCase()}`)
-    lines.push(`TOTAL ALERTS: ${alerts.length} | CRITICAL: ${criticalCount} | STRIKE: ${strikeCount}`)
-    lines.push("")
-    lines.push("1. SITUATION OVERVIEW")
-    lines.push(`- Last sync: ${lastSync || "--:--:--Z"}`)
-    lines.push(`- Operational mode: ${crisisMode ? "CRISIS" : "NORMAL"}`)
-    lines.push("")
-    lines.push("2. KEY INCIDENTS")
-    alerts.slice(0, 20).forEach((a, i) => {
-      lines.push(`${i + 1}. [${a.type}] ${a.desc.replace(/^\[.+?\]\s*/, "").slice(0, 180)}`)
-      lines.push(`   DTG: ${a.timestamp} | SOURCE: ${a.source} | CONFIDENCE: ${a.confidence} (${a.confidence_score})`)
-      lines.push(`   GRID/COORD: ${Number(a.lat).toFixed(3)}N ${Number(a.lng).toFixed(3)}E | ETA: ${a.eta_band}`)
-      lines.push(`   PROVENANCE: source=${a.source}; corroboration=${a.corroborating_sources.length > 0 ? a.corroborating_sources.join(",") : "single-source"}; reviewed=${a.review?.status || "unreviewed"}`)
-      if (a.observed_facts && a.observed_facts.length > 0) lines.push(`   OBSERVED: ${a.observed_facts.slice(0, 2).join(" | ")}`)
-      if (a.model_inference && a.model_inference.length > 0) lines.push(`   INFERENCE: ${a.model_inference.slice(0, 2).join(" | ")}`)
-      lines.push("")
-    })
-    lines.push("3. DISPOSITION")
-    lines.push("- Advisory use only. Validate through official channels before action.")
-    lines.push("")
-    lines.push("SECRET // NOFORN // REL TO FVEY")
-
-    const text = lines.join("\n")
-    const blob = new Blob([text], { type: "text/plain;charset=utf-8" })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement("a")
-    a.href = url
-    a.download = `${mode.toLowerCase()}_${now.toISOString().replace(/[:.]/g, "-")}.txt`
-    document.body.appendChild(a)
-    a.click()
-    a.remove()
-    URL.revokeObjectURL(url)
-    setBriefBusy("")
-  }
-
-  useEffect(() => {
-    if (!briefBusy) return
-    const t = setTimeout(() => setBriefBusy(""), 400)
-    return () => clearTimeout(t)
-  }, [briefBusy])
-
-  const setReview = async (eventId: string, status: ReviewState) => {
-    if (!canReview) return
-    try {
-      await fetch("http://localhost:8000/api/v2/reviews", {
-        method: "POST",
-        headers: requestHeaders(),
-        credentials: "include",
-        body: JSON.stringify({ event_id: eventId, status, note: "set from v2 alert board" }),
-      })
-      await loadMain()
-    } catch (_) {}
-  }
-
-  const runVerify = async (a: AlertAssessment) => {
-    setVerifyingId(a.id)
-    try {
-      const bodyPayload = [
-        a.desc.replace(/^\[.+?\]\s*/, ""),
-        (a.observed_facts || []).slice(0, 3).join("; "),
-        (a.model_inference || []).slice(0, 3).join("; "),
-      ].filter(Boolean).join(" | ")
-      const res = await fetch("http://localhost:8000/api/v2/ai/verify", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          title: a.desc.replace(/^\[.+?\]\s*/, "").slice(0, 220),
-          body: bodyPayload.slice(0, 1200),
-          source: a.source,
-          published_at: a.timestamp,
-        }),
-      })
-      if (!res.ok) return
-      const data: VerifyResult = await res.json()
-      setVerifyById((prev) => ({ ...prev, [a.id]: data }))
-    } catch (_) {
-      // keep page usable if verify endpoint is unavailable
-    } finally {
-      setVerifyingId(null)
-    }
-  }
-
   return (
     <div className="min-h-screen bg-background text-foreground">
       <TopBar />
@@ -330,14 +169,6 @@ export default function AlertsPage() {
               <div>Role: {role}</div>
               <div>{loading ? "Syncing..." : `Last sync: ${lastSync || "--:--:--Z"}`}</div>
               <div>Critical cards: {criticalCount}</div>
-              <div className="mt-2 flex items-center justify-end gap-2">
-                <button className="text-[10px] px-2 py-1 rounded border border-osint-blue/40 text-osint-blue" onClick={() => exportReport("SITREP")}>
-                  {briefBusy === "SITREP" ? "Generating..." : "Generate SITREP"}
-                </button>
-                <button className="text-[10px] px-2 py-1 rounded border border-osint-purple/40 text-osint-purple" onClick={() => exportReport("INTSUM")}>
-                  {briefBusy === "INTSUM" ? "Generating..." : "Generate INTSUM"}
-                </button>
-              </div>
             </div>
           </header>
 
@@ -345,8 +176,8 @@ export default function AlertsPage() {
             {alerts.map((a) => {
               const c = CONF_STYLE[a.confidence]
               const videoHref = a.video_url ? (a.video_url.startsWith("/media/") ? `http://localhost:8000${a.video_url}` : a.video_url) : null
+              const canInlineVideo = isPlayableVideoUrl(a.video_url)
               const review = a.review?.status || "unreviewed"
-              const verify = verifyById[a.id]
               return (
                 <article
                   key={a.id}
@@ -399,6 +230,22 @@ export default function AlertsPage() {
                     <div className="rounded-md border border-white/10 p-2 bg-black/20">
                       <p className="text-[10px] uppercase tracking-[0.12em] text-osint-purple mb-1">Media Credibility</p>
                       <p className="text-[#c7b9dd] line-clamp-3">{a.media?.credibility_note || "Pending media analysis."}</p>
+                      {a.media?.deepfake_label || a.media?.deepfake_score ? (
+                        <p className="text-[10px] text-osint-amber mt-2">
+                          Deepfake: {a.media?.deepfake_label || "unknown"} {a.media?.deepfake_score ? `(${a.media.deepfake_score})` : ""}
+                        </p>
+                      ) : null}
+                      {a.media?.deepfake_error ? (
+                        <p className="text-[10px] text-osint-red mt-1">Deepfake hook: {a.media.deepfake_error}</p>
+                      ) : null}
+                      {a.media?.transcript_text ? (
+                        <p className="text-[10px] text-[#a6d2c9] mt-2 line-clamp-3">
+                          Transcript{a.media?.transcript_language ? ` (${a.media.transcript_language})` : ""}: {a.media.transcript_text}
+                        </p>
+                      ) : null}
+                      {a.media?.transcript_error ? (
+                        <p className="text-[10px] text-osint-red mt-1">Transcription hook: {a.media.transcript_error}</p>
+                      ) : null}
                     </div>
                   </div>
 
@@ -418,7 +265,7 @@ export default function AlertsPage() {
                     <span>{Number(a.lat).toFixed(3)}N {Number(a.lng).toFixed(3)}E</span>
                     <span>{a.timestamp}</span>
                     <span>Corroboration: {a.corroborating_sources.length > 0 ? a.corroborating_sources.join(", ") : "single-source"}</span>
-                    {videoHref ? (
+                    {videoHref && canInlineVideo ? (
                       <button
                         onClick={() => setActiveVideo({ eventId: a.id, videoUrl: a.video_url || "", title: a.desc.replace(/^\[.+?\]\s*/, "") })}
                         className="text-osint-green underline"
@@ -427,46 +274,7 @@ export default function AlertsPage() {
                       </button>
                     ) : null}
 
-                    {canReview ? (
-                      <>
-                        <button
-                          className="ml-auto text-[10px] px-2 py-1 rounded border border-osint-blue/40 text-osint-blue"
-                          onClick={() => runVerify(a)}
-                          disabled={verifyingId === a.id}
-                        >
-                          {verifyingId === a.id ? "Verifying..." : "AI Verify"}
-                        </button>
-                        <button className="ml-auto text-[10px] px-2 py-1 rounded border border-osint-green/40 text-osint-green" onClick={() => setReview(a.id, "confirm")}>Confirm</button>
-                        <button className="text-[10px] px-2 py-1 rounded border border-osint-red/40 text-osint-red" onClick={() => setReview(a.id, "reject")}>Reject</button>
-                        <button className="text-[10px] px-2 py-1 rounded border border-osint-amber/40 text-osint-amber" onClick={() => setReview(a.id, "needs_review")}>Needs Review</button>
-                      </>
-                    ) : (
-                      <button
-                        className="ml-auto text-[10px] px-2 py-1 rounded border border-osint-blue/40 text-osint-blue"
-                        onClick={() => runVerify(a)}
-                        disabled={verifyingId === a.id}
-                      >
-                        {verifyingId === a.id ? "Verifying..." : "AI Verify"}
-                      </button>
-                    )}
                   </div>
-
-                  {verify ? (
-                    <div className="mt-3 rounded-md border border-osint-blue/30 bg-osint-blue/10 p-2 text-[10px]">
-                      <div className="flex items-center gap-2 flex-wrap mb-1">
-                        <span className="uppercase tracking-[0.14em] text-osint-blue">verify</span>
-                        <span className="text-[#d0d6e8]">{verify.classification}</span>
-                        <span className="text-[#d0d6e8]">({verify.confidence_0_to_100})</span>
-                        <span className="text-muted-foreground">{verify.model}</span>
-                      </div>
-                      {(verify.reasoning || []).length > 0 ? (
-                        <p className="text-[#c4cad9]">Reason: {verify.reasoning.slice(0, 2).join(" | ")}</p>
-                      ) : null}
-                      {(verify.required_follow_up || []).length > 0 ? (
-                        <p className="text-osint-amber">Follow-up: {verify.required_follow_up.slice(0, 2).join(" | ")}</p>
-                      ) : null}
-                    </div>
-                  ) : null}
                 </article>
               )
             })}

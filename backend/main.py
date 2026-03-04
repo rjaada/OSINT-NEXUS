@@ -96,11 +96,11 @@ TELEGRAM_MAX_MEDIA_MB = int(os.getenv("TELEGRAM_MAX_MEDIA_MB", "60"))
 
 DB_PATH = os.getenv("OSINT_DB_PATH", "/tmp/osint_nexus.db")
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://ollama:11434/api/generate")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3")
-OLLAMA_FALLBACK_MODEL = os.getenv("OLLAMA_FALLBACK_MODEL", "llama3:latest")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.1:8b")
+OLLAMA_FALLBACK_MODEL = os.getenv("OLLAMA_FALLBACK_MODEL", "llama3.1:8b")
 OLLAMA_BASE_URL = OLLAMA_URL.rsplit("/api/", 1)[0] if "/api/" in OLLAMA_URL else "http://ollama:11434"
 V2_MODEL_VERIFY = os.getenv("V2_MODEL_VERIFY", "phi4-mini")
-V2_MODEL_REPORT = os.getenv("V2_MODEL_REPORT", "deepseek-r1:8b")
+V2_MODEL_REPORT = os.getenv("V2_MODEL_REPORT", "llama3.1:8b")
 V2_MODEL_DEFAULT = os.getenv("V2_MODEL_DEFAULT", V2_MODEL_VERIFY)
 V2_VERIFY_TIMEOUT_SEC = int(os.getenv("V2_VERIFY_TIMEOUT_SEC", "35"))
 V2_REPORT_TIMEOUT_SEC = int(os.getenv("V2_REPORT_TIMEOUT_SEC", "120"))
@@ -1435,9 +1435,16 @@ class V2AiScheduler:
         model = self._task_to_model[task]
         timeout_sec = int(self._task_timeout.get(task, 30))
         candidate_models = [model]
-        for fallback_model in (V2_MODEL_DEFAULT, OLLAMA_MODEL):
-            if fallback_model and fallback_model not in candidate_models:
-                candidate_models.append(fallback_model)
+        # Keep strict model separation by task:
+        # verify -> verify chain, report -> report chain.
+        if task == "verify":
+            for fallback_model in (V2_MODEL_DEFAULT,):
+                if fallback_model and fallback_model not in candidate_models:
+                    candidate_models.append(fallback_model)
+        elif task == "report":
+            for fallback_model in (OLLAMA_MODEL,):
+                if fallback_model and fallback_model not in candidate_models:
+                    candidate_models.append(fallback_model)
         if _ollama_available_models:
             candidate_models = [m for m in candidate_models if m in _ollama_available_models]
         if not candidate_models:
@@ -1761,6 +1768,16 @@ def infer_video_metadata(desc: str, has_video: bool, geo_method: str) -> dict:
     }
 
 
+def is_playable_video_url(url: str) -> bool:
+    if not url:
+        return False
+    if url.startswith("/media/telegram/"):
+        local_path = TELEGRAM_MEDIA_DIR / Path(url).name
+        return local_path.exists() and local_path.is_file()
+    lower = url.lower()
+    return bool(re.search(r"\.(mp4|webm|mov|m4v)(\?|$)", lower))
+
+
 def is_relevant(entry) -> bool:
     text = (
         getattr(entry, "title", "") + " " +
@@ -2038,7 +2055,11 @@ async def poll_telegram():
                         }
                         if p.get("has_video"):
                             local_video = await asyncio.to_thread(download_telegram_video, p["url"], pid)
-                            event["video_url"] = local_video or p.get("video_src") or p["url"]
+                            remote_video_src = str(p.get("video_src") or "").strip()
+                            if local_video:
+                                event["video_url"] = local_video
+                            elif is_playable_video_url(remote_video_src):
+                                event["video_url"] = remote_video_src
                             event["has_video"] = True
 
                         video_meta = infer_video_metadata(event.get("desc", ""), bool(event.get("has_video")), geo.get("geo_method", "fallback"))
@@ -3188,13 +3209,27 @@ Context:
         "one_line_risk": str(report_json.get("summary", "")).strip()[:240],
         "next_actions": [str(x)[:180] for x in priority_actions[:5]],
     }
+    generated_at = utc_now_iso()
+    dt = _parse_iso(generated_at)
+    document_control = f"OSINT-NEXUS-{dt.strftime('%Y%m%d')}-{dt.strftime('%H%M')}-{mode.replace(' ', '-')}"
+    await manager.broadcast(
+        {
+            "type": "report_generated",
+            "data": {
+                "report_type": mode,
+                "document_control": document_control,
+                "generated_at": generated_at,
+            },
+        }
+    )
     return {
         "mode": mode,
         "verify": verify_cards,
         "report": report_json,
         "commander_chat": commander_chat,
         "model_policy": _v2_ai_scheduler.status().get("policy"),
-        "generated_at": utc_now_iso(),
+        "generated_at": generated_at,
+        "document_control": document_control,
     }
 
 
@@ -3217,6 +3252,8 @@ async def v2_events(limit: int = 120, clustered: bool = False):
         nearby = by_bucket[(round(float(e.get("lat", 0.0)), 1), round(float(e.get("lng", 0.0)), 1))]
         score, reason, corroborating = assess_confidence_v2(e, nearby, age_min)
         x["media"] = get_media_analysis(str(e.get("id", "")))
+        if not is_playable_video_url(str(x.get("video_url") or "")):
+            x["video_url"] = None
         x["review"] = _review_cache.get(str(e.get("id", "")))
         x["confidence_score"] = score
         x["confidence"] = "HIGH" if score >= 78 else ("MEDIUM" if score >= 55 else "LOW")
@@ -3276,7 +3313,7 @@ async def v2_alerts(limit: int = 60):
                 "observed_facts": e.get("observed_facts", []),
                 "model_inference": e.get("model_inference", []),
                 "insufficient_evidence": bool(e.get("insufficient_evidence", False)),
-                "video_url": e.get("video_url"),
+                "video_url": e.get("video_url") if is_playable_video_url(str(e.get("video_url") or "")) else None,
                 "video_assessment": e.get("video_assessment"),
                 "video_confidence": e.get("video_confidence"),
                 "mgrs": mgrs_from_latlng(float(e.get("lat", 0.0)), float(e.get("lng", 0.0))),

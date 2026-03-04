@@ -250,12 +250,23 @@ Telegram/media tuning:
 - `WHISPER_HOOK_URL` (optional external transcription hook)
 - `DEEPFAKE_HOOK_URL` (optional external authenticity hook)
 - `MEDIA_HOOK_TIMEOUT_SEC`
+- `WHISPER_MODEL` (for local `media-hooks` service, default `small`)
+- `WHISPER_DEVICE` (`cuda` or `cpu`)
+- `WHISPER_COMPUTE_TYPE` (default `int8_float16`)
 
 Additional OSINT source layers (all optional, feature-flagged):
 
 - `ENABLE_ADSBLOL`, `ADSBLOL_API_URL`, `ADSBLOL_POLL_INTERVAL_SEC`
 - `ENABLE_AISSTREAM`, `AISSTREAM_WS_URL`, `AISSTREAM_API_KEY`, `AISSTREAM_BBOX`
 - `ENABLE_FIRMS`, `FIRMS_MAP_KEY`, `FIRMS_SOURCE`, `FIRMS_BBOX`, `FIRMS_DAYS`, `FIRMS_POLL_INTERVAL_SEC`
+
+Secret hygiene:
+
+- Do not store real keys in `docker-compose.yml` defaults.
+- Use local `.env` (gitignored) and start from `.env.example`.
+- Example bootstrap:
+  - `cp .env.example .env`
+  - fill `AISSTREAM_API_KEY`, `FIRMS_MAP_KEY`, and other secrets in `.env`
 
 Security startup checks:
 
@@ -265,6 +276,15 @@ Security startup checks:
   - `AUTH_DEFAULT_ADMIN_PASSWORD` fails policy
   - `AUTH_COOKIE_SECURE` is disabled outside localhost-only dev mode
 - Local-only override exists via `ALLOW_INSECURE_DEFAULTS=1` for temporary development.
+
+Local hook services (Whisper + Deepfake baseline):
+
+- Compose includes a `media-hooks` service on `:8090`.
+- Backend defaults:
+  - `WHISPER_HOOK_URL=http://media-hooks:8090/hooks/whisper`
+  - `DEEPFAKE_HOOK_URL=http://media-hooks:8090/hooks/deepfake`
+- Whisper is real Faster-Whisper transcription.
+- Deepfake hook is a local baseline heuristic (not forensic-grade); use it as advisory signal only.
 
 TOTP endpoints:
 

@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useState, useCallback, useRef } from "react"
+import { usePathname } from "next/navigation"
 import { Shield } from "lucide-react"
 
 // -- Boot log lines typed out in sequence --
@@ -373,9 +374,14 @@ export function BootSequence({ onComplete }: { onComplete: () => void }) {
 }
 
 export function FirstOpenOverlay() {
+  const pathname = usePathname()
   const [visible, setVisible] = useState(false)
 
   useEffect(() => {
+    if ((pathname || "").startsWith("/v2/briefs/print")) {
+      setVisible(false)
+      return
+    }
     try {
       const seen = sessionStorage.getItem("osint_boot_seen") === "1"
       const force = sessionStorage.getItem("osint_boot_force_once") === "1"
@@ -385,7 +391,7 @@ export function FirstOpenOverlay() {
     } catch {
       setVisible(true)
     }
-  }, [])
+  }, [pathname])
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
