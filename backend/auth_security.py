@@ -139,8 +139,33 @@ def enforce_rate_limit(
     key: str,
     max_events: int,
     window_sec: int,
+    max_buckets: int = 20_000,
 ) -> None:
     now = time.time()
+    # Global prune to avoid unbounded growth of distinct bucket keys.
+    stale_keys: List[str] = []
+    for token_key, timestamps in store.items():
+        if not timestamps:
+            stale_keys.append(token_key)
+            continue
+        recent = [t for t in timestamps if now - t <= window_sec]
+        if recent:
+            store[token_key] = recent
+        else:
+            stale_keys.append(token_key)
+    for token_key in stale_keys:
+        store.pop(token_key, None)
+
+    # Hard cap distinct buckets in adversarial/high-churn scenarios.
+    if len(store) > max_buckets:
+        keys_by_oldest = sorted(
+            store.keys(),
+            key=lambda k: store[k][0] if store.get(k) else 0.0,
+        )
+        drop_n = len(store) - max_buckets
+        for token_key in keys_by_oldest[:drop_n]:
+            store.pop(token_key, None)
+
     token = f"{bucket}:{key}"
     events = store.get(token, [])
     events = [t for t in events if now - t <= window_sec]
@@ -148,6 +173,35 @@ def enforce_rate_limit(
         raise HTTPException(status_code=429, detail="Too many requests, retry later")
     events.append(now)
     store[token] = events
+
+
+def prune_rate_limit_store(
+    store: Dict[str, List[float]],
+    window_sec: int,
+    max_buckets: int = 20_000,
+) -> None:
+    now = time.time()
+    stale_keys: List[str] = []
+    for token_key, timestamps in store.items():
+        if not timestamps:
+            stale_keys.append(token_key)
+            continue
+        recent = [t for t in timestamps if now - t <= window_sec]
+        if recent:
+            store[token_key] = recent
+        else:
+            stale_keys.append(token_key)
+    for token_key in stale_keys:
+        store.pop(token_key, None)
+
+    if len(store) > max_buckets:
+        keys_by_oldest = sorted(
+            store.keys(),
+            key=lambda k: store[k][0] if store.get(k) else 0.0,
+        )
+        drop_n = len(store) - max_buckets
+        for token_key in keys_by_oldest[:drop_n]:
+            store.pop(token_key, None)
 
 
 def enforce_csrf(request: Request) -> None:

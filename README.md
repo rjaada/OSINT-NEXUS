@@ -250,6 +250,9 @@ Telegram/media tuning:
 - `WHISPER_HOOK_URL` (optional external transcription hook)
 - `DEEPFAKE_HOOK_URL` (optional external authenticity hook)
 - `MEDIA_HOOK_TIMEOUT_SEC`
+- `MEDIA_JOB_STATE_TTL_SEC` (default `21600`; prunes completed media job state)
+- `MEDIA_JOB_STATE_MAX` (default `3000`; caps tracked media jobs in memory)
+- `FAILED_LOGIN_MAX_TRACKED` (default `20000`; caps brute-force lockout state keys)
 - `WHISPER_MODEL` (for local `media-hooks` service, default `small`)
 - `WHISPER_DEVICE` (`cuda` or `cpu`)
 - `WHISPER_COMPUTE_TYPE` (default `int8_float16`)

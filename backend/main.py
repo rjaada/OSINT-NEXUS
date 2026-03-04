@@ -12,7 +12,7 @@ import secrets
 import sqlite3
 import subprocess
 import time
-from collections import defaultdict
+from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import Lock
@@ -198,8 +198,10 @@ manager = ConnectionManager()
 
 # In-memory runtime state
 seen_articles: set = set()
+_seen_articles_order = deque(maxlen=30_000)
 seen_telegram_posts: set = set()
 seen_alerts: set = set()
+_seen_alerts_order = deque(maxlen=20_000)
 
 # Event runtime buffers
 events_buffer: list = []
@@ -260,6 +262,10 @@ _v2_report_state: Dict[str, Any] = {
 }
 _passkey_reg_challenges: Dict[str, Dict[str, Any]] = {}
 _passkey_auth_challenges: Dict[str, Dict[str, Any]] = {}
+
+_MEDIA_JOB_STATE_TTL_SEC = int(os.getenv("MEDIA_JOB_STATE_TTL_SEC", "21600"))  # 6h
+_MEDIA_JOB_STATE_MAX = int(os.getenv("MEDIA_JOB_STATE_MAX", "3000"))
+_FAILED_LOGIN_MAX_TRACKED = int(os.getenv("FAILED_LOGIN_MAX_TRACKED", "20000"))
 
 
 SOURCE_RELIABILITY = {
@@ -988,12 +994,17 @@ def get_media_analysis(event_id: str) -> dict:
 async def media_worker():
     while True:
         job = await _media_jobs.get()
-        event_id = job.get("event_id")
-        _media_job_state[event_id] = {"status": "running", "updated_at": utc_now_iso()}
-        result = await asyncio.to_thread(run_media_analysis, job.get("event", {}))
-        persist_media_analysis(event_id, result)
-        _media_job_state[event_id] = {"status": "done", "updated_at": utc_now_iso()}
-        _media_jobs.task_done()
+        event_id = str(job.get("event_id", "")).strip() or "unknown"
+        try:
+            _media_job_state[event_id] = {"status": "running", "updated_at": utc_now_iso()}
+            result = await asyncio.to_thread(run_media_analysis, job.get("event", {}))
+            persist_media_analysis(event_id, result)
+            _media_job_state[event_id] = {"status": "done", "updated_at": utc_now_iso()}
+        except Exception as e:
+            _media_job_state[event_id] = {"status": "error", "updated_at": utc_now_iso(), "error": str(e)[:240]}
+            print(f"[MEDIA] worker job failed for {event_id}: {e}")
+        finally:
+            _media_jobs.task_done()
 
 
 def source_ops_metrics(window_minutes: int = 120) -> dict:
@@ -1098,6 +1109,74 @@ def _prune_passkey_challenges() -> None:
         stale = [k for k, v in bag.items() if float(v.get("expires_at", 0)) < now]
         for k in stale:
             bag.pop(k, None)
+
+
+def _track_seen_article(article_id: str) -> bool:
+    if article_id in seen_articles:
+        return False
+    if len(_seen_articles_order) == _seen_articles_order.maxlen:
+        oldest = _seen_articles_order.popleft()
+        seen_articles.discard(oldest)
+    _seen_articles_order.append(article_id)
+    seen_articles.add(article_id)
+    return True
+
+
+def _track_seen_alert(alert_id: str) -> bool:
+    if alert_id in seen_alerts:
+        return False
+    if len(_seen_alerts_order) == _seen_alerts_order.maxlen:
+        oldest = _seen_alerts_order.popleft()
+        seen_alerts.discard(oldest)
+    _seen_alerts_order.append(alert_id)
+    seen_alerts.add(alert_id)
+    return True
+
+
+def _prune_failed_logins() -> None:
+    now = time.time()
+    stale = [k for k, v in _failed_logins.items() if float(v.get("lock_until", 0)) + AUTH_LOGIN_LOCK_SEC < now]
+    for k in stale:
+        _failed_logins.pop(k, None)
+    if len(_failed_logins) > _FAILED_LOGIN_MAX_TRACKED:
+        # Drop oldest by lock_until first.
+        overflow = len(_failed_logins) - _FAILED_LOGIN_MAX_TRACKED
+        keys = sorted(_failed_logins.keys(), key=lambda k: float(_failed_logins[k].get("lock_until", 0)))
+        for k in keys[:overflow]:
+            _failed_logins.pop(k, None)
+
+
+def _prune_media_job_state() -> None:
+    now = datetime.now(timezone.utc)
+    stale_keys: List[str] = []
+    for event_id, state in _media_job_state.items():
+        status = str(state.get("status", "")).lower()
+        updated_at = str(state.get("updated_at", "")).strip()
+        if status not in {"done", "error"}:
+            continue
+        ts = _parse_iso(updated_at) if updated_at else now
+        if (now - ts).total_seconds() > _MEDIA_JOB_STATE_TTL_SEC:
+            stale_keys.append(event_id)
+    for event_id in stale_keys:
+        _media_job_state.pop(event_id, None)
+
+    if len(_media_job_state) > _MEDIA_JOB_STATE_MAX:
+        # Keep latest updated entries.
+        ordered = sorted(
+            _media_job_state.items(),
+            key=lambda kv: _parse_iso(str(kv[1].get("updated_at", utc_now_iso()))),
+            reverse=True,
+        )
+        keep = dict(ordered[:_MEDIA_JOB_STATE_MAX])
+        _media_job_state.clear()
+        _media_job_state.update(keep)
+
+
+def _prune_runtime_state() -> None:
+    _prune_passkey_challenges()
+    authsec.prune_rate_limit_store(_rate_limit, window_sec=AUTH_RATE_WINDOW_SEC)
+    _prune_failed_logins()
+    _prune_media_job_state()
 
 
 def _set_auth_cookies(response: Response, username: str, role: str) -> dict:
@@ -1721,6 +1800,8 @@ def download_telegram_video(post_url: str, event_id: str) -> Optional[str]:
             "--no-playlist",
             "--socket-timeout", "15",
             "--retries", "2",
+            "--max-filesize", f"{TELEGRAM_MAX_MEDIA_MB}M",
+            "--restrict-filenames",
             "-f", "mp4/best[ext=mp4]/best",
             "-o", out_tpl,
             post_url,
@@ -1794,7 +1875,7 @@ def build_incident_id(event: dict) -> str:
     lng_b = round(float(event.get("lng", 0.0)), 1)
     typ = str(event.get("type", "CLASH"))
     key = f"{typ}|{lat_b}|{lng_b}|{tokens}"
-    return "inc_" + hashlib.md5(key.encode()).hexdigest()[:14]
+    return "inc_" + hashlib.sha256(key.encode()).hexdigest()[:14]
 
 
 def should_merge_with_existing(event: dict) -> Optional[str]:
@@ -1984,11 +2065,16 @@ async def poll_rss():
                     parsed = feedparser.parse(resp.text)
                     for entry in parsed.entries:
                         aid = article_id(entry)
-                        if aid in seen_articles:
+                        if not _track_seen_article(aid):
                             continue
                         if not is_relevant(entry):
+                            # Keep non-relevant article ids out of dedupe registry.
+                            seen_articles.discard(aid)
+                            try:
+                                _seen_articles_order.remove(aid)
+                            except ValueError:
+                                pass
                             continue
-                        seen_articles.add(aid)
 
                         title = getattr(entry, "title", "No title")
                         summary = getattr(entry, "summary", getattr(entry, "description", ""))
@@ -2101,9 +2187,8 @@ async def poll_red_alert():
                     continue
 
                 alert_id = data.get("id", "")
-                if alert_id in seen_alerts:
+                if not _track_seen_alert(alert_id):
                     continue
-                seen_alerts.add(alert_id)
 
                 alert_title = data.get("title", "Red Alert")
                 cities = data.get("data", [])
@@ -2111,7 +2196,7 @@ async def poll_red_alert():
 
                 for city in cities:
                     lat, lng = geolocate_alert(city)
-                    eid = hashlib.md5(f"{alert_id}_{city}".encode()).hexdigest()[:10]
+                    eid = hashlib.sha256(f"{alert_id}_{city}".encode()).hexdigest()[:10]
                     event = {
                         "id": f"alert_{eid}",
                         "type": "STRIKE",
@@ -2256,6 +2341,16 @@ def render_prometheus_metrics() -> str:
     return "\n".join(lines) + "\n"
 
 
+async def runtime_housekeeping():
+    while True:
+        try:
+            _prune_runtime_state()
+            cleanup_revoked_tokens()
+        except Exception as e:
+            print(f"[HOUSEKEEPING] Error: {e}")
+        await asyncio.sleep(60)
+
+
 @app.on_event("startup")
 async def startup_event():
     global _start_time, _db, _ollama_http_client, _geocode_http_client
@@ -2313,6 +2408,7 @@ async def startup_event():
         )
     )
     asyncio.create_task(media_worker())
+    asyncio.create_task(runtime_housekeeping())
     print("[OSINT] Engine started — pollers + DB persistence active")
 
 
@@ -2828,7 +2924,7 @@ async def analyst_endpoint(force: bool = False):
         for e in latest
     ]
     fingerprint_seed = "|".join([f"{x.get('id')}@{x.get('timestamp')}" for x in latest_slice[-40:]])
-    event_fp = hashlib.md5(fingerprint_seed.encode()).hexdigest() if fingerprint_seed else "empty"
+    event_fp = hashlib.sha256(fingerprint_seed.encode()).hexdigest() if fingerprint_seed else "empty"
 
     now_ts = time.time()
     ttl_seconds = 5 * 60
@@ -2926,7 +3022,7 @@ async def v2_ai_report(force: bool = False):
         for e in latest[-120:]
     ]
     fingerprint_seed = "|".join([f"{x.get('id')}@{x.get('timestamp')}" for x in latest_slice[-50:]])
-    event_fp = hashlib.md5(fingerprint_seed.encode()).hexdigest() if fingerprint_seed else "empty"
+    event_fp = hashlib.sha256(fingerprint_seed.encode()).hexdigest() if fingerprint_seed else "empty"
 
     now_ts = time.time()
     age_ok = (now_ts - float(_v2_report_state.get("last_generated_ts", 0.0))) < V2_REPORT_CACHE_TTL_SEC
