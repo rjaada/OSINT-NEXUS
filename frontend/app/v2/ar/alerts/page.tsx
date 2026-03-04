@@ -4,14 +4,18 @@ import { useEffect, useState } from "react"
 import { TopBar } from "@/components/dashboard/top-bar"
 import { CommandNav } from "@/components/dashboard/command-nav"
 import { VideoModal } from "@/components/system/video-modal"
-import { csrfHeaders } from "@/lib/security"
 
 type Confidence = "LOW" | "MEDIUM" | "HIGH"
-type ReviewState = "confirm" | "reject" | "needs_review"
 
 interface MediaCred {
   claim_alignment?: string
   credibility_note?: string
+  transcript_text?: string
+  transcript_language?: string
+  transcript_error?: string
+  deepfake_score?: string
+  deepfake_label?: string
+  deepfake_error?: string
 }
 
 interface AlertAssessment {
@@ -45,15 +49,10 @@ const CONF_STYLE: Record<Confidence, { text: string; bg: string; border: string 
   HIGH: { text: "#00ff88", bg: "#00ff8820", border: "#00ff8840" },
 }
 
-function requestHeaders() {
-  let apiKey = ""
-  try {
-    apiKey = localStorage.getItem("osint_v2_api_key") || ""
-  } catch (_) {}
-  return csrfHeaders({
-    "Content-Type": "application/json",
-    "x-api-key": apiKey,
-  })
+function isPlayableVideoUrl(url?: string | null): boolean {
+  if (!url) return false
+  if (url.startsWith("/media/telegram/")) return true
+  return /\.(mp4|webm|mov|m4v)(\?|$)/i.test(url)
 }
 
 export default function ArabicAlertsPage() {
@@ -79,18 +78,6 @@ export default function ArabicAlertsPage() {
     return () => clearInterval(interval)
   }, [])
 
-  const setReview = async (eventId: string, status: ReviewState) => {
-    try {
-      await fetch("http://localhost:8000/api/v2/reviews", {
-        method: "POST",
-        headers: requestHeaders(),
-        credentials: "include",
-        body: JSON.stringify({ event_id: eventId, status, note: "set from arabic v2 board" }),
-      })
-      await load()
-    } catch (_) {}
-  }
-
   return (
     <div dir="rtl" className="min-h-screen bg-background text-foreground">
       <TopBar />
@@ -115,6 +102,7 @@ export default function ArabicAlertsPage() {
             {alerts.map((a) => {
               const c = CONF_STYLE[a.confidence]
               const videoHref = a.video_url ? (a.video_url.startsWith("/media/") ? `http://localhost:8000${a.video_url}` : a.video_url) : null
+              const canInlineVideo = isPlayableVideoUrl(a.video_url)
               return (
                 <article
                   key={a.id}
@@ -153,6 +141,22 @@ export default function ArabicAlertsPage() {
                     <div className="rounded-md border border-white/10 p-2 bg-black/20">
                       <p className="text-[10px] uppercase tracking-[0.12em] text-osint-purple mb-1">مصداقية الوسائط</p>
                       <p className="text-[#c7b9dd] line-clamp-3">{a.media?.credibility_note || "بانتظار تحليل الوسائط"}</p>
+                      {a.media?.deepfake_label || a.media?.deepfake_score ? (
+                        <p className="text-[10px] text-osint-amber mt-2">
+                          Deepfake: {a.media?.deepfake_label || "unknown"} {a.media?.deepfake_score ? `(${a.media.deepfake_score})` : ""}
+                        </p>
+                      ) : null}
+                      {a.media?.deepfake_error ? (
+                        <p className="text-[10px] text-osint-red mt-1">خطأ فحص Deepfake: {a.media.deepfake_error}</p>
+                      ) : null}
+                      {a.media?.transcript_text ? (
+                        <p className="text-[10px] text-[#a6d2c9] mt-2 line-clamp-3">
+                          تفريغ صوتي{a.media?.transcript_language ? ` (${a.media.transcript_language})` : ""}: {a.media.transcript_text}
+                        </p>
+                      ) : null}
+                      {a.media?.transcript_error ? (
+                        <p className="text-[10px] text-osint-red mt-1">خطأ التفريغ الصوتي: {a.media.transcript_error}</p>
+                      ) : null}
                     </div>
                   </div>
 
@@ -161,7 +165,7 @@ export default function ArabicAlertsPage() {
                     <span>{a.timestamp}</span>
                     <span>تحقق متقاطع: {a.corroborating_sources.length > 0 ? a.corroborating_sources.join(", ") : "مصدر واحد"}</span>
                     {a.video_assessment ? <span>الفيديو: {a.video_assessment} ({a.video_confidence || "LOW"})</span> : null}
-                    {videoHref ? (
+                    {videoHref && canInlineVideo ? (
                       <button
                         onClick={() => setActiveVideo({ eventId: a.id, videoUrl: a.video_url || "", title: a.desc.replace(/^\[.+?\]\s*/, "") })}
                         className="text-osint-green underline underline-offset-2"
@@ -169,9 +173,6 @@ export default function ArabicAlertsPage() {
                         أحدث فيديو
                       </button>
                     ) : null}
-                    <button className="text-[10px] px-2 py-1 rounded border border-osint-green/40 text-osint-green" onClick={() => setReview(a.id, "confirm")}>تأكيد</button>
-                    <button className="text-[10px] px-2 py-1 rounded border border-osint-red/40 text-osint-red" onClick={() => setReview(a.id, "reject")}>رفض</button>
-                    <button className="text-[10px] px-2 py-1 rounded border border-osint-amber/40 text-osint-amber" onClick={() => setReview(a.id, "needs_review")}>بحاجة مراجعة</button>
                   </div>
                 </article>
               )

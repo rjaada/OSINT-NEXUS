@@ -108,6 +108,20 @@ export default function HomePage() {
             </p>
           </Link>
 
+          {role === "analyst" || role === "admin" ? (
+            <Link
+              href="/v2/briefs"
+              className="rounded-xl p-6 transition-all hover:bg-white/[0.03]"
+              style={{ background: "rgba(7,8,12,0.92)", border: "1px solid rgba(255,255,255,0.08)" }}
+            >
+              <p className="text-[10px] tracking-[0.18em] uppercase text-osint-red mb-2">Classified</p>
+              <h2 className="text-xl font-semibold mb-2">Intel Briefs</h2>
+              <p className="text-sm text-muted-foreground">
+                Cinematic intelligence brief sequence with PDF export and AI-generated summary.
+              </p>
+            </Link>
+          ) : null}
+
           {role === "admin" ? (
             <Link
               href="/v2/admin"

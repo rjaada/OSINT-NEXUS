@@ -41,6 +41,7 @@ function formatCountdown(ms: number) {
 }
 
 export function TopBar({ headlines }: { headlines?: string[] }) {
+  const [role, setRole] = useState("viewer")
   const [utcTime, setUtcTime] = useState("")
   const [localTime, setLocalTime] = useState("")
   const [theaterTime, setTheaterTime] = useState("")
@@ -90,6 +91,11 @@ export function TopBar({ headlines }: { headlines?: string[] }) {
   }, [defcon])
 
   useEffect(() => {
+    const roleCookie = document.cookie.split("; ").find((x) => x.startsWith("osint_role="))
+    setRole(roleCookie ? decodeURIComponent(roleCookie.split("=")[1]).toLowerCase() : "viewer")
+  }, [])
+
+  useEffect(() => {
     const NAV_ITEMS: SearchItem[] = [
       { id: "nav-ops", label: "Operations", hint: "Live map and intel feed", section: "Navigation", href: "/operations" },
       { id: "nav-alerts", label: "Alerts", hint: "Confidence and ETA board", section: "Navigation", href: "/alerts" },
@@ -98,6 +104,9 @@ export function TopBar({ headlines }: { headlines?: string[] }) {
       { id: "nav-v2-alerts", label: "V2 Alerts", hint: "Phase-2 alert board", section: "Navigation", href: "/v2/alerts" },
       { id: "nav-v2-sources", label: "V2 Sources", hint: "Phase-2 sources", section: "Navigation", href: "/v2/sources" },
       { id: "nav-v2-health", label: "V2 Health", hint: "System reliability", section: "Navigation", href: "/v2/health" },
+      ...(role === "analyst" || role === "admin"
+        ? [{ id: "nav-v2-briefs", label: "V2 Intel Briefs", hint: "Cinematic classified briefs", section: "Navigation" as const, href: "/v2/briefs" }]
+        : []),
     ]
 
     const load = async () => {
@@ -132,7 +141,7 @@ export function TopBar({ headlines }: { headlines?: string[] }) {
     void load()
     const poll = setInterval(load, 20000)
     return () => clearInterval(poll)
-  }, [])
+  }, [role])
 
   useEffect(() => {
     const onActivity = () => {
@@ -193,9 +202,12 @@ export function TopBar({ headlines }: { headlines?: string[] }) {
       { id: "nav-v2-ops", label: "V2 Operations", hint: "Phase-2 operations", section: "Navigation", href: "/v2/operations" },
       { id: "nav-v2-alerts", label: "V2 Alerts", hint: "Phase-2 alert board", section: "Navigation", href: "/v2/alerts" },
       { id: "nav-v2-health", label: "V2 Health", hint: "System reliability", section: "Navigation", href: "/v2/health" },
+      ...(role === "analyst" || role === "admin"
+        ? [{ id: "nav-v2-briefs", label: "V2 Intel Briefs", hint: "Cinematic classified briefs", section: "Navigation" as const, href: "/v2/briefs" }]
+        : []),
     ]
     return [...nav, ...assetItems, ...eventItems]
-  }, [assetItems, eventItems])
+  }, [assetItems, eventItems, role])
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()

@@ -22,6 +22,7 @@ services:
       - GROQ_API_KEY=${GROQ_API_KEY:-}
       - DATABASE_URL=${DATABASE_URL:-postgresql://osint:${POSTGRES_PASSWORD:-change-me-postgres-password}@postgres:5432/osint}
       - OSINT_DB_PATH=/data/osint_nexus.db
+      - MEDIA_DIR=/data/media
       - AUTH_SECRET=${AUTH_SECRET:-replace-with-min-32-char-random-secret}
       - AUTH_DEFAULT_ADMIN_USER=${AUTH_DEFAULT_ADMIN_USER:-admin}
       - AUTH_DEFAULT_ADMIN_PASSWORD=${AUTH_DEFAULT_ADMIN_PASSWORD:-Admin!ChangeMe123}
@@ -29,11 +30,49 @@ services:
       - AUTH_ADMIN_REQUIRE_PASSKEY=${AUTH_ADMIN_REQUIRE_PASSKEY:-1}
       - AUTH_BREAK_GLASS_CODE=${AUTH_BREAK_GLASS_CODE:-}
       - ALLOW_INSECURE_DEFAULTS=${ALLOW_INSECURE_DEFAULTS:-0}
+      - ENABLE_ADSBLOL=${ENABLE_ADSBLOL:-1}
+      - ADSBLOL_API_URL=${ADSBLOL_API_URL:-https://api.adsb.lol/v2/mil}
+      - ADSBLOL_POLL_INTERVAL_SEC=${ADSBLOL_POLL_INTERVAL_SEC:-12}
+      - ENABLE_AISSTREAM=${ENABLE_AISSTREAM:-1}
+      - AISSTREAM_WS_URL=${AISSTREAM_WS_URL:-wss://stream.aisstream.io/v0/stream}
+      - AISSTREAM_API_KEY=${AISSTREAM_API_KEY:-}
+      - AISSTREAM_BBOX=${AISSTREAM_BBOX:-30,12,63,40}
+      - ENABLE_FIRMS=${ENABLE_FIRMS:-1}
+      - FIRMS_MAP_KEY=${FIRMS_MAP_KEY:-}
+      - FIRMS_SOURCE=${FIRMS_SOURCE:-VIIRS_SNPP_NRT}
+      - FIRMS_BBOX=${FIRMS_BBOX:-30,12,63,40}
+      - FIRMS_DAYS=${FIRMS_DAYS:-1}
+      - FIRMS_POLL_INTERVAL_SEC=${FIRMS_POLL_INTERVAL_SEC:-180}
+      - WHISPER_HOOK_URL=${WHISPER_HOOK_URL:-http://media-hooks:8090/hooks/whisper}
+      - DEEPFAKE_HOOK_URL=${DEEPFAKE_HOOK_URL:-http://media-hooks:8090/hooks/deepfake}
+      - MEDIA_HOOK_TIMEOUT_SEC=${MEDIA_HOOK_TIMEOUT_SEC:-35}
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3.1:8b}
+      - OLLAMA_FALLBACK_MODEL=${OLLAMA_FALLBACK_MODEL:-llama3.1:8b}
+      - V2_MODEL_VERIFY=${V2_MODEL_VERIFY:-phi4-mini}
+      - V2_MODEL_REPORT=${V2_MODEL_REPORT:-llama3.1:8b}
+      - V2_MODEL_DEFAULT=${V2_MODEL_DEFAULT:-phi4-mini}
     depends_on:
       - redis
       - postgres
+      - media-hooks
     volumes:
       - backend_data:/data
+
+  media-hooks:
+    build:
+      context: ./backend/hooks_local
+      dockerfile: Dockerfile
+    ports:
+      - "8090:8090"
+    environment:
+      - WHISPER_MODEL=${WHISPER_MODEL:-small}
+      - WHISPER_DEVICE=${WHISPER_DEVICE:-cuda}
+      - WHISPER_COMPUTE_TYPE=${WHISPER_COMPUTE_TYPE:-int8_float16}
+      - WHISPER_BEAM_SIZE=${WHISPER_BEAM_SIZE:-2}
+      - WHISPER_MAX_SECONDS=${WHISPER_MAX_SECONDS:-240}
+    volumes:
+      - backend_data:/data
+    restart: unless-stopped
 
   redis:
     image: redis:alpine

@@ -31,14 +31,16 @@ export function VideoModal({ open, videoUrl, eventId, title, onClose, onConsumed
     if (consumed || !videoUrl) return
     setBusy(true)
     try {
-      await fetch("http://localhost:8000/api/media/consume", {
+      const res = await fetch("http://localhost:8000/api/media/consume", {
         method: "POST",
         headers: csrfHeaders({ "Content-Type": "application/json" }),
         credentials: "include",
         body: JSON.stringify({ event_id: eventId || "", video_url: videoUrl }),
       })
-      setConsumed(true)
-      onConsumed?.()
+      if (res.ok) {
+        setConsumed(true)
+        onConsumed?.()
+      }
     } catch (_) {
       // ignore
     } finally {
@@ -47,7 +49,6 @@ export function VideoModal({ open, videoUrl, eventId, title, onClose, onConsumed
   }
 
   const handleClose = async () => {
-    await consumeNow()
     onClose()
   }
 
@@ -75,14 +76,22 @@ export function VideoModal({ open, videoUrl, eventId, title, onClose, onConsumed
               controls
               autoPlay
               className="w-full max-h-[74vh]"
-              onEnded={consumeNow}
             />
           </div>
 
-          <div className="px-4 py-2 text-[11px] text-muted-foreground flex items-center justify-between">
+          <div className="px-4 py-2 text-[11px] text-muted-foreground flex items-center justify-between gap-3">
             <span>
-              {busy ? "Finalizing..." : consumed ? "Video consumed and removed from storage." : "Video will be removed after viewing/close."}
+              {busy ? "Finalizing..." : consumed ? "Video consumed and removed from storage." : "Video kept for rewatch until you delete it."}
             </span>
+            {!consumed ? (
+              <button
+                onClick={consumeNow}
+                className="px-2 py-1 text-[10px] rounded border border-osint-red/40 text-osint-red hover:bg-osint-red/10"
+                disabled={busy}
+              >
+                Delete Video Now
+              </button>
+            ) : null}
           </div>
         </div>
       </div>

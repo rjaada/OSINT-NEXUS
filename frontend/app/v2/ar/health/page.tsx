@@ -41,6 +41,17 @@ export default function V2ArabicHealthPage() {
     return () => clearInterval(i)
   }, [])
 
+  const layerStatus = [
+    { key: "adsblol", label: "ADSB.lol" },
+    { key: "ais", label: "AISStream" },
+    { key: "firms", label: "NASA FIRMS" },
+  ].map((layer) => {
+    const lastSuccess = String(((data?.metrics as Record<string, any>)?.last_success || {})[layer.key] || "")
+    const errors = Number((data?.metrics as Record<string, any>)?.[`${layer.key}_errors`] || 0)
+    const healthy = Boolean(lastSuccess) && errors < 25
+    return { ...layer, lastSuccess, errors, healthy }
+  })
+
   return (
     <div dir="rtl" className="min-h-screen bg-background text-foreground">
       <TopBar />
@@ -88,6 +99,19 @@ export default function V2ArabicHealthPage() {
               <p className="text-[10px] uppercase tracking-[0.14em] text-osint-amber mb-2">تحذير</p>
               <p className="text-sm text-osint-amber">{alerts?.warning ?? 0}</p>
             </article>
+          </section>
+
+          <section className="grid md:grid-cols-3 gap-3 mb-4">
+            {layerStatus.map((layer) => (
+              <article key={layer.key} className="rounded-lg border border-white/10 bg-black/30 p-3">
+                <p className="text-[10px] uppercase tracking-[0.14em] text-osint-blue mb-2">{layer.label}</p>
+                <p className={layer.healthy ? "text-osint-green text-sm" : "text-osint-amber text-sm"}>
+                  {layer.healthy ? "سليم" : "متدهور"}
+                </p>
+                <p className="text-[11px] text-muted-foreground mt-1">آخر نجاح: {layer.lastSuccess || "لا يوجد"}</p>
+                <p className="text-[11px] text-muted-foreground">الأخطاء: {layer.errors}</p>
+              </article>
+            ))}
           </section>
 
           <section className="grid md:grid-cols-2 gap-3 mb-4">

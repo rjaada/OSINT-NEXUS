@@ -1,11 +1,30 @@
 import type { Metadata, Viewport } from 'next'
-import { JetBrains_Mono } from 'next/font/google'
+import { JetBrains_Mono, IBM_Plex_Serif, IBM_Plex_Mono, Black_Ops_One } from 'next/font/google'
 import { FirstOpenOverlay } from '@/components/system/first-open-overlay'
+import { Toaster } from '@/components/ui/sonner'
 import './globals.css'
 
 const jetbrainsMono = JetBrains_Mono({
   subsets: ['latin'],
   variable: '--font-jetbrains',
+})
+
+const ibmSerif = IBM_Plex_Serif({
+  subsets: ['latin'],
+  weight: ['400', '500', '600', '700'],
+  variable: '--font-serif',
+})
+
+const ibmMono = IBM_Plex_Mono({
+  subsets: ['latin'],
+  weight: ['400', '500', '600', '700'],
+  variable: '--font-ibm-mono',
+})
+
+const blackOps = Black_Ops_One({
+  subsets: ['latin'],
+  weight: ['400'],
+  variable: '--font-stencil',
 })
 
 export const metadata: Metadata = {
@@ -41,9 +60,10 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <body className={`${jetbrainsMono.variable} font-mono antialiased`}>
+      <body className={`${jetbrainsMono.variable} ${ibmSerif.variable} ${ibmMono.variable} ${blackOps.variable} font-mono antialiased`}>
         <FirstOpenOverlay />
         {children}
+        <Toaster richColors closeButton />
       </body>
     </html>
   )
