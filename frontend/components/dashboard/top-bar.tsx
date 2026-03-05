@@ -105,7 +105,10 @@ export function TopBar({ headlines }: { headlines?: string[] }) {
       { id: "nav-v2-sources", label: "V2 Sources", hint: "Phase-2 sources", section: "Navigation", href: "/v2/sources" },
       { id: "nav-v2-health", label: "V2 Health", hint: "System reliability", section: "Navigation", href: "/v2/health" },
       ...(role === "analyst" || role === "admin"
-        ? [{ id: "nav-v2-briefs", label: "V2 Intel Briefs", hint: "Cinematic classified briefs", section: "Navigation" as const, href: "/v2/briefs" }]
+        ? [
+            { id: "nav-v2-briefs", label: "V2 Intel Briefs", hint: "Cinematic classified briefs", section: "Navigation" as const, href: "/v2/briefs" },
+            { id: "nav-v2-graph", label: "V2 Intel Graph", hint: "Neo4j entity relationship graph", section: "Navigation" as const, href: "/v2/graph" },
+          ]
         : []),
     ]
 
@@ -203,7 +206,10 @@ export function TopBar({ headlines }: { headlines?: string[] }) {
       { id: "nav-v2-alerts", label: "V2 Alerts", hint: "Phase-2 alert board", section: "Navigation", href: "/v2/alerts" },
       { id: "nav-v2-health", label: "V2 Health", hint: "System reliability", section: "Navigation", href: "/v2/health" },
       ...(role === "analyst" || role === "admin"
-        ? [{ id: "nav-v2-briefs", label: "V2 Intel Briefs", hint: "Cinematic classified briefs", section: "Navigation" as const, href: "/v2/briefs" }]
+        ? [
+            { id: "nav-v2-briefs", label: "V2 Intel Briefs", hint: "Cinematic classified briefs", section: "Navigation" as const, href: "/v2/briefs" },
+            { id: "nav-v2-graph", label: "V2 Intel Graph", hint: "Neo4j entity relationship graph", section: "Navigation" as const, href: "/v2/graph" },
+          ]
         : []),
     ]
     return [...nav, ...assetItems, ...eventItems]

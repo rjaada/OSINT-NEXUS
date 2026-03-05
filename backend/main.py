@@ -17,6 +17,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import Lock
 from typing import Any, Dict, List, Optional, Sequence, Tuple
+import logging
 
 import feedparser
 import httpx
@@ -45,6 +46,7 @@ try:
     from . import osint_layers  # type: ignore
     from . import intel_utils as iutils  # type: ignore
     from . import v2_store  # type: ignore
+    from . import graph_store as gstore  # type: ignore
 except ImportError:
     from analyst import generate_analyst_report
     import auth_security as authsec
@@ -56,6 +58,7 @@ except ImportError:
     import osint_layers
     import intel_utils as iutils
     import v2_store
+    import graph_store as gstore
 
 app = FastAPI(title="OSINT Nexus Engine v3")
 
@@ -109,6 +112,9 @@ GEOCODE_URL = os.getenv("GEOCODE_URL", "https://nominatim.openstreetmap.org/sear
 V2_API_KEY = os.getenv("V2_API_KEY", "")
 STORAGE_BACKEND = "postgres" if os.getenv("DATABASE_URL", "").startswith("postgres") else "sqlite"
 DATABASE_URL = os.getenv("DATABASE_URL", "")
+NEO4J_URI = os.getenv("NEO4J_URI", "")
+NEO4J_USER = os.getenv("NEO4J_USER", "")
+NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "")
 AUTH_SECRET = os.getenv("AUTH_SECRET", "")
 AUTH_DEFAULT_ADMIN_USER = os.getenv("AUTH_DEFAULT_ADMIN_USER", "admin")
 AUTH_DEFAULT_ADMIN_PASSWORD = os.getenv("AUTH_DEFAULT_ADMIN_PASSWORD", "")
@@ -244,6 +250,7 @@ _start_time = time.time()
 _db: Optional[sqlite3.Connection] = None
 _ollama_http_client: Optional[httpx.AsyncClient] = None
 _geocode_http_client: Optional[httpx.AsyncClient] = None
+_graph_store: Optional[gstore.GraphStore] = None
 _ollama_available_models: set = set()
 _media_jobs: "asyncio.Queue[dict]" = asyncio.Queue()
 _media_job_state: Dict[str, dict] = {}
@@ -260,6 +267,7 @@ _v2_report_state: Dict[str, Any] = {
     "last_event_fp": "",
     "report": None,
 }
+graph_logger = logging.getLogger("osint.graph")
 _passkey_reg_challenges: Dict[str, Dict[str, Any]] = {}
 _passkey_auth_challenges: Dict[str, Dict[str, Any]] = {}
 
@@ -498,6 +506,14 @@ def require_admin(request: Request) -> dict:
     return verified
 
 
+def require_analyst_or_admin(request: Request) -> dict:
+    verified = auth_user_from_request(request)
+    role = str(verified.get("role", "")).lower()
+    if role not in {"admin", "analyst"}:
+        raise HTTPException(status_code=403, detail="Analyst or admin role required")
+    return verified
+
+
 def resolve_write_identity(
     request: Request,
     x_api_key: Optional[str] = None,
@@ -521,6 +537,25 @@ def resolve_write_identity(
         return {"username": actor, "role": role, "auth": "api_key"}
 
     raise HTTPException(status_code=401, detail="Authentication required")
+
+
+def _graph_source_id(source: str) -> str:
+    normalized = re.sub(r"[^a-z0-9]+", "_", source.lower()).strip("_")
+    if not normalized:
+        normalized = "unknown"
+    return f"source:{normalized}"
+
+
+async def _sync_event_to_graph_async(event: dict) -> None:
+    if _graph_store is None or not _graph_store.status().get("connected"):
+        return
+    try:
+        payload = dict(event)
+        payload["source_name"] = _extract_source(event)
+        payload["source"] = payload["source_name"]
+        await asyncio.to_thread(_graph_store.upsert_event_node, payload)
+    except Exception as exc:
+        graph_logger.warning("[GRAPH] failed to sync event %s: %s", str(event.get("id", "")), exc)
 
 
 def init_db() -> sqlite3.Connection:
@@ -1933,6 +1968,7 @@ async def ingest_event(event: dict):
 
     persist_event(event)
     persist_event_v2_pg(event)
+    asyncio.create_task(_sync_event_to_graph_async(event))
     if event.get("video_url"):
         event_id = str(event.get("id", ""))
         if event_id and event_id not in _media_job_state:
@@ -2353,7 +2389,7 @@ async def runtime_housekeeping():
 
 @app.on_event("startup")
 async def startup_event():
-    global _start_time, _db, _ollama_http_client, _geocode_http_client
+    global _start_time, _db, _ollama_http_client, _geocode_http_client, _graph_store
     _start_time = time.time()
     validate_security_config()
     _db = init_db()
@@ -2364,6 +2400,12 @@ async def startup_event():
     )
     cleanup_revoked_tokens()
     await sync_ollama_runtime_models()
+    _graph_store = gstore.GraphStore(uri=NEO4J_URI, user=NEO4J_USER, password=NEO4J_PASSWORD)
+    graph_status = _graph_store.status()
+    if graph_status.get("connected"):
+        print(f"[GRAPH] Neo4j connected ({graph_status.get('uri')})")
+    else:
+        print(f"[GRAPH] Neo4j disabled/offline: {graph_status.get('error')}")
     ensure_default_admin()
     load_recent_events()
 
@@ -2414,13 +2456,16 @@ async def startup_event():
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    global _ollama_http_client, _geocode_http_client
+    global _ollama_http_client, _geocode_http_client, _graph_store
     if _ollama_http_client is not None:
         await _ollama_http_client.aclose()
         _ollama_http_client = None
     if _geocode_http_client is not None:
         await _geocode_http_client.aclose()
         _geocode_http_client = None
+    if _graph_store is not None:
+        _graph_store.close()
+        _graph_store = None
 
 
 @app.get("/")
@@ -3130,12 +3175,42 @@ BODY: {body}
 
 
 @app.get("/api/v2/graph")
-async def v2_event_graph(limit: int = 350):
+async def v2_event_graph(request: Request, limit: int = 350):
+    require_analyst_or_admin(request)
     safe_limit = min(max(limit, 30), 1500)
+    if _graph_store is not None and _graph_store.status().get("connected"):
+        try:
+            graph = await asyncio.to_thread(_graph_store.get_graph_data, safe_limit)
+            return {
+                "backend": "neo4j",
+                "nodes": graph.get("nodes", []),
+                "edges": graph.get("edges", []),
+                "generated_at": utc_now_iso(),
+            }
+        except Exception as exc:
+            graph_logger.warning("[GRAPH] graph query failed, falling back: %s", exc)
+
     rows = fetch_recent_v2_events_pg(limit=safe_limit)
     if not rows:
         rows = events_history[-safe_limit:]
-    return build_event_graph(rows)
+    fallback_graph = build_event_graph(rows)
+    return {
+        "backend": "fallback",
+        "nodes": fallback_graph.get("nodes", []),
+        "edges": fallback_graph.get("edges", []),
+        "generated_at": utc_now_iso(),
+    }
+
+
+@app.get("/api/v2/graph/node/{node_id}")
+async def v2_graph_node_profile(node_id: str, request: Request):
+    require_analyst_or_admin(request)
+    if _graph_store is None or not _graph_store.status().get("connected"):
+        raise HTTPException(status_code=503, detail="Graph store unavailable")
+    profile = await asyncio.to_thread(_graph_store.get_node_profile, node_id)
+    if not profile:
+        raise HTTPException(status_code=404, detail="Node not found")
+    return profile
 
 
 @app.post("/api/media/consume")
@@ -3183,6 +3258,7 @@ async def media_consume(
 async def v2_system():
     pg = postgres_status()
     ai_status = _v2_ai_scheduler.status()
+    graph_status = _graph_store.status() if _graph_store is not None else {"enabled": False, "connected": False, "error": "not initialized"}
     return {
         "version": "v2-beta",
         "storage_backend": STORAGE_BACKEND,
@@ -3195,6 +3271,7 @@ async def v2_system():
             "report": V2_MODEL_REPORT,
         },
         "postgres": pg,
+        "neo4j": graph_status,
         "queue": {
             "media_jobs_pending": _media_jobs.qsize(),
             "media_jobs_tracked": len(_media_job_state),
