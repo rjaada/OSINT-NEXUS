@@ -7,7 +7,10 @@ services:
       - "3000:3000"
     environment:
       - NODE_ENV=production
+      - NEXT_PUBLIC_API_URL=
       - NEXT_PUBLIC_WS_URL=ws://localhost:8000
+      - NEXT_PUBLIC_LOCAL_IP=${LOCAL_IP:-127.0.0.1}
+      - BACKEND_INTERNAL_URL=http://backend:8000
     depends_on:
       - backend
 
@@ -30,6 +33,9 @@ services:
       - AUTH_DEFAULT_ADMIN_USER=${AUTH_DEFAULT_ADMIN_USER:-admin}
       - AUTH_DEFAULT_ADMIN_PASSWORD=${AUTH_DEFAULT_ADMIN_PASSWORD:-Admin!ChangeMe123}
       - AUTH_COOKIE_SECURE=${AUTH_COOKIE_SECURE:-0}
+      - PASSKEY_RP_ID=${PASSKEY_RP_ID:-localhost}
+      - PASSKEY_ORIGINS=${PASSKEY_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
       - AUTH_ADMIN_REQUIRE_PASSKEY=${AUTH_ADMIN_REQUIRE_PASSKEY:-1}
       - AUTH_BREAK_GLASS_CODE=${AUTH_BREAK_GLASS_CODE:-}
       - ALLOW_INSECURE_DEFAULTS=${ALLOW_INSECURE_DEFAULTS:-0}

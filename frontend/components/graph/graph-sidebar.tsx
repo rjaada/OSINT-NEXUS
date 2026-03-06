@@ -187,9 +187,9 @@ export function GraphSidebar({
                 <span className="font-mono text-[9px]" style={{ color: "rgba(255,255,255,0.65)" }}>
                   Outgoing: {Array.isArray(selectedProfile.outgoing) ? selectedProfile.outgoing.length : 0}
                 </span>
-                {selectedProfile.properties?.incident_id && (
+                {Boolean(selectedProfile.properties?.incident_id) && (
                   <span className="font-mono text-[9px]" style={{ color: "rgba(255,255,255,0.65)" }}>
-                    Incident: {String(selectedProfile.properties.incident_id)}
+                    Incident: {String(selectedProfile.properties?.incident_id)}
                   </span>
                 )}
               </div>

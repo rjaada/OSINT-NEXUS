@@ -38,6 +38,7 @@ Thumbs.db
 
 # Runtime / data mounts
 ollama_data/
+frontend/tsconfig.tsbuildinfo
 
 # Build / misc
 dist/

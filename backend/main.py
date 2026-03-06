@@ -274,6 +274,7 @@ _passkey_auth_challenges: Dict[str, Dict[str, Any]] = {}
 _MEDIA_JOB_STATE_TTL_SEC = int(os.getenv("MEDIA_JOB_STATE_TTL_SEC", "21600"))  # 6h
 _MEDIA_JOB_STATE_MAX = int(os.getenv("MEDIA_JOB_STATE_MAX", "3000"))
 _FAILED_LOGIN_MAX_TRACKED = int(os.getenv("FAILED_LOGIN_MAX_TRACKED", "20000"))
+DEFCON_MANUAL_OVERRIDE = int(os.getenv("DEFCON_MANUAL_OVERRIDE", "0"))
 
 
 SOURCE_RELIABILITY = {
@@ -327,6 +328,15 @@ EVENT_TYPE_KEYWORDS_AR = {
     "NOTAM": ["إغلاق المجال", "تحذير ملاحي", "إغلاق الأجواء", "تحذير جوي"],
     "CLASH": ["اشتباك", "اشتباكات", "تبادل إطلاق", "مواجهة"],
     "CRITICAL": ["حرب شاملة", "إعلان حرب", "نووي", "تصعيد غير مسبوق"],
+}
+
+_defcon_state: Dict[str, Any] = {
+    "level": 5,
+    "reason": "Baseline monitoring state",
+    "updated_at": None,
+    "event_count": 0,
+    "confidence_avg": 0,
+    "capped_from_1": False,
 }
 
 RSS_FEEDS_EN = [
@@ -2377,11 +2387,137 @@ def render_prometheus_metrics() -> str:
     return "\n".join(lines) + "\n"
 
 
+def _event_confidence_value(event: Dict[str, Any]) -> int:
+    raw = event.get("confidence_score")
+    if isinstance(raw, (int, float)):
+        return int(max(0, min(100, raw)))
+    src = _extract_source(event)
+    return int(max(0, min(100, SOURCE_RELIABILITY.get(src, 45))))
+
+
+def _event_theater_bucket(event: Dict[str, Any]) -> str:
+    lat = float(event.get("lat", 0.0))
+    lng = float(event.get("lng", 0.0))
+    if 29 <= lat <= 35 and 33 <= lng <= 37:
+        return "Levant"
+    if 23 <= lat <= 33 and 44 <= lng <= 56:
+        return "Gulf"
+    if 11 <= lat <= 22 and 37 <= lng <= 45:
+        return "RedSea"
+    if 32 <= lat <= 38 and 36 <= lng <= 43:
+        return "Syria-Iraq"
+    return "Other"
+
+
+def calculate_defcon() -> Dict[str, Any]:
+    now = datetime.now(timezone.utc)
+    if DEFCON_MANUAL_OVERRIDE in {1, 2, 3, 4, 5}:
+        return {
+            "level": DEFCON_MANUAL_OVERRIDE,
+            "reason": f"Manual DEFCON override active ({DEFCON_MANUAL_OVERRIDE})",
+            "event_count": 0,
+            "confidence_avg": 0,
+            "capped_from_1": False,
+        }
+
+    recent = [e for e in events_history[-1800:] if _parse_iso(str(e.get("timestamp", utc_now_iso()))) >= now - timedelta(minutes=60)]
+    prev = [
+        e
+        for e in events_history[-2400:]
+        if now - timedelta(minutes=120) <= _parse_iso(str(e.get("timestamp", utc_now_iso()))) < now - timedelta(minutes=60)
+    ]
+    recent_count = len(recent)
+    prev_count = len(prev)
+    strikes = [e for e in recent if str(e.get("type", "")).upper() in {"STRIKE", "CRITICAL"}]
+    strikes_high = [e for e in strikes if _event_confidence_value(e) >= 65]
+    critical_high = [e for e in recent if str(e.get("type", "")).upper() == "CRITICAL" and _event_confidence_value(e) >= 75]
+    avg_conf = int(sum(_event_confidence_value(e) for e in strikes_high) / max(1, len(strikes_high)))
+
+    incident_sources: Dict[str, set] = defaultdict(set)
+    strike_clusters: Dict[str, int] = defaultdict(int)
+    theaters: set = set()
+    for e in strikes:
+        inc_id = str(e.get("incident_id", "")).strip()
+        if inc_id:
+            incident_sources[inc_id].add(_extract_source(e))
+        key = f"{round(float(e.get('lat', 0.0)), 1)}:{round(float(e.get('lng', 0.0)), 1)}"
+        strike_clusters[key] += 1
+        theaters.add(_event_theater_bucket(e))
+
+    corroborated_2 = sum(1 for s in incident_sources.values() if len(s) >= 2)
+    corroborated_3 = sum(1 for s in incident_sources.values() if len(s) >= 3)
+    active_clusters = sum(1 for c in strike_clusters.values() if c >= 2)
+
+    level = 5
+    reason = "Low event tempo and no significant corroborated strikes"
+    capped_from_1 = False
+
+    elevated = len(strikes_high) >= 4 or (recent_count >= 10 and recent_count >= int(prev_count * 1.6))
+    high_tempo = corroborated_2 >= 2 or len(critical_high) >= 1 or len(theaters) >= 3 or len(strikes_high) >= 8
+    severe = corroborated_3 >= 1 and len(critical_high) >= 1 and active_clusters >= 2 and recent_count >= 18
+
+    if elevated:
+        level = 4
+        reason = f"Elevated strike tempo: {len(strikes_high)} high-confidence strikes in last 60 minutes"
+    if high_tempo:
+        level = 3
+        reason = (
+            f"High tempo: {corroborated_2} corroborated incidents, "
+            f"{len(critical_high)} critical events, {len(theaters)} active theaters"
+        )
+    if severe:
+        level = 2
+        reason = (
+            f"Severe tempo: {corroborated_3} incidents with 3+ sources, "
+            f"{active_clusters} strike clusters, event rate {recent_count}/h"
+        )
+
+    if level <= 1:
+        level = 2
+        capped_from_1 = True
+        reason = f"{reason}; DEFCON 1 requires manual override"
+
+    return {
+        "level": level,
+        "reason": reason,
+        "event_count": recent_count,
+        "confidence_avg": avg_conf,
+        "capped_from_1": capped_from_1,
+    }
+
+
+async def refresh_defcon_state() -> None:
+    global _defcon_state
+    snapshot = calculate_defcon()
+    previous = int(_defcon_state.get("level", 5))
+    current = int(snapshot["level"])
+    updated_at = utc_now_iso()
+    _defcon_state = {
+        **snapshot,
+        "updated_at": updated_at,
+    }
+    if previous != current:
+        await manager.broadcast(
+            {
+                "type": "defcon_change",
+                "data": {
+                    "previous": previous,
+                    "current": current,
+                    "reason": snapshot["reason"],
+                    "timestamp": updated_at,
+                    "event_count": snapshot["event_count"],
+                    "confidence_avg": snapshot["confidence_avg"],
+                },
+            }
+        )
+
+
 async def runtime_housekeeping():
     while True:
         try:
             _prune_runtime_state()
             cleanup_revoked_tokens()
+            await refresh_defcon_state()
         except Exception as e:
             print(f"[HOUSEKEEPING] Error: {e}")
         await asyncio.sleep(60)
@@ -2408,6 +2544,7 @@ async def startup_event():
         print(f"[GRAPH] Neo4j disabled/offline: {graph_status.get('error')}")
     ensure_default_admin()
     load_recent_events()
+    await refresh_defcon_state()
 
     asyncio.create_task(poll_flights())
     asyncio.create_task(poll_rss())
@@ -2863,6 +3000,8 @@ async def ops_health():
             "seen_articles": len(seen_articles),
             "seen_telegram_posts": len(seen_telegram_posts),
         },
+        "defcon_level": int(_defcon_state.get("level", 5)),
+        "defcon_reason": str(_defcon_state.get("reason", "Baseline monitoring state")),
     }
 
 
@@ -3213,6 +3352,67 @@ async def v2_graph_node_profile(node_id: str, request: Request):
     return profile
 
 
+@app.post("/api/v2/graph/node/assess")
+async def v2_graph_node_assess(payload: Dict[str, Any], request: Request):
+    require_analyst_or_admin(request)
+    node_id = str(payload.get("node_id") or "").strip()
+    node_type = str(payload.get("node_type") or "UNKNOWN").strip().upper()
+    node_data = payload.get("node_data") if isinstance(payload.get("node_data"), dict) else {}
+    if not node_id:
+        raise HTTPException(status_code=400, detail="node_id is required")
+
+    compact = {
+        "node_id": node_id,
+        "node_type": node_type,
+        "label": node_data.get("label"),
+        "confidence_score": node_data.get("confidence_score") or node_data.get("confidence"),
+        "source": node_data.get("source"),
+        "timestamp": node_data.get("timestamp"),
+        "incident_id": node_data.get("incident_id"),
+        "lat": node_data.get("lat"),
+        "lng": node_data.get("lng"),
+        "description": node_data.get("description") or node_data.get("desc"),
+        "reliability": node_data.get("reliability"),
+        "event_count": node_data.get("event_count"),
+        "trend": node_data.get("trend"),
+    }
+    prompt = f"""You are an OSINT analyst assistant.
+Return ONLY strict JSON:
+{{
+  "assessment": "2-3 concise advisory sentences grounded in provided node evidence."
+}}
+Rules:
+- Keep neutral analytical tone.
+- Mention uncertainty if evidence is weak or sparse.
+- No markdown and no extra keys.
+
+NODE_PAYLOAD:
+{json.dumps(compact, ensure_ascii=False)}
+"""
+    try:
+        data = await _v2_ai_scheduler.run_json("report", prompt=prompt, temperature=0.05)
+        text = str(data.get("assessment", "")).strip()
+        if not text:
+            text = "Insufficient verified evidence for a stable node-level assessment."
+        return {
+            "node_id": node_id,
+            "node_type": node_type,
+            "assessment": text,
+            "model": V2_MODEL_REPORT,
+            "generated_at": utc_now_iso(),
+            "offline": False,
+        }
+    except HTTPException:
+        return {
+            "node_id": node_id,
+            "node_type": node_type,
+            "assessment": "AI ANALYST OFFLINE",
+            "model": V2_MODEL_REPORT,
+            "generated_at": utc_now_iso(),
+            "offline": True,
+        }
+
+
 @app.post("/api/media/consume")
 async def media_consume(
     payload: Dict[str, Any],
@@ -3276,6 +3476,8 @@ async def v2_system():
             "media_jobs_pending": _media_jobs.qsize(),
             "media_jobs_tracked": len(_media_job_state),
         },
+        "defcon_level": int(_defcon_state.get("level", 5)),
+        "defcon_reason": str(_defcon_state.get("reason", "Baseline monitoring state")),
         "ai_policy": ai_status.get("policy"),
         "ai_runtime": ai_status.get("runtime"),
         "generated_at": utc_now_iso(),

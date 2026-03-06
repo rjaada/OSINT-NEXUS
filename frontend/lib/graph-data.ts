@@ -162,8 +162,8 @@ export function normalizeGraphPayload(payload: GraphPayload): { nodes: GraphNode
 
   const nodeIds = new Set(nodes.map((n) => n.id))
 
-  const edges: GraphEdge[] = rawEdges
-    .map((e, idx) => {
+  const edges = rawEdges
+    .map((e, idx): GraphEdge | null => {
       const source = String(e.source || "").trim()
       const target = String(e.target || "").trim()
       if (!source || !target || !nodeIds.has(source) || !nodeIds.has(target)) return null
@@ -173,9 +173,9 @@ export function normalizeGraphPayload(payload: GraphPayload): { nodes: GraphNode
         target,
         type: normalizeRelType(String(e.type || e.relation || "REPORTED_BY")),
         properties: (e.properties as Record<string, unknown>) || {},
-      } satisfies GraphEdge
+      }
     })
-    .filter((x): x is GraphEdge => Boolean(x))
+    .filter((x): x is GraphEdge => x !== null)
 
   const connectionMap = new Map<string, number>()
   edges.forEach((edge) => {

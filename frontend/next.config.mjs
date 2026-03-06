@@ -16,6 +16,21 @@ const nextConfig = {
   images: {
     unoptimized: true,
   },
+  async rewrites() {
+    const backend = process.env.BACKEND_INTERNAL_URL || "http://localhost:8000"
+    return {
+      fallback: [
+        {
+          source: "/api/:path*",
+          destination: `${backend}/api/:path*`,
+        },
+        {
+          source: "/media/:path*",
+          destination: `${backend}/media/:path*`,
+        },
+      ],
+    }
+  },
 }
 
 export default nextConfig

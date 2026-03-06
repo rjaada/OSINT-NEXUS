@@ -41,9 +41,20 @@ export interface Aircraft {
   military: boolean
 }
 
+const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? ""
+
 function isTelegramSource(src?: string): boolean {
   const s = (src || "").trim()
   return s.endsWith("(TG)") || s === "AJ Mubasher (TG)" || s === "Roaa War Studies (TG)"
+}
+
+function isFirmsSource(src?: string): boolean {
+  const s = String(src || "").toUpperCase()
+  return s.includes("FIRMS") || s.includes("NASA")
+}
+
+function isOperationalEventSource(src?: string): boolean {
+  return isTelegramSource(src) || isFirmsSource(src)
 }
 
 function playAlertBeep(type: "CRITICAL" | "STRIKE") {
@@ -81,7 +92,6 @@ function playAlertBeep(type: "CRITICAL" | "STRIKE") {
 
 export function Dashboard() {
   const [events, setEvents] = useState<IntelEvent[]>([])
-  const [aircraft, setAircraft] = useState<Aircraft[]>([])
   const [wsStatus, setWsStatus] = useState<"connecting" | "live" | "offline">("connecting")
   const [crisisMode, setCrisisMode] = useState(false)
   const [selectedMapEvent, setSelectedMapEvent] = useState<IntelEvent | null>(null)
@@ -125,7 +135,7 @@ export function Dashboard() {
       const ref = selectedMapEvent || eventsRef.current[0]
       const qp = ref ? `?lat=${ref.lat}&lng=${ref.lng}` : ""
       try {
-        const res = await fetch(`http://localhost:8000/api/v2/metoc${qp}`, { cache: "no-store" })
+        const res = await fetch(`${API_BASE}/api/v2/metoc${qp}`, { cache: "no-store" })
         if (!res.ok) return
         const data = await res.json()
         const vis = Number(data?.visibility_km ?? 0)
@@ -157,7 +167,7 @@ export function Dashboard() {
   }, [])
 
   const addEvent = useCallback((evt: IntelEvent, fromBackfill = false) => {
-    if (!isTelegramSource(evt.source)) return
+    if (!isOperationalEventSource(evt.source)) return
     if (!evt?.id || seenIdsRef.current.has(evt.id)) return
     seenIdsRef.current.add(evt.id)
     evt.timestamp = evt.timestamp ? new Date(evt.timestamp).toISOString().slice(11, 19) + "Z" : new Date().toISOString().slice(11, 19) + "Z"
@@ -177,12 +187,12 @@ export function Dashboard() {
   useEffect(() => {
     const backfill = async () => {
       try {
-        const res = await fetch(`http://localhost:8000/api/v2/events?limit=${crisisMode ? 160 : 110}`)
+        const res = await fetch(`${API_BASE}/api/v2/events?limit=${crisisMode ? 160 : 110}`)
         if (res.ok) {
           const data: IntelEvent[] = await res.json()
           seenIdsRef.current.clear()
           setEvents([])
-          data.filter((evt) => isTelegramSource(evt.source)).forEach((evt) => addEvent(evt, true))
+          data.filter((evt) => isOperationalEventSource(evt.source)).forEach((evt) => addEvent(evt, true))
         }
       } catch (_) {}
     }
@@ -210,7 +220,7 @@ export function Dashboard() {
 
     const connect = () => {
       try {
-        const wsUrl = (process.env.NEXT_PUBLIC_WS_URL ?? "ws://localhost:8000") + "/ws/live/v2"
+        const wsUrl = (process.env.NEXT_PUBLIC_WS_URL ?? (typeof window !== "undefined" ? `${window.location.protocol === "https:" ? "wss" : "ws"}://${window.location.host}` : "ws://localhost:8000")) + "/ws/live/v2"
         ws = new WebSocket(wsUrl)
         ws.onopen = () => setWsStatus("live")
         ws.onclose = () => {
@@ -223,10 +233,10 @@ export function Dashboard() {
             const payload = JSON.parse(e.data)
             if (payload.type === "NEW_EVENT") {
               const evt = payload.data as IntelEvent
-              if (isTelegramSource(evt?.source)) addEvent(evt)
+              if (isOperationalEventSource(evt?.source)) addEvent(evt)
             } else if (payload.type === "NEW_EVENT_DIFF") {
               const d = payload.data || {}
-              if (!isTelegramSource(d.source)) return
+              if (!isOperationalEventSource(d.source)) return
               addEvent({
                 id: d.id,
                 incident_id: d.incident_id,
@@ -240,7 +250,7 @@ export function Dashboard() {
                 model_inference: [],
               })
             } else if (payload.type === "AIRCRAFT_UPDATE") {
-              setAircraft(payload.data as Aircraft[])
+              // Aircraft feed continues in backend but is intentionally not rendered in map UI.
             }
           } catch (_) {}
         }
@@ -260,39 +270,15 @@ export function Dashboard() {
     setSelectedMapEvent(evt)
   }
 
-  const bftRows = useMemo(() => {
-    return aircraft.slice(0, 8).map((ac, i) => {
-      const status = ac.military
-        ? (ac.speed > 420 ? "Mission Ready" : ac.alt < 2000 ? "Degraded" : "Mission Ready")
-        : (i % 3 === 0 ? "Degraded" : "Mission Ready")
-      return {
-        id: ac.id,
-        unit: ac.callsign || `UNIT-${i + 1}`,
-        type: ac.military ? "AIR" : "CIV",
-        status,
-        lat: ac.lat,
-        lng: ac.lng,
-      }
-    })
-  }, [aircraft])
-
-  const isrTasks = useMemo(() => {
-    const sectors = ["Gaza Corridor", "South Lebanon", "West Bank", "Red Sea Lane"]
-    const assets = ["RQ-4B", "MQ-9", "E-8C", "P-8A"]
-    return sectors.map((sector, i) => ({
-      sector,
-      asset: assets[i % assets.length],
-      pattern: i % 2 === 0 ? "Racetrack Orbit" : "Figure-8 Orbit",
-      tos: `${35 - i * 6}m`,
-      assigned: events.filter((e) => i === 0 ? e.type === "CRITICAL" : e.type === "STRIKE").length,
-    }))
-  }, [events])
-
   return (
     <>
       <div className="flex-1 min-w-0 flex flex-col">
         <div className="flex-1 min-h-0 p-2 flex flex-col relative">
-          <MapArea events={events} onEventClick={handleMapEventClick} showWeatherOverlay={showWeatherOverlay} />
+          <MapArea
+            events={events}
+            onEventClick={handleMapEventClick}
+            showWeatherOverlay={showWeatherOverlay}
+          />
           {selectedMapEvent && (
             <div className="absolute top-5 left-5 z-30 w-[min(420px,calc(100%-2.5rem))] rounded-xl border border-cyan-500/35 bg-[rgba(5,8,14,0.94)] shadow-[0_14px_30px_rgba(0,0,0,0.55)] backdrop-blur-md">
               <div className="flex items-start gap-2 border-b border-white/10 px-4 py-3">
@@ -410,30 +396,6 @@ export function Dashboard() {
 
         <div className="flex-1 min-h-0 overflow-y-auto osint-feed-scroll">
           <div className="flex flex-col gap-2 p-3">
-            <div className="rounded-lg border border-white/10 bg-black/25 p-2">
-              <p className="mb-2 text-[9px] uppercase tracking-[0.16em] text-osint-purple">Blue Force Tracker</p>
-              <div className="max-h-28 overflow-y-auto osint-feed-scroll pr-1">
-                {(bftRows.length > 0 ? bftRows : [{ id: "none", unit: "No tracks", type: "--", status: "Degraded", lat: 0, lng: 0 }]).map((row) => (
-                  <div key={row.id} className="flex items-center justify-between border-b border-white/5 py-1 text-[10px]">
-                    <span className="text-[#d5dcf0]">{row.unit}</span>
-                    <span className="text-muted-foreground">{row.type}</span>
-                    <span className={row.status === "Mission Ready" ? "text-osint-green" : "text-osint-amber"}>{row.status}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            <div className="rounded-lg border border-white/10 bg-black/25 p-2">
-              <p className="mb-2 text-[9px] uppercase tracking-[0.16em] text-osint-amber">ISR Tasking</p>
-              <div className="space-y-1">
-                {isrTasks.map((task) => (
-                  <div key={task.sector} className="rounded border border-white/10 px-2 py-1 text-[10px]">
-                    <p className="text-[#d6dbea]">{task.asset} - {task.sector}</p>
-                    <p className="text-muted-foreground">{task.pattern} • TOS {task.tos} • assigned {task.assigned}</p>
-                  </div>
-                ))}
-              </div>
-            </div>
           </div>
         </div>
       </aside>

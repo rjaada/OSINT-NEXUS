@@ -32,7 +32,12 @@ interface OperatorAccessCardProps {
   displayOnly?: boolean
 }
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000"
+const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? ""
+
+function apiUrl(path: string): string {
+  if (API_BASE) return `${API_BASE}${path}`
+  return path
+}
 
 const ROLE_STYLE: Record<
   Role,
@@ -153,7 +158,7 @@ export function OperatorAccessCard({ nextPath = "/", displayOnly = false }: Oper
 
   const fetchCardMeta = useCallback(async () => {
     try {
-      const res = await fetch(`${API_BASE}/api/auth/card`, { credentials: "include", cache: "no-store" })
+      const res = await fetch(apiUrl("/api/auth/card"), { credentials: "include", cache: "no-store" })
       const data = await res.json().catch(() => ({}))
       if (res.ok && data?.card) {
         const c = data.card as CardMeta
@@ -183,7 +188,7 @@ export function OperatorAccessCard({ nextPath = "/", displayOnly = false }: Oper
     let cancelled = false
     async function initDisplay() {
       try {
-        const sessionRes = await fetch(`${API_BASE}/api/auth/session`, { credentials: "include", cache: "no-store" })
+        const sessionRes = await fetch(apiUrl("/api/auth/session"), { credentials: "include", cache: "no-store" })
         const session = await sessionRes.json().catch(() => ({}))
         if (!sessionRes.ok || !session?.authenticated) {
           if (!cancelled) window.location.href = `/login?next=${encodeURIComponent(displayRedirect)}`
@@ -214,7 +219,7 @@ export function OperatorAccessCard({ nextPath = "/", displayOnly = false }: Oper
     async function runChecks() {
       const mark = (k: string, v: CheckState) => !cancelled && setChecks((prev) => ({ ...prev, [k]: v }))
       try {
-        const sessionRes = await fetch(`${API_BASE}/api/auth/session`, { credentials: "include", cache: "no-store" })
+        const sessionRes = await fetch(apiUrl("/api/auth/session"), { credentials: "include", cache: "no-store" })
         const session = await sessionRes.json().catch(() => ({}))
         if (sessionRes.ok && session?.authenticated) {
           const expires = new Date(Date.now() + 1000 * 60 * 60 * 8).toUTCString()
@@ -231,17 +236,17 @@ export function OperatorAccessCard({ nextPath = "/", displayOnly = false }: Oper
         mark("session", "fail")
       }
       try {
-        mark("backend", (await fetch(`${API_BASE}/api/health`, { cache: "no-store" })).ok ? "ok" : "fail")
+        mark("backend", (await fetch(apiUrl("/api/health"), { cache: "no-store" })).ok ? "ok" : "fail")
       } catch {
         mark("backend", "fail")
       }
       try {
-        mark("ops", (await fetch(`${API_BASE}/api/ops/health`, { cache: "no-store" })).ok ? "ok" : "fail")
+        mark("ops", (await fetch(apiUrl("/api/ops/health"), { cache: "no-store" })).ok ? "ok" : "fail")
       } catch {
         mark("ops", "fail")
       }
       try {
-        mark("models", (await fetch(`${API_BASE}/api/v2/ai/policy`, { cache: "no-store" })).ok ? "ok" : "fail")
+        mark("models", (await fetch(apiUrl("/api/v2/ai/policy"), { cache: "no-store" })).ok ? "ok" : "fail")
       } catch {
         mark("models", "fail")
       }
@@ -314,7 +319,7 @@ export function OperatorAccessCard({ nextPath = "/", displayOnly = false }: Oper
   }
 
   const completeLogin = async (loginJson: Record<string, unknown>) => {
-    const sessionRes = await fetch(`${API_BASE}/api/auth/session`, { credentials: "include", cache: "no-store" })
+    const sessionRes = await fetch(apiUrl("/api/auth/session"), { credentials: "include", cache: "no-store" })
     const sessionJson = await sessionRes.json().catch(() => ({}))
     const expires = new Date(Date.now() + 1000 * 60 * 60 * 8).toUTCString()
     const finalRole = String(sessionJson?.role || loginJson?.role || role || "viewer").toLowerCase() as Role
@@ -361,7 +366,7 @@ export function OperatorAccessCard({ nextPath = "/", displayOnly = false }: Oper
     playBeep(700, 80)
     const timer = window.setInterval(() => setScanProgress((v) => Math.min(100, v + 4)), 40)
     try {
-      const optsRes = await fetch(`${API_BASE}/api/auth/passkey/login/options`, {
+      const optsRes = await fetch(apiUrl("/api/auth/passkey/login/options"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -380,7 +385,15 @@ export function OperatorAccessCard({ nextPath = "/", displayOnly = false }: Oper
             }))
           : [],
       }
-      const cred = (await navigator.credentials.get({ publicKey })) as PublicKeyCredential | null
+      let cred: PublicKeyCredential | null = null
+      try {
+        cred = (await navigator.credentials.get({
+          publicKey,
+          mediation: "required",
+        } as CredentialRequestOptions)) as PublicKeyCredential | null
+      } catch {
+        cred = (await navigator.credentials.get({ publicKey })) as PublicKeyCredential | null
+      }
       if (!cred) throw new Error("Passkey assertion canceled")
       const res = cred.response as AuthenticatorAssertionResponse
       const credential = {
@@ -394,7 +407,7 @@ export function OperatorAccessCard({ nextPath = "/", displayOnly = false }: Oper
           userHandle: res.userHandle ? bytesToB64url(res.userHandle) : null,
         },
       }
-      const verify = await fetch(`${API_BASE}/api/auth/passkey/login/verify`, {
+      const verify = await fetch(apiUrl("/api/auth/passkey/login/verify"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -441,7 +454,7 @@ export function OperatorAccessCard({ nextPath = "/", displayOnly = false }: Oper
 
     try {
       if (mode === "register") {
-        const reg = await fetch(`${API_BASE}/api/auth/register`, {
+        const reg = await fetch(apiUrl("/api/auth/register"), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           credentials: "include",
@@ -452,7 +465,7 @@ export function OperatorAccessCard({ nextPath = "/", displayOnly = false }: Oper
         setNote("Account created. Verifying identity...")
       }
 
-      const login = await fetch(`${API_BASE}/api/auth/login`, {
+      const login = await fetch(apiUrl("/api/auth/login"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",

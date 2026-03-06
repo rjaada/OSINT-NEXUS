@@ -14,6 +14,16 @@ type SearchItem = {
 
 const INACTIVITY_LIMIT_MS = 15 * 60 * 1000
 const WARNING_WINDOW_MS = 3 * 60 * 1000
+const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? ""
+
+type DefconChangePayload = {
+  previous: number
+  current: number
+  reason: string
+  timestamp: string
+  event_count: number
+  confidence_avg: number
+}
 
 function dtg(now: Date) {
   const day = String(now.getUTCDate()).padStart(2, "0")
@@ -40,6 +50,19 @@ function formatCountdown(ms: number) {
   return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`
 }
 
+function dtgFromIso(iso?: string) {
+  const value = iso ? new Date(iso) : new Date()
+  const d = Number.isNaN(value.getTime()) ? new Date() : value
+  return dtg(d)
+}
+
+function defconTone(level: number) {
+  if (level <= 2) return { fg: "#ff1a3c", bg: "rgba(255,26,60,0.12)", border: "rgba(255,26,60,0.45)" }
+  if (level === 3) return { fg: "#ff6b00", bg: "rgba(255,107,0,0.12)", border: "rgba(255,107,0,0.45)" }
+  if (level === 4) return { fg: "#ffa630", bg: "rgba(255,166,48,0.12)", border: "rgba(255,166,48,0.45)" }
+  return { fg: "#00b4d8", bg: "rgba(0,180,216,0.10)", border: "rgba(0,180,216,0.35)" }
+}
+
 export function TopBar({ headlines }: { headlines?: string[] }) {
   const [role, setRole] = useState("viewer")
   const [utcTime, setUtcTime] = useState("")
@@ -58,8 +81,16 @@ export function TopBar({ headlines }: { headlines?: string[] }) {
   const [countdownText, setCountdownText] = useState("03:00")
   const [terminalLocked, setTerminalLocked] = useState(false)
   const [defcon, setDefcon] = useState<number>(5)
+  const [defconModal, setDefconModal] = useState<DefconChangePayload | null>(null)
   const lastActivityRef = useRef<number>(Date.now())
   const searchInputRef = useRef<HTMLInputElement>(null)
+  const wsBase = useMemo(() => {
+    const fromEnv = process.env.NEXT_PUBLIC_WS_URL
+    if (fromEnv) return fromEnv
+    if (typeof window === "undefined") return "ws://localhost:8000"
+    const proto = window.location.protocol === "https:" ? "wss" : "ws"
+    return `${proto}://${window.location.host}`
+  }, [])
 
   useEffect(() => {
     const update = () => {
@@ -75,10 +106,60 @@ export function TopBar({ headlines }: { headlines?: string[] }) {
   }, [])
 
   useEffect(() => {
-    try {
-      const lv = Number(localStorage.getItem("osint_defcon") || "5")
-      setDefcon(Number.isFinite(lv) ? Math.min(5, Math.max(1, lv)) : 5)
-    } catch (_) {}
+    let closed = false
+    const loadDefcon = async () => {
+      try {
+        const res = await fetch(`${API_BASE}/api/v2/system`, { credentials: "include", cache: "no-store" })
+        if (!res.ok) return
+        const data = await res.json()
+        const lv = Number(data?.defcon_level ?? 5)
+        if (!closed && Number.isFinite(lv)) setDefcon(Math.min(5, Math.max(1, lv)))
+      } catch (_) {}
+    }
+    void loadDefcon()
+    return () => {
+      closed = true
+    }
+  }, [])
+
+  useEffect(() => {
+    let ws: WebSocket | null = null
+    let retry: ReturnType<typeof setTimeout> | null = null
+
+    const connect = () => {
+      try {
+        ws = new WebSocket(`${wsBase}/ws/live/v2`)
+        ws.onclose = () => {
+          retry = setTimeout(connect, 5000)
+        }
+        ws.onerror = () => ws?.close()
+        ws.onmessage = (evt) => {
+          try {
+            const msg = JSON.parse(evt.data) as { type?: string; data?: DefconChangePayload }
+            if (msg.type !== "defcon_change" || !msg.data) return
+            const level = Math.min(5, Math.max(1, Number(msg.data.current || 5)))
+            setDefcon(level)
+            const acked = Number(localStorage.getItem("osint_defcon_ack_level") || "0")
+            if (acked === level) return
+            setDefconModal({
+              previous: Number(msg.data.previous || 5),
+              current: level,
+              reason: String(msg.data.reason || "Runtime DEFCON change"),
+              timestamp: String(msg.data.timestamp || new Date().toISOString()),
+              event_count: Number(msg.data.event_count || 0),
+              confidence_avg: Number(msg.data.confidence_avg || 0),
+            })
+          } catch (_) {}
+        }
+      } catch (_) {
+        retry = setTimeout(connect, 5000)
+      }
+    }
+    connect()
+    return () => {
+      if (retry) clearTimeout(retry)
+      ws?.close()
+    }
   }, [])
 
   useEffect(() => {
@@ -114,7 +195,7 @@ export function TopBar({ headlines }: { headlines?: string[] }) {
 
     const load = async () => {
       try {
-        const res = await fetch("http://localhost:8000/api/v2/events?limit=18", { cache: "no-store" })
+        const res = await fetch(`${API_BASE}/api/v2/events?limit=18`, { cache: "no-store" })
         if (!res.ok) return
         const data = await res.json()
         const parsed: SearchItem[] = (data || []).map((evt: { id: string; desc?: string; source?: string; timestamp?: string }, idx: number) => ({
@@ -144,7 +225,7 @@ export function TopBar({ headlines }: { headlines?: string[] }) {
     void load()
     const poll = setInterval(load, 20000)
     return () => clearInterval(poll)
-  }, [role])
+  }, [role, API_BASE])
 
   useEffect(() => {
     const onActivity = () => {
@@ -239,8 +320,13 @@ export function TopBar({ headlines }: { headlines?: string[] }) {
     setCountdownText("03:00")
   }
 
-  const cycleDefcon = () => {
-    setDefcon((prev) => (prev <= 1 ? 5 : prev - 1))
+  const acknowledgeDefcon = () => {
+    if (!defconModal) return
+    try {
+      localStorage.setItem("osint_defcon_ack_level", String(defconModal.current))
+      localStorage.setItem("osint_defcon_ack_ts", String(defconModal.timestamp))
+    } catch (_) {}
+    setDefconModal(null)
   }
 
   return (
@@ -293,8 +379,7 @@ export function TopBar({ headlines }: { headlines?: string[] }) {
 
             <button
               type="button"
-              onClick={cycleDefcon}
-              className={`hidden lg:flex items-center gap-1 rounded border px-2 py-1 text-[9px] tracking-[0.16em] uppercase ${
+              className={`hidden lg:flex cursor-default items-center gap-1 rounded border px-2 py-1 text-[9px] tracking-[0.16em] uppercase ${
                 defcon <= 2
                   ? "border-osint-red/45 text-osint-red bg-osint-red/12"
                   : defcon === 3
@@ -406,6 +491,52 @@ export function TopBar({ headlines }: { headlines?: string[] }) {
             >
               Re-authenticate
             </button>
+          </div>
+        </div>
+      )}
+
+      {defconModal && (
+        <div className="fixed inset-0 z-[195] flex items-center justify-center bg-black/72 backdrop-blur-md">
+          <div
+            className="w-[min(720px,92vw)] rounded-xl border p-6"
+            style={{
+              background: "rgba(11,12,16,0.92)",
+              borderColor: defconModal.current < defconModal.previous ? "rgba(255,26,60,0.45)" : "rgba(0,255,136,0.4)",
+              boxShadow: "0 24px 60px rgba(0,0,0,0.6)",
+            }}
+          >
+            <p
+              className="text-center font-mono text-[11px] font-bold uppercase tracking-[0.22em]"
+              style={{ color: defconModal.current < defconModal.previous ? "#ff1a3c" : "#00ff88" }}
+            >
+              {defconModal.current < defconModal.previous ? "DEFCON LEVEL CHANGE" : "DEFCON DOWNGRADE"}
+            </p>
+            <h2
+              className="mt-3 text-center font-blackops text-6xl tracking-[0.16em]"
+              style={{ color: defconTone(defconModal.current).fg }}
+            >
+              DEFCON {defconModal.current}
+            </h2>
+            <p className="mt-2 text-center font-mono text-lg text-[#dbe4ff]">
+              {defconModal.previous} → {defconModal.current}
+            </p>
+            <p className="mx-auto mt-4 max-w-2xl text-center font-mono text-[12px] text-[#b9c3dc]">
+              {defconModal.reason}
+            </p>
+            <div className="mt-4 grid grid-cols-1 gap-2 text-center font-mono text-[11px] text-[#8f9ab6] sm:grid-cols-3">
+              <span>DTG {dtgFromIso(defconModal.timestamp)}</span>
+              <span>EVENTS {defconModal.event_count}</span>
+              <span>CONF AVG {defconModal.confidence_avg}</span>
+            </div>
+            <div className="mt-6 flex justify-center">
+              <button
+                type="button"
+                onClick={acknowledgeDefcon}
+                className="rounded border border-osint-red/60 px-6 py-2 font-mono text-[11px] font-bold uppercase tracking-[0.18em] text-osint-red hover:bg-osint-red/12"
+              >
+                Acknowledge
+              </button>
+            </div>
           </div>
         </div>
       )}

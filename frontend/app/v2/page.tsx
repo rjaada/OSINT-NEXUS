@@ -3,6 +3,12 @@ import Link from "next/link"
 import { useEffect, useState } from "react"
 import { csrfHeaders } from "@/lib/security"
 
+const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? ""
+function apiUrl(path: string): string {
+  if (API_BASE) return `${API_BASE}${path}`
+  return path
+}
+
 export default function HomePage() {
   const [role, setRole] = useState("viewer")
   const [user, setUser] = useState("user")
@@ -16,7 +22,7 @@ export default function HomePage() {
 
   const logout = async () => {
     try {
-      await fetch("http://localhost:8000/api/auth/logout", {
+      await fetch(apiUrl("/api/auth/logout"), {
         method: "POST",
         credentials: "include",
         headers: csrfHeaders({ "Content-Type": "application/json" }),
@@ -25,6 +31,7 @@ export default function HomePage() {
     document.cookie = "osint_session=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; SameSite=Lax"
     document.cookie = "osint_role=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; SameSite=Lax"
     document.cookie = "osint_user=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; SameSite=Lax"
+    document.cookie = "osint_csrf=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; SameSite=Lax"
     window.location.href = "/login"
   }
 
@@ -118,6 +125,20 @@ export default function HomePage() {
               <h2 className="text-xl font-semibold mb-2">Intel Briefs</h2>
               <p className="text-sm text-muted-foreground">
                 Cinematic intelligence brief sequence with PDF export and AI-generated summary.
+              </p>
+            </Link>
+          ) : null}
+
+          {role === "analyst" || role === "admin" ? (
+            <Link
+              href="/v2/graph"
+              className="rounded-xl p-6 transition-all hover:bg-white/[0.03]"
+              style={{ background: "rgba(7,8,12,0.92)", border: "1px solid rgba(255,255,255,0.08)" }}
+            >
+              <p className="text-[10px] tracking-[0.18em] uppercase text-osint-blue mb-2">Entity Graph</p>
+              <h2 className="text-xl font-semibold mb-2">Intel Graph</h2>
+              <p className="text-sm text-muted-foreground">
+                Explore linked events, sources, incidents, and classifications in a live relationship graph.
               </p>
             </Link>
           ) : null}

@@ -3,9 +3,10 @@
 import { useEffect, useRef, useState } from "react"
 import maplibregl from "maplibre-gl"
 import "maplibre-gl/dist/maplibre-gl.css"
-import type { IntelEvent } from "./intel-feed"
+import type { IntelEvent } from "./intel-feed-v2"
 
 const DARK_STYLE = "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json"
+const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? ""
 
 const SATELLITE_STYLE: maplibregl.StyleSpecification = {
   version: 8,
@@ -27,6 +28,7 @@ const TYPE_COLORS: Record<string, string> = {
   NOTAM:    "#ffa630",
   CLASH:    "#00ff88",
 }
+
 
 // ── Active conflict zones with polygon coordinates ─────────────────────────────
 const CONFLICT_ZONES: Array<{
@@ -192,7 +194,11 @@ function createCircle(lng: number, lat: number, radiusKm: number, points = 48): 
   return coords
 }
 
-export function MapArea({ events, onEventClick, showWeatherOverlay = false }: {
+export function MapArea({
+  events,
+  onEventClick,
+  showWeatherOverlay = false,
+}: {
   events?: IntelEvent[]
   onEventClick?: (evt: IntelEvent) => void
   showWeatherOverlay?: boolean
@@ -347,7 +353,7 @@ export function MapArea({ events, onEventClick, showWeatherOverlay = false }: {
         if (map.getSource(id)) map.removeSource(id)
       })
       overlayIdsRef.current = []
-      const res = await fetch("http://localhost:8000/api/v2/overlays", { cache: "no-store" })
+      const res = await fetch(`${API_BASE}/api/v2/overlays`, { cache: "no-store" })
       if (!res.ok) return
       const data = await res.json()
       const items = Array.isArray(data?.items) ? data.items : []
@@ -442,10 +448,11 @@ export function MapArea({ events, onEventClick, showWeatherOverlay = false }: {
 
   // ── Event markers + heat + threat radius ─────────────────────────────────
   useEffect(() => {
-    if (!mapReadyRef.current || !mapRef.current || !events) return
+    if (!mapReadyRef.current || !mapRef.current) return
     const map = mapRef.current
+    const eventsToRender = events || []
 
-    const heatFeatures = events.map((evt) => ({
+    const heatFeatures = eventsToRender.map((evt) => ({
       type: "Feature" as const,
       properties: { weight: evt.type === "CRITICAL" ? 3 : evt.type === "STRIKE" ? 2 : 1 },
       geometry: { type: "Point" as const, coordinates: [evt.lng, evt.lat] },
@@ -453,7 +460,7 @@ export function MapArea({ events, onEventClick, showWeatherOverlay = false }: {
     const heatSrc = map.getSource("event-heat") as maplibregl.GeoJSONSource | undefined
     heatSrc?.setData({ type: "FeatureCollection", features: heatFeatures })
 
-    const threatFeatures = events
+    const threatFeatures = eventsToRender
       .filter((e) => e.type === "CRITICAL" || e.type === "STRIKE")
       .map((evt) => ({
         type: "Feature" as const,
@@ -464,7 +471,7 @@ export function MapArea({ events, onEventClick, showWeatherOverlay = false }: {
     threatSrc?.setData({ type: "FeatureCollection", features: threatFeatures })
 
     // Event dot markers 
-    const currentEventIds = new Set(events.map(e => e.id))
+    const currentEventIds = new Set(eventsToRender.map((e) => e.id))
     hoverPopupRef.current?.remove()
     hoverPopupRef.current = null
 
@@ -477,7 +484,7 @@ export function MapArea({ events, onEventClick, showWeatherOverlay = false }: {
     })
 
     // 2. Add new markers
-    events.forEach((evt) => {
+    eventsToRender.forEach((evt) => {
       if (eventMarkersRef.current[evt.id]) return
       const color = TYPE_COLORS[evt.type] ?? "#b24bff"
       const isCritical = evt.type === "CRITICAL"

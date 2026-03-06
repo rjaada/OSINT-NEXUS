@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useState } from "react"
-import { Activity, AlertTriangle, Plane, Radio, Shield, Clock } from "lucide-react"
+import { Activity, AlertTriangle, Radio, Clock, Timer } from "lucide-react"
 
 interface Stats {
   events_total: number
@@ -38,8 +38,12 @@ export function BottomBar() {
   const items = [
     { label: "Events Monitored", value: stats?.events_total ?? 0, icon: Activity, color: "#00ff88" },
     { label: "Active Threats", value: stats?.active_threats ?? 0, icon: AlertTriangle, color: "#ff1a3c" },
-    { label: "Aircraft Tracked", value: stats?.aircraft_tracked ?? 0, icon: Plane, color: "#00b4d8" },
-    { label: "Military AC", value: stats?.military_aircraft ?? 0, icon: Shield, color: "#ffa630" },
+    {
+      label: "Event Rate / Hr",
+      value: Math.max(1, Math.round(((stats?.events_total ?? 0) / Math.max(1, (stats?.uptime_seconds ?? 1) / 3600)))),
+      icon: Timer,
+      color: "#00b4d8",
+    },
     { label: "Sources", value: stats?.sources_active ?? 0, icon: Radio, color: "#b24bff" },
   ]
 
