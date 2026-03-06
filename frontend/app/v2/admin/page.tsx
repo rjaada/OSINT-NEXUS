@@ -5,6 +5,12 @@ import { TopBar } from "@/components/dashboard/top-bar"
 import { CommandNav } from "@/components/dashboard/command-nav"
 import { csrfHeaders } from "@/lib/security"
 
+const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? ""
+function apiUrl(path: string): string {
+  if (API_BASE) return `${API_BASE}${path}`
+  return path
+}
+
 type Role = "viewer" | "analyst" | "admin"
 
 interface AdminUser {
@@ -49,7 +55,7 @@ export default function AdminUsersPage() {
     setLoading(true)
     setMsg("")
     try {
-      const res = await fetch("http://localhost:8000/api/admin/users", { credentials: "include", cache: "no-store" })
+      const res = await fetch(apiUrl("/api/admin/users"), { credentials: "include", cache: "no-store" })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) {
         setMsg(data?.detail || "Failed to load users")
@@ -71,7 +77,7 @@ export default function AdminUsersPage() {
 
   const loadPasskeyStatus = async () => {
     try {
-      const res = await fetch("http://localhost:8000/api/auth/passkey/status", { credentials: "include", cache: "no-store" })
+      const res = await fetch(apiUrl("/api/auth/passkey/status"), { credentials: "include", cache: "no-store" })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) return
       setPasskeyEnabled(Boolean(data?.enabled))
@@ -86,6 +92,23 @@ export default function AdminUsersPage() {
     void loadPasskeyStatus()
   }, [role])
 
+  useEffect(() => {
+    if (role !== "admin") return
+    const loadSession = async () => {
+      try {
+        const res = await fetch(apiUrl("/api/auth/session"), { credentials: "include", cache: "no-store" })
+        const data = await res.json().catch(() => ({}))
+        if (!res.ok) return
+        if (data?.authenticated && data?.username) {
+          setActor(String(data.username))
+        }
+      } catch {
+        // best effort
+      }
+    }
+    void loadSession()
+  }, [role])
+
   const enrollPasskey = async () => {
     if (!window.PublicKeyCredential || !navigator.credentials) {
       setMsg("Passkey not supported in this browser")
@@ -93,7 +116,7 @@ export default function AdminUsersPage() {
     }
     setMsg("")
     try {
-      const optsRes = await fetch("http://localhost:8000/api/auth/passkey/register/options", {
+      const optsRes = await fetch(apiUrl("/api/auth/passkey/register/options"), {
         method: "POST",
         headers: csrfHeaders(),
         credentials: "include",
@@ -133,7 +156,7 @@ export default function AdminUsersPage() {
           attestationObject: bytesToB64url(res.attestationObject),
         },
       }
-      const verify = await fetch("http://localhost:8000/api/auth/passkey/register/verify", {
+      const verify = await fetch(apiUrl("/api/auth/passkey/register/verify"), {
         method: "POST",
         headers: csrfHeaders({ "Content-Type": "application/json" }),
         credentials: "include",
@@ -158,7 +181,7 @@ export default function AdminUsersPage() {
     setBusyUser(username)
     setMsg("")
     try {
-      const res = await fetch(`http://localhost:8000/api/admin/users/${encodeURIComponent(username)}/role`, {
+      const res = await fetch(apiUrl(`/api/admin/users/${encodeURIComponent(username)}/role`), {
         method: "PATCH",
         headers: csrfHeaders({ "Content-Type": "application/json" }),
         credentials: "include",
@@ -184,7 +207,7 @@ export default function AdminUsersPage() {
     setBusyUser(username)
     setMsg("")
     try {
-      const res = await fetch(`http://localhost:8000/api/admin/users/${encodeURIComponent(username)}`, {
+      const res = await fetch(apiUrl(`/api/admin/users/${encodeURIComponent(username)}`), {
         method: "DELETE",
         headers: csrfHeaders(),
         credentials: "include",
@@ -223,7 +246,7 @@ export default function AdminUsersPage() {
             <section className="rounded-lg border border-white/10 bg-black/30 p-3">
               <div className="flex items-center gap-2 mb-3 text-[11px]">
                 <span className="text-muted-foreground">Signed in as:</span>
-                <span className="text-osint-green">{actor || "admin"}</span>
+                <span className="text-osint-green">{actor || "unknown"}</span>
                 <span className="ml-2 text-muted-foreground">Admins:</span>
                 <span className="text-osint-blue">{adminsCount}</span>
                 <span className="ml-2 text-muted-foreground">Passkeys:</span>

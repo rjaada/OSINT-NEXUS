@@ -149,11 +149,13 @@ async def poll_aisstream(
                         continue
                     vessel = {
                         "id": str(meta.get("MMSI") or pos.get("UserID") or "unknown"),
+                        "mmsi": str(meta.get("MMSI") or pos.get("UserID") or "unknown"),
                         "name": str(meta.get("ShipName") or "Unknown"),
                         "lat": _to_float(lat),
                         "lng": _to_float(lon),
                         "speed": _to_float(pos.get("Sog") or 0),
                         "heading": _to_float(pos.get("Cog") or 0),
+                        "ship_type": str(meta.get("ShipType") or m.get("ShipType") or "Unknown"),
                         "timestamp": str(meta.get("time_utc") or now_iso()),
                     }
                     metrics["last_success"]["ais"] = now_iso()

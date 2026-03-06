@@ -4,6 +4,12 @@ import Link from "next/link"
 import { useEffect, useState } from "react"
 import { csrfHeaders } from "@/lib/security"
 
+const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? ""
+function apiUrl(path: string): string {
+  if (API_BASE) return `${API_BASE}${path}`
+  return path
+}
+
 export default function ArabicHomePage() {
   const [role, setRole] = useState("viewer")
   const [user, setUser] = useState("user")
@@ -17,7 +23,7 @@ export default function ArabicHomePage() {
 
   const logout = async () => {
     try {
-      await fetch("http://localhost:8000/api/auth/logout", {
+      await fetch(apiUrl("/api/auth/logout"), {
         method: "POST",
         credentials: "include",
         headers: csrfHeaders({ "Content-Type": "application/json" }),
@@ -26,6 +32,7 @@ export default function ArabicHomePage() {
     document.cookie = "osint_session=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; SameSite=Lax"
     document.cookie = "osint_role=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; SameSite=Lax"
     document.cookie = "osint_user=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; SameSite=Lax"
+    document.cookie = "osint_csrf=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; SameSite=Lax"
     window.location.href = "/login"
   }
 

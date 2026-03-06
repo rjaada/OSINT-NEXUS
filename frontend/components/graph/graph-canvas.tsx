@@ -15,6 +15,9 @@ interface GraphCanvasProps {
   onHoverNode: (id: string | null) => void
   zoom: number
   setZoom: (z: number) => void
+  focusNodeId: string | null
+  highlightedNodeIds: Set<string>
+  centerOnNodeId: string | null
 }
 
 // Draw node shapes based on type
@@ -27,9 +30,11 @@ function drawNode(
   isConnectedToHovered: boolean,
   time: number
 ) {
-  const color = NODE_COLORS[node.type]
+  const clusterColor = typeof node.properties?.cluster_color === "string" ? String(node.properties.cluster_color) : ""
+  const color = clusterColor || NODE_COLORS[node.type]
   const nodeSeed = Array.from(node.id).reduce((acc, ch) => acc + ch.charCodeAt(0), 0)
   const pulseScale = 1 + Math.sin(time * 0.002 + nodeSeed * 0.5) * 0.04
+  const isCluster = Boolean(node.properties?.is_cluster)
 
   ctx.save()
   ctx.translate(node.x, node.y)
@@ -42,7 +47,7 @@ function drawNode(
   ctx.globalAlpha = glowAlpha
 
   ctx.fillStyle = color
-  const s = size
+  const s = isCluster ? size * 1.5 : size
 
   switch (node.type) {
     case "EVENT": // Circle
@@ -165,9 +170,10 @@ function drawNode(
   ctx.fillStyle =
     isSelected || isHovered ? "rgba(255,255,255,0.9)" : "rgba(255,255,255,0.45)"
   ctx.textAlign = "center"
-  const label =
-    node.label.length > 20 ? node.label.slice(0, 20) + "..." : node.label
-  ctx.fillText(label, node.x, node.y + s + 14)
+  const suffix = isCluster ? ` (${Number(node.properties?.cluster_count || 0)})` : ""
+  const label = `${node.label}${suffix}`
+  const clipped = label.length > 20 ? `${label.slice(0, 20)}...` : label
+  ctx.fillText(clipped, node.x, node.y + s + 14)
   ctx.restore()
 }
 
@@ -182,6 +188,9 @@ export function GraphCanvas({
   onHoverNode,
   zoom,
   setZoom,
+  focusNodeId,
+  highlightedNodeIds,
+  centerOnNodeId,
 }: GraphCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
@@ -205,9 +214,18 @@ export function GraphCanvas({
   // Find connected nodes for hover highlighting
   const connectedToHovered = new Set<string>()
   if (hoveredNodeId) {
-    edges.forEach((e) => {
+    visibleEdges.forEach((e) => {
       if (e.source === hoveredNodeId) connectedToHovered.add(e.target)
       if (e.target === hoveredNodeId) connectedToHovered.add(e.source)
+    })
+  }
+
+  const focusConnected = new Set<string>()
+  if (focusNodeId) {
+    focusConnected.add(focusNodeId)
+    visibleEdges.forEach((e) => {
+      if (e.source === focusNodeId) focusConnected.add(e.target)
+      if (e.target === focusNodeId) focusConnected.add(e.source)
     })
   }
 
@@ -272,6 +290,8 @@ export function GraphCanvas({
       ctx.translate(pan.x, pan.y)
       ctx.scale(zoom, zoom)
 
+      const hasSearch = highlightedNodeIds.size > 0
+
       // Draw edges
       visibleEdges.forEach((edge) => {
         const source = nodesRef.current.find((n) => n.id === edge.source)
@@ -286,11 +306,17 @@ export function GraphCanvas({
           hoveredNodeId === edge.target ||
           selectedNodeId === edge.source ||
           selectedNodeId === edge.target
+        const inFocusPath =
+          !focusNodeId || (focusConnected.has(edge.source) && focusConnected.has(edge.target))
+        const inSearch =
+          !hasSearch || (highlightedNodeIds.has(edge.source) && highlightedNodeIds.has(edge.target))
 
         ctx.save()
         ctx.strokeStyle = color
         ctx.lineWidth = style.width * (isHighlighted ? 1.5 : 1)
-        ctx.globalAlpha = isHighlighted
+        ctx.globalAlpha = !inFocusPath || !inSearch
+          ? 0.15
+          : isHighlighted
           ? 0.8
           : 0.25 + Math.sin(time * 0.001 + Array.from(edge.id).reduce((acc, ch) => acc + ch.charCodeAt(0), 0)) * 0.08
 
@@ -311,7 +337,12 @@ export function GraphCanvas({
         const isSelected = selectedNodeId === node.id
         const isHovered = hoveredNodeId === node.id
         const isConnected = connectedToHovered.has(node.id)
+        const hasSearchMatch = highlightedNodeIds.size === 0 || highlightedNodeIds.has(node.id)
+        const inFocusPath = !focusNodeId || focusConnected.has(node.id)
+        ctx.save()
+        ctx.globalAlpha = inFocusPath && hasSearchMatch ? 1 : 0.15
         drawNode(ctx, node, size, isSelected, isHovered, isConnected, time)
+        ctx.restore()
       })
 
       ctx.restore()
@@ -333,7 +364,22 @@ export function GraphCanvas({
     pan,
     getNodeSize,
     connectedToHovered,
+    focusNodeId,
+    focusConnected,
+    highlightedNodeIds,
   ])
+
+  useEffect(() => {
+    if (!centerOnNodeId) return
+    const node = visibleNodes.find((n) => n.id === centerOnNodeId)
+    const container = containerRef.current
+    if (!node || !container) return
+    const rect = container.getBoundingClientRect()
+    setPan({
+      x: rect.width / 2 - node.x * zoom,
+      y: rect.height / 2 - node.y * zoom,
+    })
+  }, [centerOnNodeId, visibleNodes, zoom])
 
   // Mouse handlers
   const handleMouseDown = useCallback(
