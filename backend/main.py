@@ -550,39 +550,6 @@ def audit_log(action: str, actor: str, role: str, payload: dict, target_id: Opti
     _db.commit()
 
 
-def _model_call_json(prompt: str, model_name: str, retries: int = 2) -> Optional[dict]:
-    async def _run() -> Optional[dict]:
-        for attempt in range(retries + 1):
-            try:
-                async with httpx.AsyncClient(timeout=25) as client:
-                    resp = await client.post(
-                        OLLAMA_URL,
-                        json={
-                            "model": model_name,
-                            "prompt": prompt,
-                            "stream": False,
-                            "format": "json",
-                            "options": {"temperature": 0.1},
-                        },
-                    )
-                    resp.raise_for_status()
-                    raw = str(resp.json().get("response", "{}")).strip()
-                    data = json.loads(raw)
-                    if isinstance(data, dict):
-                        return data
-            except Exception:
-                await asyncio.sleep(0.2 * (attempt + 1))
-        return None
-
-    try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            return None
-    except Exception:
-        pass
-    return asyncio.run(_run())
-
-
 def evaluate_claim_alignment(desc: str, ocr_lines: List[str], stt_lines: List[str]) -> Tuple[str, str]:
     return iutils.evaluate_claim_alignment(desc, ocr_lines, stt_lines)
 
