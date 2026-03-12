@@ -114,6 +114,59 @@ def cluster_events_for_map(items: List[dict], zoom_bucket: int = 2) -> List[dict
     return out
 
 
+def assess_confidence(
+    event: dict,
+    nearby: list,
+    age_min: float,
+    source_reliability: Dict[str, int],
+) -> Tuple[int, str, List[str]]:
+    src = extract_source(event)
+    base = source_reliability.get(src, 50)
+
+    corroborating = sorted({extract_source(x) for x in nearby if extract_source(x) != src})
+    corroboration_bonus = min(24, len(corroborating) * 8)
+
+    freshness = 8 if age_min <= 5 else (4 if age_min <= 15 else 0)
+    critical_bonus = 5 if event.get("type") == "CRITICAL" else 0
+    evidence_bonus = 6 if not event.get("insufficient_evidence") else -8
+
+    score = max(0, min(100, base + corroboration_bonus + freshness + critical_bonus + evidence_bonus - 30))
+
+    reasons = [f"source reliability {base}/100"]
+    if corroborating:
+        reasons.append(f"corroborated by {len(corroborating)} source(s)")
+    if age_min <= 5:
+        reasons.append("fresh update")
+    if event.get("insufficient_evidence"):
+        reasons.append("limited geolocation evidence")
+
+    return score, "; ".join(reasons), corroborating
+
+
+def eta_band(event: dict) -> str:
+    source = extract_source(event)
+    if source.lower() == "red alert":
+        return "<2m"
+    lat = float(event.get("lat", 31.77))
+    lng = float(event.get("lng", 35.21))
+    dist = haversine_km(lat, lng, 31.77, 35.21)
+    if dist <= 120:
+        return "2-5m"
+    if dist <= 350:
+        return "5-10m"
+    if dist <= 900:
+        return "10-20m"
+    return ">20m"
+
+
+def geolocate_alert(city: str, israel_city_coords: Dict[str, tuple]) -> tuple:
+    lower = city.lower().strip()
+    for name, coords in israel_city_coords.items():
+        if name in lower or lower in name:
+            return coords
+    return (31.77 + (hash(city) % 10) * 0.05, 35.0 + (hash(city) % 5) * 0.05)
+
+
 def assess_confidence_v2(
     event: dict,
     nearby: list,
