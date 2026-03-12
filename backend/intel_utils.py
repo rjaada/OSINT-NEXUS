@@ -3,7 +3,7 @@ import math
 import re
 import subprocess
 from datetime import datetime, timezone
-from typing import Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 
 def parse_iso(ts: str, now_iso: Callable[[], str]) -> datetime:
