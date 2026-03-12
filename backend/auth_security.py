@@ -1,6 +1,8 @@
 import base64
 import hashlib
 import hmac
+import ipaddress
+import os
 import re
 import secrets
 import time
@@ -126,11 +128,32 @@ def validate_security_config(
             print(f"[SECURITY][WARNING] {reason}")
 
 
+def _is_trusted_proxy(ip: str) -> bool:
+    """Return True only if the connecting IP is a known trusted proxy."""
+    trusted_env = os.getenv("TRUSTED_PROXY_IPS", "")
+    trusted = {s.strip() for s in trusted_env.split(",") if s.strip()}
+    # Always trust Docker internal bridge ranges so nginx/traefik sidecars work.
+    _DOCKER_RANGES = [
+        ipaddress.ip_network("172.16.0.0/12"),
+        ipaddress.ip_network("10.0.0.0/8"),
+        ipaddress.ip_network("127.0.0.0/8"),
+    ]
+    if ip in trusted:
+        return True
+    try:
+        addr = ipaddress.ip_address(ip)
+        return any(addr in net for net in _DOCKER_RANGES)
+    except ValueError:
+        return False
+
+
 def client_ip(request: Request) -> str:
-    forwarded = request.headers.get("x-forwarded-for", "").strip()
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    return (request.client.host if request.client else "unknown").strip() or "unknown"
+    socket_ip = (request.client.host if request.client else "").strip() or "unknown"
+    if _is_trusted_proxy(socket_ip):
+        forwarded = request.headers.get("x-forwarded-for", "").strip()
+        if forwarded:
+            return forwarded.split(",")[0].strip()
+    return socket_ip
 
 
 def enforce_rate_limit(
