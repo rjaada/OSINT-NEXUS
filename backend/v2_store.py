@@ -134,6 +134,115 @@ def _decode_pg_event(row: Any, now_iso: Callable[[], str]) -> dict:
     }
 
 
+_CREATE_AI_REPORTS = """
+CREATE TABLE IF NOT EXISTS ai_reports (
+    id SERIAL PRIMARY KEY,
+    report_type TEXT NOT NULL,
+    payload_json JSONB NOT NULL,
+    event_fp TEXT NOT NULL DEFAULT '',
+    generated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+)
+"""
+_IDX_AI_REPORTS = "CREATE INDEX IF NOT EXISTS idx_ai_reports_type_ts ON ai_reports(report_type, generated_at DESC)"
+
+
+def persist_ai_report_pg(
+    report_type: str,
+    report: dict,
+    event_fp: str,
+    database_url: str,
+    psycopg_mod,
+) -> None:
+    if not database_url.startswith("postgres") or psycopg_mod is None:
+        return
+    try:
+        with psycopg_mod.connect(database_url, connect_timeout=3) as conn:
+            with conn.cursor() as cur:
+                cur.execute(_CREATE_AI_REPORTS)
+                cur.execute(_IDX_AI_REPORTS)
+                cur.execute(
+                    """
+                    INSERT INTO ai_reports (report_type, payload_json, event_fp, generated_at)
+                    VALUES (%s, %s::jsonb, %s, NOW())
+                    """,
+                    (report_type, json.dumps(report, ensure_ascii=False), event_fp),
+                )
+    except Exception:
+        return
+
+
+def load_latest_ai_report_pg(
+    report_type: str,
+    database_url: str,
+    psycopg_mod,
+) -> Optional[dict]:
+    if not database_url.startswith("postgres") or psycopg_mod is None:
+        return None
+    try:
+        with psycopg_mod.connect(database_url, connect_timeout=3) as conn:
+            with conn.cursor() as cur:
+                cur.execute(_CREATE_AI_REPORTS)
+                cur.execute(
+                    """
+                    SELECT payload_json, event_fp, generated_at
+                    FROM ai_reports
+                    WHERE report_type = %s
+                    ORDER BY generated_at DESC
+                    LIMIT 1
+                    """,
+                    (report_type,),
+                )
+                row = cur.fetchone()
+                if not row:
+                    return None
+                payload = row[0] if isinstance(row[0], dict) else {}
+                return {
+                    "report": payload,
+                    "event_fp": row[1] or "",
+                    "generated_at_ts": row[2].timestamp() if hasattr(row[2], "timestamp") else 0.0,
+                }
+    except Exception:
+        return None
+
+
+def fetch_ai_report_history_pg(
+    report_type: str,
+    limit: int,
+    database_url: str,
+    psycopg_mod,
+) -> List[dict]:
+    if not database_url.startswith("postgres") or psycopg_mod is None:
+        return []
+    try:
+        with psycopg_mod.connect(database_url, connect_timeout=3) as conn:
+            with conn.cursor() as cur:
+                cur.execute(_CREATE_AI_REPORTS)
+                cur.execute(
+                    """
+                    SELECT id, payload_json, event_fp, generated_at
+                    FROM ai_reports
+                    WHERE report_type = %s
+                    ORDER BY generated_at DESC
+                    LIMIT %s
+                    """,
+                    (report_type, limit),
+                )
+                rows = cur.fetchall()
+                results = []
+                for r in rows:
+                    payload = r[1] if isinstance(r[1], dict) else {}
+                    ts = r[3]
+                    results.append({
+                        "id": r[0],
+                        "report_type": report_type,
+                        "generated_at": ts.isoformat() if hasattr(ts, "isoformat") else str(ts),
+                        **payload,
+                    })
+                return results
+    except Exception:
+        return []
+
+
 def fetch_recent_v2_events_pg(
     database_url: str,
     psycopg_mod,

@@ -22,7 +22,7 @@ import logging
 import feedparser
 import httpx
 from bs4 import BeautifulSoup
-from fastapi import FastAPI, Header, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -206,6 +206,7 @@ manager = ConnectionManager()
 seen_articles: set = set()
 _seen_articles_order = deque(maxlen=30_000)
 seen_telegram_posts: set = set()
+_seen_telegram_order = deque(maxlen=10_000)
 seen_alerts: set = set()
 _seen_alerts_order = deque(maxlen=20_000)
 
@@ -1178,6 +1179,17 @@ def _track_seen_alert(alert_id: str) -> bool:
     return True
 
 
+def _track_seen_telegram(post_id: str) -> bool:
+    if post_id in seen_telegram_posts:
+        return False
+    if len(_seen_telegram_order) == _seen_telegram_order.maxlen:
+        oldest = _seen_telegram_order.popleft()
+        seen_telegram_posts.discard(oldest)
+    _seen_telegram_order.append(post_id)
+    seen_telegram_posts.add(post_id)
+    return True
+
+
 def _prune_failed_logins() -> None:
     now = time.time()
     stale = [k for k, v in _failed_logins.items() if float(v.get("lock_until", 0)) + AUTH_LOGIN_LOCK_SEC < now]
@@ -1222,6 +1234,23 @@ def _prune_runtime_state() -> None:
     authsec.prune_rate_limit_store(_rate_limit, window_sec=AUTH_RATE_WINDOW_SEC)
     _prune_failed_logins()
     _prune_media_job_state()
+    # Prune incident_index — keep only entries from the last 4 hours
+    _incident_cutoff = utc_now_iso()
+    try:
+        _now_ts = time.time()
+        stale_incidents = [
+            k for k, v in list(incident_index.items())
+            if (_now_ts - _parse_iso(str(v.get("timestamp", _incident_cutoff))).timestamp()) > 14400
+        ]
+        for k in stale_incidents:
+            incident_index.pop(k, None)
+    except Exception:
+        pass
+    # Cap _review_cache at 500 entries (drop oldest by insertion order)
+    if len(_review_cache) > 500:
+        excess = len(_review_cache) - 500
+        for k in list(_review_cache.keys())[:excess]:
+            _review_cache.pop(k, None)
 
 
 def _set_auth_cookies(response: Response, username: str, role: str) -> dict:
@@ -1311,6 +1340,33 @@ def fetch_recent_v2_events_pg(
         limit=limit,
         source_whitelist=source_whitelist,
         type_whitelist=type_whitelist,
+    )
+
+
+def persist_ai_report(report_type: str, report: dict, event_fp: str) -> None:
+    v2_store.persist_ai_report_pg(
+        report_type=report_type,
+        report=report,
+        event_fp=event_fp,
+        database_url=DATABASE_URL,
+        psycopg_mod=psycopg,
+    )
+
+
+def load_latest_ai_report(report_type: str) -> Optional[dict]:
+    return v2_store.load_latest_ai_report_pg(
+        report_type=report_type,
+        database_url=DATABASE_URL,
+        psycopg_mod=psycopg,
+    )
+
+
+def fetch_ai_report_history(report_type: str, limit: int = 50) -> List[dict]:
+    return v2_store.fetch_ai_report_history_pg(
+        report_type=report_type,
+        limit=limit,
+        database_url=DATABASE_URL,
+        psycopg_mod=psycopg,
     )
 
 
@@ -2054,7 +2110,7 @@ async def poll_flights():
     headers = {"User-Agent": "Mozilla/5.0"}
     async with httpx.AsyncClient(timeout=15, headers=headers) as client:
         while True:
-            await asyncio.sleep(8)
+            await asyncio.sleep(30)
             metrics["flight_polls"] += 1
             try:
                 resp = await client.get(FR24_URL)
@@ -2167,7 +2223,7 @@ async def poll_telegram():
                     pending = [p for p in candidates if f"tg_{cfg['slug']}_{p['post_id']}" not in seen_telegram_posts]
                     for p in pending[-max(1, TELEGRAM_MAX_NEW_PER_POLL):]:
                         pid = f"tg_{cfg['slug']}_{p['post_id']}"
-                        seen_telegram_posts.add(pid)
+                        _track_seen_telegram(pid)
 
                         text = p["text"][:500]
                         geo = await geolocate_event(f"[{cfg['source']}] Telegram Update", text, pid, allow_ai=True)
@@ -2545,6 +2601,14 @@ async def startup_event():
     ensure_default_admin()
     load_recent_events()
     await refresh_defcon_state()
+
+    for _rtype, _state in (("analyst", _analyst_state), ("v2", _v2_report_state)):
+        _saved = load_latest_ai_report(_rtype)
+        if _saved and _saved.get("report"):
+            _state["report"] = _saved["report"]
+            _state["last_event_fp"] = _saved.get("event_fp", "")
+            _state["last_generated_ts"] = float(_saved.get("generated_at_ts", 0.0))
+            print(f"[REPORTS] Restored {_rtype} report from Postgres")
 
     asyncio.create_task(poll_flights())
     asyncio.create_task(poll_rss())
@@ -3020,13 +3084,13 @@ async def stats():
 
 
 @app.get("/api/events")
-async def get_events(limit: int = 80):
+async def get_events(limit: int = 80, _user: dict = Depends(require_analyst_or_admin)):
     limit = min(max(limit, 1), 300)
     return events_history[-limit:][::-1]
 
 
 @app.get("/api/sources/recent")
-async def sources_recent(limit: int = 150):
+async def sources_recent(limit: int = 150, _user: dict = Depends(require_analyst_or_admin)):
     limit = min(max(limit, 1), 300)
     rows = events_history[-limit:][::-1]
     grouped = defaultdict(int)
@@ -3040,7 +3104,7 @@ async def sources_recent(limit: int = 150):
 
 
 @app.get("/api/alerts/assessment")
-async def alert_assessment(limit: int = 40):
+async def alert_assessment(limit: int = 40, _user: dict = Depends(require_analyst_or_admin)):
     if not events_history:
         return []
     limit = min(max(limit, 1), 100)
@@ -3094,7 +3158,7 @@ async def alert_assessment(limit: int = 40):
 
 
 @app.get("/api/analyst")
-async def analyst_endpoint(force: bool = False):
+async def analyst_endpoint(force: bool = False, _user: dict = Depends(require_analyst_or_admin)):
     # Always analyze from latest persisted events so restarts do not blank analyst context.
     latest = events_history[-120:]
     latest_slice = [
@@ -3121,6 +3185,7 @@ async def analyst_endpoint(force: bool = False):
     _analyst_state["report"] = report
     _analyst_state["last_event_fp"] = event_fp
     _analyst_state["last_generated_ts"] = now_ts
+    persist_ai_report("analyst", report, event_fp)
     return report
 
 
@@ -3191,7 +3256,7 @@ async def v2_ai_policy():
 
 
 @app.get("/api/v2/ai/report")
-async def v2_ai_report(force: bool = False):
+async def v2_ai_report(force: bool = False, _user: dict = Depends(require_analyst_or_admin)):
     latest = _v2_events_for_ai(limit=160)
     latest_slice = [
         {
@@ -3264,11 +3329,12 @@ EVIDENCE:
     _v2_report_state["report"] = report
     _v2_report_state["last_event_fp"] = event_fp
     _v2_report_state["last_generated_ts"] = now_ts
+    persist_ai_report("v2", report, event_fp)
     return report
 
 
 @app.post("/api/v2/ai/verify")
-async def v2_ai_verify(payload: Dict[str, Any]):
+async def v2_ai_verify(payload: Dict[str, Any], _user: dict = Depends(require_analyst_or_admin)):
     title = str(payload.get("title", "")).strip()
     body = str(payload.get("body", "")).strip()
     source = str(payload.get("source", "")).strip()
@@ -3311,6 +3377,18 @@ BODY: {body}
         "model": V2_MODEL_VERIFY,
         "generated_at": utc_now_iso(),
     }
+
+
+@app.get("/api/v2/reports/history")
+async def v2_reports_history(
+    report_type: str = "v2",
+    limit: int = 50,
+    _user: dict = Depends(require_analyst_or_admin),
+):
+    limit = min(max(limit, 1), 200)
+    if report_type not in {"v2", "analyst"}:
+        raise HTTPException(status_code=400, detail="report_type must be 'v2' or 'analyst'")
+    return fetch_ai_report_history(report_type, limit=limit)
 
 
 @app.get("/api/v2/graph")

@@ -1,12 +1,15 @@
+import ipaddress
 import os
+import re
 import tempfile
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlparse
 
 import cv2
 import httpx
 import numpy as np
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 app = FastAPI(title="OSINT Local Media Hooks")
@@ -25,6 +28,37 @@ class HookRequest(BaseModel):
     media_path: str = ""
 
 
+_ALLOWED_URL_RE = re.compile(r"^https?://", re.IGNORECASE)
+_BLOCKED_HOSTS = re.compile(
+    r"^(localhost|.*\.local|.*\.internal)$", re.IGNORECASE
+)
+_PRIVATE_RANGES = [
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+    ipaddress.ip_network("127.0.0.0/8"),
+    ipaddress.ip_network("169.254.0.0/16"),
+    ipaddress.ip_network("::1/128"),
+    ipaddress.ip_network("fc00::/7"),
+]
+
+
+def _validate_url(url: str) -> None:
+    if not _ALLOWED_URL_RE.match(url):
+        raise HTTPException(status_code=400, detail="Only http/https URLs are allowed")
+    parsed = urlparse(url)
+    host = parsed.hostname or ""
+    if _BLOCKED_HOSTS.match(host):
+        raise HTTPException(status_code=400, detail="Blocked host")
+    try:
+        addr = ipaddress.ip_address(host)
+        for net in _PRIVATE_RANGES:
+            if addr in net:
+                raise HTTPException(status_code=400, detail="Private/internal IP not allowed")
+    except ValueError:
+        pass  # hostname, not an IP literal — DNS resolved at fetch time (acceptable)
+
+
 async def _resolve_media(req: HookRequest) -> Optional[Path]:
     media_path = (req.media_path or "").strip()
     if media_path:
@@ -34,15 +68,21 @@ async def _resolve_media(req: HookRequest) -> Optional[Path]:
     media_url = (req.media_url or "").strip()
     if not media_url:
         return None
+    _validate_url(media_url)
     try:
         suffix = Path(media_url.split("?")[0]).suffix or ".bin"
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-            async with httpx.AsyncClient(timeout=30) as client:
+            async with httpx.AsyncClient(
+                timeout=30,
+                follow_redirects=False,
+            ) as client:
                 r = await client.get(media_url)
                 if r.status_code != 200:
                     return None
                 tmp.write(r.content)
                 return Path(tmp.name)
+    except HTTPException:
+        raise
     except Exception:
         return None
 
