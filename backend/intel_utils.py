@@ -1,6 +1,7 @@
 import hashlib
 import math
 import re
+import subprocess
 from datetime import datetime, timezone
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
@@ -114,6 +115,28 @@ def cluster_events_for_map(items: List[dict], zoom_bucket: int = 2) -> List[dict
     return out
 
 
+def event_confidence_value(event: Dict[str, Any], source_reliability: Dict[str, int]) -> int:
+    raw = event.get("confidence_score")
+    if isinstance(raw, (int, float)):
+        return int(max(0, min(100, raw)))
+    src = extract_source(event)
+    return int(max(0, min(100, source_reliability.get(src, 45))))
+
+
+def event_theater_bucket(event: Dict[str, Any]) -> str:
+    lat = float(event.get("lat", 0.0))
+    lng = float(event.get("lng", 0.0))
+    if 29 <= lat <= 35 and 33 <= lng <= 37:
+        return "Levant"
+    if 23 <= lat <= 33 and 44 <= lng <= 56:
+        return "Gulf"
+    if 11 <= lat <= 22 and 37 <= lng <= 45:
+        return "RedSea"
+    if 32 <= lat <= 38 and 36 <= lng <= 43:
+        return "Syria-Iraq"
+    return "Other"
+
+
 def assess_confidence(
     event: dict,
     nearby: list,
@@ -184,3 +207,24 @@ def assess_confidence_v2(
     if len(corroborating) >= 2:
         base = min(100, base + 6)
     return base, reason, corroborating
+
+
+def evaluate_claim_alignment(desc: str, ocr_lines: List[str], stt_lines: List[str]) -> Tuple[str, str]:
+    text = normalize_desc(desc)
+    merged = normalize_desc(" ".join(ocr_lines + stt_lines))
+    if not merged:
+        return "UNVERIFIED_VISUAL", "No OCR/STT evidence available from media."
+    overlap = len(set(text.split()) & set(merged.split()))
+    if overlap >= 6:
+        return "LIKELY_RELATED", "OCR/STT cues align strongly with source text."
+    if overlap >= 3:
+        return "UNVERIFIED_VISUAL", "Partial OCR/STT overlap; requires analyst confirmation."
+    return "MISMATCH", "Low textual overlap between media extraction and source claim."
+
+
+def safe_run(cmd: List[str], timeout_sec: int = 20) -> Tuple[bool, str]:
+    try:
+        out = subprocess.check_output(cmd, stderr=subprocess.STDOUT, timeout=timeout_sec).decode(errors="ignore")
+        return True, out
+    except Exception as e:
+        return False, str(e)
