@@ -20,6 +20,109 @@ from fastapi.websockets import WebSocketDisconnect
 
 router = APIRouter()
 
+# ── Lazy proxies for main.py functions (avoids circular import at load time) ───
+def _lazy(fn_name):
+    def _proxy(*args, **kwargs):
+        import main as _m
+        return getattr(_m, fn_name)(*args, **kwargs)
+    _proxy.__name__ = fn_name
+    return _proxy
+
+_extract_source        = _lazy("_extract_source")
+_is_telegram_source    = _lazy("_is_telegram_source")
+_normalize_threat_level = _lazy("_normalize_threat_level")
+_parse_iso             = _lazy("_parse_iso")
+_safe_v2_report        = _lazy("_safe_v2_report")
+_v2_events_for_ai      = _lazy("_v2_events_for_ai")
+_watchdog_check        = _lazy("_watchdog_check")
+assess_confidence_v2   = _lazy("assess_confidence_v2")
+audit_log              = _lazy("audit_log")
+auth_user_from_request = _lazy("auth_user_from_request")
+build_event_graph      = _lazy("build_event_graph")
+build_ops_alerts       = _lazy("build_ops_alerts")
+cluster_events_for_map = _lazy("cluster_events_for_map")
+eta_band               = _lazy("eta_band")
+fetch_ai_report_history = _lazy("fetch_ai_report_history")
+fetch_metoc            = _lazy("fetch_metoc")
+fetch_recent_v2_events_pg = _lazy("fetch_recent_v2_events_pg")
+get_media_analysis     = _lazy("get_media_analysis")
+is_playable_video_url  = _lazy("is_playable_video_url")
+load_overlays          = _lazy("load_overlays")
+mgrs_from_latlng       = _lazy("mgrs_from_latlng")
+persist_ai_report      = _lazy("persist_ai_report")
+persist_event          = _lazy("persist_event")
+postgres_status        = _lazy("postgres_status")
+require_analyst_or_admin = _lazy("require_analyst_or_admin")
+resolve_write_identity = _lazy("resolve_write_identity")
+source_ops_metrics     = _lazy("source_ops_metrics")
+utc_now_iso            = _lazy("utc_now_iso")
+
+# ── Shared state from state.py (same object as main.py uses) ──────────────────
+import state as _state
+_v2_report_state    = _state._v2_report_state
+_analyst_state      = _state._analyst_state
+_defcon_state       = _state._defcon_state
+_media_job_state    = _state._media_job_state
+seen_articles       = _state.seen_articles
+seen_telegram_posts = _state.seen_telegram_posts
+metrics             = _state.metrics
+manager             = _state.manager
+last_aircraft       = _state.last_aircraft
+_start_time         = _state._start_time
+_media_jobs         = _state._media_jobs
+_review_cache       = _state._review_cache
+_ollama_available_models = _state._ollama_available_models
+events_buffer       = _state.events_buffer
+events_history      = _state.events_history
+graph_logger        = _state.graph_logger
+
+
+# ── Live-rebound state: proxy to always reflect current value ─────────────────
+class _DbProxy:
+    """Forwards attribute/call access to state._db (set at startup)."""
+    def __getattr__(self, name):
+        db = _state._db
+        if db is None:
+            raise RuntimeError("DB not initialized")
+        return getattr(db, name)
+_db = _DbProxy()
+
+
+class _SchedulerProxy:
+    """Forwards attribute access to state._v2_ai_scheduler (set at startup)."""
+    def __getattr__(self, name):
+        s = _state._v2_ai_scheduler
+        if s is None:
+            import main as _m
+            s = _m._v2_ai_scheduler
+        return getattr(s, name)
+_v2_ai_scheduler = _SchedulerProxy()
+
+
+class _GraphStoreProxy:
+    """Forwards attribute access to state._graph_store (set at startup)."""
+    def __getattr__(self, name):
+        gs = _state._graph_store
+        return getattr(gs, name) if gs is not None else None
+_graph_store = _GraphStoreProxy()
+
+# ── Config constants ──────────────────────────────────────────────────────────
+from config import (
+    V2_MODEL_REPORT, V2_MODEL_VERIFY, V2_MODEL_DEFAULT,
+    OLLAMA_MODEL, OLLAMA_FALLBACK_MODEL,
+    STORAGE_BACKEND,
+    TELEGRAM_MEDIA_DIR, TELEGRAM_SOURCE_SET,
+    V2_API_KEY,
+    V2_REPORT_CACHE_TTL_SEC,
+    SOURCE_RELIABILITY,
+)
+from pydantic import BaseModel
+
+
+class OpsBriefPayload(BaseModel):
+    mode: str = "INTSUM"
+    limit: int = 20
+
 
 def _require_analyst_or_admin(request: Request) -> dict:
     import main as _m
