@@ -126,7 +126,11 @@ async def poll_aisstream(
                 print(f"[AIS] Connected and subscribed to {ws_url} with bbox={bounds}")
                 while True:
                     metrics["ais_polls"] = int(metrics.get("ais_polls", 0)) + 1
-                    raw = await asyncio.wait_for(ws.recv(), timeout=35)
+                    try:
+                        raw = await asyncio.wait_for(ws.recv(), timeout=60)
+                    except asyncio.TimeoutError:
+                        # No message in window — connection is alive, keep waiting.
+                        continue
                     payload = json.loads(raw)
                     if isinstance(payload, dict) and payload.get("error"):
                         print(f"[AIS] Subscription/server error: {payload.get('error')}")

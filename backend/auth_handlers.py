@@ -134,12 +134,15 @@ def login_user(
         ("osint_auth", token),
         ("osint_csrf", csrf_token),
     ]:
+        # osint_csrf must be JS-readable so the frontend can send it as a header.
+        # All other cookies are server-only and set HttpOnly.
+        js_readable = key == "osint_csrf"
         response.set_cookie(
             key=key,
             value=value,
             path="/",
             expires=cookie_expires,
-            httponly=(key == "osint_auth"),
+            httponly=not js_readable,
             samesite="lax",
             secure=auth_cookie_secure,
         )

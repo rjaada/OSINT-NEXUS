@@ -202,7 +202,7 @@ EVENT_TYPE_KEYWORDS_AR: Dict[str, List[str]] = {
 # RSS feeds
 # ---------------------------------------------------------------------------
 RSS_FEEDS_EN = [
-    {"name": "Reuters World", "url": "https://feeds.reuters.com/Reuters/worldNews", "source": "Reuters"},
+    {"name": "AP News", "url": "https://apnews.com/apf-topnews?format=feed&tag=apf-topnews", "source": "AP News"},
     {"name": "Al Jazeera English", "url": "https://www.aljazeera.com/xml/rss/all.xml", "source": "Al Jazeera"},
     {"name": "BBC World", "url": "http://feeds.bbci.co.uk/news/world/rss.xml", "source": "BBC News"},
     {"name": "CBS News World", "url": "https://www.cbsnews.com/latest/rss/world", "source": "CBS News"},

@@ -13,6 +13,8 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 import auth_security as authsec  # noqa: E402
+import config as backend_config  # noqa: E402
+import db_sqlite as backend_db_sqlite  # noqa: E402
 import main as backend_main  # noqa: E402
 
 
@@ -25,6 +27,9 @@ class RuntimeHardeningTests(unittest.TestCase):
         os.environ["AUTH_DEFAULT_ADMIN_PASSWORD"] = "AdminPass123!"
         os.environ["AUTH_ADMIN_REQUIRE_PASSKEY"] = "0"
         global backend_main
+        # Reload config → db_sqlite → main so env-var changes propagate cleanly.
+        importlib.reload(backend_config)
+        importlib.reload(backend_db_sqlite)
         backend_main = importlib.reload(backend_main)
         backend_main.app.router.on_startup.clear()
         backend_main.app.router.on_shutdown.clear()
