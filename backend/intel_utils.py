@@ -40,6 +40,10 @@ def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
 def normalize_desc(desc: str) -> str:
     s = re.sub(r"^\[.+?\]\s*", "", (desc or "").lower())
     s = re.sub(r"https?://\S+", "", s)
+    # Normalize Arabic alef forms (أ إ آ ٱ) → bare alef (ا)
+    s = re.sub(r"[\u0623\u0625\u0622\u0671]", "\u0627", s)
+    # Remove Arabic diacritics/harakat (U+064B–U+065F)
+    s = re.sub(r"[\u064B-\u065F]", "", s)
     s = re.sub(r"[^\w\s\u0600-\u06FF]+", " ", s)
     s = re.sub(r"\s+", " ", s).strip()
     return s
@@ -88,13 +92,16 @@ def is_military(callsign: str, icao24: str, military_prefixes: Sequence[str]) ->
     return any(cs.startswith(p) for p in military_prefixes)
 
 
-def cluster_events_for_map(items: List[dict], zoom_bucket: int = 2) -> List[dict]:
+def cluster_events_for_map(items: List[dict], zoom_bucket: int = 4) -> List[dict]:
     clusters: Dict[Tuple[int, int, str], dict] = {}
     for e in items:
         lat = float(e.get("lat", 0.0))
         lng = float(e.get("lng", 0.0))
         t = str(e.get("type", "CLASH"))
-        k = (int(lat * zoom_bucket), int(lng * zoom_bucket), t)
+        lat_bucket = int(lat * zoom_bucket)
+        lon_scale = max(1.0, 1.0 / max(0.1, math.cos(math.radians(abs(lat)))))
+        lng_bucket = int(lng * zoom_bucket * lon_scale)
+        k = (lat_bucket, lng_bucket, t)
         c = clusters.setdefault(k, {"count": 0, "lat_sum": 0.0, "lng_sum": 0.0, "type": t, "members": []})
         c["count"] += 1
         c["lat_sum"] += lat
@@ -214,7 +221,7 @@ def evaluate_claim_alignment(desc: str, ocr_lines: List[str], stt_lines: List[st
     merged = normalize_desc(" ".join(ocr_lines + stt_lines))
     if not merged:
         return "UNVERIFIED_VISUAL", "No OCR/STT evidence available from media."
-    overlap = len(set(text.split()) & set(merged.split()))
+    overlap = len({t for t in set(text.split()) & set(merged.split()) if len(t) > 2})
     if overlap >= 6:
         return "LIKELY_RELATED", "OCR/STT cues align strongly with source text."
     if overlap >= 3:

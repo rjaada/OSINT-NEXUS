@@ -157,17 +157,36 @@ async def security_headers_middleware(request: Request, call_next):
     return response
 
 
+_WS_MAX_TOTAL = 200   # global connection ceiling
+_WS_MAX_PER_IP = 10   # per-IP ceiling (prevents one client monopolising the bus)
+
+
 class ConnectionManager:
     def __init__(self):
         self.connections: List[WebSocket] = []
+        self._per_ip: Dict[str, int] = {}
 
-    async def connect(self, ws: WebSocket):
+    async def connect(self, ws: WebSocket) -> bool:
+        """Accept the WebSocket and track it. Returns False and closes if limits are exceeded."""
+        ip = (ws.client.host if ws.client else "unknown") or "unknown"
+        if len(self.connections) >= _WS_MAX_TOTAL:
+            await ws.close(code=1008, reason="Server connection limit reached")
+            return False
+        if self._per_ip.get(ip, 0) >= _WS_MAX_PER_IP:
+            await ws.close(code=1008, reason="Per-IP connection limit reached")
+            return False
         await ws.accept()
         self.connections.append(ws)
+        self._per_ip[ip] = self._per_ip.get(ip, 0) + 1
+        return True
 
     def disconnect(self, ws: WebSocket):
         if ws in self.connections:
             self.connections.remove(ws)
+            ip = (ws.client.host if ws.client else "unknown") or "unknown"
+            self._per_ip[ip] = max(0, self._per_ip.get(ip, 1) - 1)
+            if self._per_ip[ip] == 0:
+                self._per_ip.pop(ip, None)
 
     async def broadcast(self, msg: dict):
         text = json.dumps(msg)
@@ -573,7 +592,10 @@ def run_media_analysis(event: dict) -> dict:
 
     local_file = None
     if isinstance(video_url, str) and video_url.startswith("/media/telegram/"):
-        local_file = str((MEDIA_DIR / "telegram" / Path(video_url).name))
+        candidate = (MEDIA_DIR / "telegram" / Path(video_url).name).resolve()
+        # Ensure the resolved path stays within TELEGRAM_MEDIA_DIR (defense-in-depth).
+        if str(candidate).startswith(str(TELEGRAM_MEDIA_DIR.resolve())):
+            local_file = str(candidate)
 
     keyframes: List[str] = []
     ocr_lines: List[str] = []
@@ -782,10 +804,11 @@ def mfa_enabled_for_user(username: str) -> bool:
 def mfa_verify_user_code(username: str, code: str) -> bool:
     if not AUTH_ENABLE_TOTP:
         return True
-    secret = mfa_totp.get_secret(_db, username.strip().lower())
+    uname = username.strip().lower()
+    secret = mfa_totp.get_secret(_db, uname)
     if not secret:
         return False
-    return mfa_totp.verify_code(secret, code)
+    return mfa_totp.verify_and_consume(_db, uname, secret, code)
 
 
 def passkey_count_for_user(username: str) -> int:
@@ -1884,6 +1907,7 @@ async def poll_telegram():
 
 
 RED_ALERT_URL = "https://www.oref.org.il/WarningMessages/alert/alerts.json"
+_red_alert_403_last_logged: float = 0.0
 
 
 async def poll_red_alert():
@@ -1898,7 +1922,16 @@ async def poll_red_alert():
             metrics["red_alert_polls"] += 1
             try:
                 resp = await client.get(RED_ALERT_URL)
-                if resp.status_code != 200 or not resp.text.strip():
+                if resp.status_code != 200:
+                    metrics["red_alert_errors"] += 1
+                    if resp.status_code == 403:
+                        global _red_alert_403_last_logged
+                        _now = asyncio.get_event_loop().time()
+                        if _now - _red_alert_403_last_logged > 600:
+                            print("[RED ALERT] 403 Forbidden — OREF geo-blocking this IP (logged once per 10m)")
+                            _red_alert_403_last_logged = _now
+                    continue
+                if not resp.text.strip():
                     continue
                 try:
                     data = resp.json()
@@ -3777,7 +3810,8 @@ async def ws_endpoint_v2(websocket: WebSocket):
     if not auth_user_from_websocket(websocket):
         await websocket.close(code=1008, reason="Authentication required")
         return
-    await manager.connect(websocket)
+    if not await manager.connect(websocket):
+        return
     try:
         await websocket.send_text(
             json.dumps(
@@ -3798,7 +3832,8 @@ async def ws_endpoint(websocket: WebSocket):
     if not auth_user_from_websocket(websocket):
         await websocket.close(code=1008, reason="Authentication required")
         return
-    await manager.connect(websocket)
+    if not await manager.connect(websocket):
+        return
     try:
         await websocket.send_text(json.dumps({
             "type": "SYSTEM",
@@ -3808,3 +3843,9 @@ async def ws_endpoint(websocket: WebSocket):
             await websocket.receive_text()
     except WebSocketDisconnect:
         manager.disconnect(websocket)
+
+
+# Landing page — registered last so API routes take priority.
+_landing_dir = Path(__file__).parent / "landing"
+if _landing_dir.exists():
+    app.mount("/", StaticFiles(directory=str(_landing_dir), html=True), name="landing")
