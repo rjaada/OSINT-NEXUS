@@ -1075,7 +1075,7 @@ def _is_telegram_source(event: dict) -> bool:
 def _get_ollama_client() -> httpx.AsyncClient:
     global _ollama_http_client
     if _ollama_http_client is None:
-        _ollama_http_client = httpx.AsyncClient(timeout=30)
+        _ollama_http_client = httpx.AsyncClient(timeout=60)
     return _ollama_http_client
 
 
@@ -1395,7 +1395,7 @@ async def call_ollama_json(prompt: str, retries: int = 2) -> Optional[dict]:
                         "format": "json",
                         "options": {"temperature": 0.1},
                     },
-                    timeout=20,
+                    timeout=45,
                 )
                 resp.raise_for_status()
                 raw = str(resp.json().get("response", "{}")).strip()
@@ -2233,7 +2233,7 @@ async def startup_event():
     _start_time = time.time()
     validate_security_config()
     _db = init_db()
-    _ollama_http_client = httpx.AsyncClient(timeout=30)
+    _ollama_http_client = httpx.AsyncClient(timeout=60)
     _geocode_http_client = httpx.AsyncClient(
         timeout=8,
         headers={"User-Agent": "OSINT-Nexus/1.0 (research dashboard)"},
