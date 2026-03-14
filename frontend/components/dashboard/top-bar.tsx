@@ -173,7 +173,22 @@ export function TopBar({ headlines }: { headlines?: string[] }) {
 
   useEffect(() => {
     const roleCookie = document.cookie.split("; ").find((x) => x.startsWith("osint_role="))
-    setRole(roleCookie ? decodeURIComponent(roleCookie.split("=")[1]).toLowerCase() : "viewer")
+    if (roleCookie) {
+      setRole(decodeURIComponent(roleCookie.split("=")[1]).toLowerCase())
+    } else {
+      // osint_role from backend is HttpOnly; fall back to session API
+      fetch("/api/auth/session", { credentials: "include", cache: "no-store" })
+        .then((r) => r.ok ? r.json() : null)
+        .then((s) => {
+          if (!s?.authenticated) return
+          const r = String(s.role || "viewer").toLowerCase()
+          setRole(r)
+          // Cache in a JS-readable cookie for subsequent renders
+          const exp = new Date(Date.now() + 24 * 60 * 60 * 1000).toUTCString()
+          document.cookie = `osint_role=${r}; Path=/; Expires=${exp}; SameSite=Lax`
+        })
+        .catch(() => {})
+    }
   }, [])
 
   useEffect(() => {
