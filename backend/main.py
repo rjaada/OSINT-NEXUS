@@ -18,6 +18,7 @@ from pathlib import Path
 from threading import Lock
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 import logging
+from pythonjsonlogger import jsonlogger
 
 import feedparser
 import httpx
@@ -113,6 +114,15 @@ except ImportError:
         ISRAEL_CITY_COORDS, PLACE_COORDS,
         MEDIA_JOB_STATE_TTL_SEC, MEDIA_JOB_STATE_MAX, FAILED_LOGIN_MAX_TRACKED,
     )
+
+_json_handler = logging.StreamHandler()
+_json_handler.setFormatter(jsonlogger.JsonFormatter(
+    fmt="%(asctime)s %(levelname)s %(name)s %(message)s",
+    datefmt="%Y-%m-%dT%H:%M:%S",
+))
+logging.root.addHandler(_json_handler)
+logging.root.setLevel(logging.INFO)
+logger = logging.getLogger("osint")
 
 app = FastAPI(title="OSINT Nexus Engine v3")
 
@@ -725,7 +735,7 @@ async def media_worker():
             _media_job_state[event_id] = {"status": "done", "updated_at": utc_now_iso()}
         except Exception as e:
             _media_job_state[event_id] = {"status": "error", "updated_at": utc_now_iso(), "error": str(e)[:240]}
-            print(f"[MEDIA] worker job failed for {event_id}: {e}")
+            logger.warning(f"[MEDIA] worker job failed for {event_id}: {e}")
         finally:
             _media_jobs.task_done()
 
@@ -1101,7 +1111,7 @@ async def sync_ollama_runtime_models() -> None:
         available = {n for n in names if n}
         _ollama_available_models = available
         if not available:
-            print("[OLLAMA] No local models available from /api/tags")
+            logger.warning("[OLLAMA] No local models available from /api/tags")
             return
 
         preferred = [
@@ -1122,9 +1132,9 @@ async def sync_ollama_runtime_models() -> None:
         fallback = next((m for m in preferred if m and m in available and m != primary), primary)
         OLLAMA_MODEL = primary
         OLLAMA_FALLBACK_MODEL = fallback
-        print(f"[OLLAMA] Runtime model chain: primary={OLLAMA_MODEL}, fallback={OLLAMA_FALLBACK_MODEL}")
+        logger.info(f"[OLLAMA] Runtime model chain: primary={OLLAMA_MODEL}, fallback={OLLAMA_FALLBACK_MODEL}")
     except Exception as e:
-        print(f"[OLLAMA] Model discovery failed: {e}")
+        logger.warning(f"[OLLAMA] Model discovery failed: {e}")
 
 
 def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -1409,14 +1419,14 @@ async def call_ollama_json(prompt: str, retries: int = 2) -> Optional[dict]:
                 # 404 usually means missing model; stop retrying that model to reduce log spam.
                 if getattr(e.response, "status_code", None) == 404:
                     _ollama_available_models.discard(model_name)
-                    print(f"[OLLAMA] Missing model '{model_name}', removed from runtime chain")
+                    logger.warning(f"[OLLAMA] Missing model '{model_name}', removed from runtime chain")
                     break
                 if attempt == retries:
-                    print(f"[OLLAMA] JSON call failed ({model_name}): {e}")
+                    logger.warning(f"[OLLAMA] JSON call failed ({model_name}): {e}")
                 await asyncio.sleep(0.35 * (attempt + 1))
             except Exception as e:
                 if attempt == retries:
-                    print(f"[OLLAMA] JSON call failed ({model_name}): {e}")
+                    logger.warning(f"[OLLAMA] JSON call failed ({model_name}): {e}")
                 await asyncio.sleep(0.35 * (attempt + 1))
     return None
 
@@ -1794,7 +1804,7 @@ async def poll_flights():
                     metrics["last_success"]["flights"] = utc_now_iso()
             except Exception as e:
                 metrics["flight_errors"] += 1
-                print(f"[FR24] Error: {e}")
+                logger.warning(f"[FR24] Error: {e}")
 
 
 async def poll_rss():
@@ -1842,7 +1852,7 @@ async def poll_rss():
                     metrics["last_success"]["rss"] = utc_now_iso()
                 except Exception as e:
                     metrics["rss_errors"] += 1
-                    print(f"[RSS] Error: {e}")
+                    logger.warning(f"[RSS] Error: {e}")
             await asyncio.sleep(60)
 
 
@@ -1902,7 +1912,7 @@ async def poll_telegram():
                     metrics["last_success"]["telegram"] = utc_now_iso()
                 except Exception as e:
                     metrics["telegram_errors"] += 1
-                    print(f"[TELEGRAM] Error {cfg['slug']}: {e}")
+                    logger.warning(f"[TELEGRAM] Error {cfg['slug']}: {e}")
             await asyncio.sleep(max(1, TELEGRAM_POLL_INTERVAL_SEC))
 
 
@@ -1928,7 +1938,7 @@ async def poll_red_alert():
                         global _red_alert_403_last_logged
                         _now = asyncio.get_event_loop().time()
                         if _now - _red_alert_403_last_logged > 600:
-                            print("[RED ALERT] 403 Forbidden — OREF geo-blocking this IP (logged once per 10m)")
+                            logger.warning("[RED ALERT] 403 Forbidden — OREF geo-blocking this IP (logged once per 10m)")
                             _red_alert_403_last_logged = _now
                     continue
                 if not resp.text.strip():
@@ -1967,7 +1977,7 @@ async def poll_red_alert():
                 metrics["last_success"]["red_alert"] = utc_now_iso()
             except Exception as e:
                 metrics["red_alert_errors"] += 1
-                print(f"[RED ALERT] Error: {e}")
+                logger.warning(f"[RED ALERT] Error: {e}")
 
 
 def _watchdog_check() -> list:
@@ -2213,9 +2223,82 @@ async def runtime_housekeeping():
             cleanup_revoked_tokens()
             await refresh_defcon_state()
         except Exception as e:
-            print(f"[HOUSEKEEPING] Error: {e}")
+            logger.warning(f"[HOUSEKEEPING] Error: {e}")
         await asyncio.sleep(60)
 
+
+def _check_rate_limit(ip: str, limit: int, window_sec: int) -> bool:
+    """Returns True if request is allowed, False if rate limited."""
+    try:
+        import redis as redis_lib
+        from config import REDIS_URL
+        r = redis_lib.from_url(REDIS_URL, socket_timeout=0.5)
+        key = f"rl:{ip}:{window_sec}"
+        count = r.incr(key)
+        if count == 1:
+            r.expire(key, window_sec)
+        return count <= limit
+    except Exception:
+        # Redis unavailable: fall back to allowing the request
+        return True
+
+
+def _track_failed_login(ip: str) -> int:
+    try:
+        import redis as redis_lib
+        from config import REDIS_URL
+        r = redis_lib.from_url(REDIS_URL, socket_timeout=0.5)
+        key = f"fl:{ip}"
+        count = r.incr(key)
+        if count == 1:
+            r.expire(key, 900)  # 15 min window
+        return count
+    except Exception:
+        return 0
+
+
+def _clear_failed_login(ip: str):
+    try:
+        import redis as redis_lib
+        from config import REDIS_URL
+        r = redis_lib.from_url(REDIS_URL, socket_timeout=0.5)
+        r.delete(f"fl:{ip}")
+    except Exception:
+        pass
+
+
+async def prune_old_data():
+    """Daily pruning: delete events older than 90 days from events_v2."""
+    while True:
+        await asyncio.sleep(24 * 3600)  # run once per day
+        try:
+            from config import DATABASE_URL
+            import psycopg
+            cutoff = (datetime.now(timezone.utc) - timedelta(days=90)).isoformat()
+            with psycopg.connect(DATABASE_URL, connect_timeout=5) as conn:
+                result = conn.execute(
+                    "DELETE FROM events_v2 WHERE timestamp < %s", (cutoff,)
+                )
+                conn.commit()
+                deleted = result.rowcount
+            logger.info(f"[PRUNE] Deleted {deleted} events older than 90 days")
+
+            # Prune old media files older than 90 days
+            from config import TELEGRAM_MEDIA_DIR
+            import time as _time
+            cutoff_ts = _time.time() - (90 * 24 * 3600)
+            pruned_files = 0
+            for f in TELEGRAM_MEDIA_DIR.glob("**/*"):
+                if f.is_file() and f.stat().st_mtime < cutoff_ts:
+                    f.unlink()
+                    pruned_files += 1
+            if pruned_files:
+                logger.info(f"[PRUNE] Deleted {pruned_files} old media files")
+        except Exception as e:
+            logger.warning(f"[PRUNE] Error during pruning: {e}")
+
+
+_bg_tasks: list = []
 
 # ── APIRouter registrations ────────────────────────────────────────────────────
 from routes_auth import router as auth_router
@@ -2248,9 +2331,9 @@ async def startup_event():
     _graph_store = gstore.GraphStore(uri=NEO4J_URI, user=NEO4J_USER, password=NEO4J_PASSWORD)
     graph_status = _graph_store.status()
     if graph_status.get("connected"):
-        print(f"[GRAPH] Neo4j connected ({graph_status.get('uri')})")
+        logger.info(f"[GRAPH] Neo4j connected ({graph_status.get('uri')})")
     else:
-        print(f"[GRAPH] Neo4j disabled/offline: {graph_status.get('error')}")
+        logger.warning(f"[GRAPH] Neo4j disabled/offline: {graph_status.get('error')}")
     ensure_default_admin()
     load_recent_events()
     await refresh_defcon_state()
@@ -2261,13 +2344,13 @@ async def startup_event():
             _state["report"] = _saved["report"]
             _state["last_event_fp"] = _saved.get("event_fp", "")
             _state["last_generated_ts"] = float(_saved.get("generated_at_ts", 0.0))
-            print(f"[REPORTS] Restored {_rtype} report from Postgres")
+            logger.info(f"[REPORTS] Restored {_rtype} report from Postgres")
 
-    asyncio.create_task(poll_flights())
-    asyncio.create_task(poll_rss())
-    asyncio.create_task(poll_telegram())
-    asyncio.create_task(poll_red_alert())
-    asyncio.create_task(
+    _bg_tasks.append(asyncio.create_task(poll_flights()))
+    _bg_tasks.append(asyncio.create_task(poll_rss()))
+    _bg_tasks.append(asyncio.create_task(poll_telegram()))
+    _bg_tasks.append(asyncio.create_task(poll_red_alert()))
+    _bg_tasks.append(asyncio.create_task(
         osint_layers.poll_adsblol(
             enabled=ENABLE_ADSBLOL,
             api_url=ADSBLOL_API_URL,
@@ -2278,8 +2361,8 @@ async def startup_event():
             now_iso=utc_now_iso,
             broadcast=manager.broadcast,
         )
-    )
-    asyncio.create_task(
+    ))
+    _bg_tasks.append(asyncio.create_task(
         osint_layers.poll_aisstream(
             enabled=ENABLE_AISSTREAM,
             ws_url=AISSTREAM_WS_URL,
@@ -2289,8 +2372,8 @@ async def startup_event():
             now_iso=utc_now_iso,
             broadcast=manager.broadcast,
         )
-    )
-    asyncio.create_task(
+    ))
+    _bg_tasks.append(asyncio.create_task(
         osint_layers.poll_firms(
             enabled=ENABLE_FIRMS,
             map_key=FIRMS_MAP_KEY,
@@ -2302,15 +2385,22 @@ async def startup_event():
             now_iso=utc_now_iso,
             ingest_event=ingest_event,
         )
-    )
-    asyncio.create_task(media_worker())
-    asyncio.create_task(runtime_housekeeping())
-    print("[OSINT] Engine started — pollers + DB persistence active")
+    ))
+    _bg_tasks.append(asyncio.create_task(media_worker()))
+    _bg_tasks.append(asyncio.create_task(runtime_housekeeping()))
+    _bg_tasks.append(asyncio.create_task(prune_old_data()))
+    logger.info("[OSINT] Engine started — pollers + DB persistence active")
 
 
 @app.on_event("shutdown")
 async def shutdown_event():
     global _ollama_http_client, _geocode_http_client, _graph_store
+    # Cancel all background tasks
+    for task in _bg_tasks:
+        task.cancel()
+    if _bg_tasks:
+        await asyncio.gather(*_bg_tasks, return_exceptions=True)
+    logger.info("Background tasks cancelled cleanly")
     if _ollama_http_client is not None:
         await _ollama_http_client.aclose()
         _ollama_http_client = None
