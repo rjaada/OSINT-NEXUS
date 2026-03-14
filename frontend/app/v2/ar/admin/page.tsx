@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react"
 import { TopBar } from "@/components/dashboard/top-bar"
 import { CommandNav } from "@/components/dashboard/command-nav"
 import { csrfHeaders } from "@/lib/security"
+import { useAuth } from "@/lib/auth-context"
 
 type Role = "viewer" | "analyst" | "admin"
 
@@ -15,20 +16,12 @@ interface AdminUser {
 }
 
 export default function ArabicAdminUsersPage() {
-  const [role, setRole] = useState<Role>("viewer")
-  const [actor, setActor] = useState("")
+  const { role: roleStr, username: actor } = useAuth()
+  const role = roleStr as Role
   const [users, setUsers] = useState<AdminUser[]>([])
   const [loading, setLoading] = useState(false)
   const [msg, setMsg] = useState("")
   const [busyUser, setBusyUser] = useState("")
-
-  useEffect(() => {
-    try { const r = localStorage.getItem("osint_role"); if (r) setRole(r.toLowerCase() as Role) } catch (_) {}
-    fetch("/api/auth/session", { credentials: "include", cache: "no-store" })
-      .then((r) => r.ok ? r.json() : null)
-      .then((s) => { if (s?.authenticated) { const r = String(s.role || "viewer").toLowerCase() as Role; setRole(r); try { localStorage.setItem("osint_role", r) } catch (_) {} } })
-      .catch(() => {})
-  }, [])
 
   const loadUsers = async () => {
     setLoading(true)

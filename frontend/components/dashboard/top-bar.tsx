@@ -3,6 +3,7 @@
 import Link from "next/link"
 import { useEffect, useMemo, useRef, useState } from "react"
 import { Shield, Radio, Lock, Search, X } from "lucide-react"
+import { useAuth } from "@/lib/auth-context"
 
 type SearchItem = {
   id: string
@@ -171,36 +172,10 @@ export function TopBar({ headlines }: { headlines?: string[] }) {
     window.dispatchEvent(new CustomEvent("osint:defcon", { detail: { level: defcon } }))
   }, [defcon])
 
+  const { role: authRole } = useAuth()
   useEffect(() => {
-    // Fast path: localStorage (always JS-readable, persists across full-page navigations)
-    try {
-      const cached = localStorage.getItem("osint_role")
-      if (cached) setRole(cached.toLowerCase())
-    } catch (_) {}
-
-    // Authoritative: verify with session API
-    fetch("/api/auth/session", { credentials: "include", cache: "no-store" })
-      .then((r) => r.ok ? r.json() : null)
-      .then((s) => {
-        if (!s?.authenticated) {
-          try { localStorage.removeItem("osint_role") } catch (_) {}
-          return
-        }
-        const r = String(s.role || "viewer").toLowerCase()
-        setRole(r)
-        try { localStorage.setItem("osint_role", r) } catch (_) {}
-      })
-      .catch(() => {})
-
-    // Re-resolve when login completes (overlay may be covering the dashboard)
-    const onLogin = (e: Event) => {
-      const r = String((e as CustomEvent).detail?.role || "viewer").toLowerCase()
-      setRole(r)
-      try { localStorage.setItem("osint_role", r) } catch (_) {}
-    }
-    window.addEventListener("osint:login", onLogin)
-    return () => window.removeEventListener("osint:login", onLogin)
-  }, [])
+    setRole(authRole)
+  }, [authRole])
 
   useEffect(() => {
     const NAV_ITEMS: SearchItem[] = [
