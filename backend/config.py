@@ -4,6 +4,7 @@ Import from here instead of reading os.getenv() scattered across main.py.
 """
 
 import os
+import urllib.parse
 from pathlib import Path
 from typing import Dict, List, Set
 
@@ -22,7 +23,17 @@ DB_PATH = os.getenv("OSINT_DB_PATH", "/tmp/osint_nexus.db")
 # ---------------------------------------------------------------------------
 # Database & Storage
 # ---------------------------------------------------------------------------
-DATABASE_URL = os.getenv("DATABASE_URL", "")
+# Build DATABASE_URL from individual parts so special characters in the
+# password (e.g. "@") are always percent-encoded and never corrupt the URL.
+_pg_password = os.getenv("POSTGRES_PASSWORD", "")
+_pg_host = os.getenv("POSTGRES_HOST", "postgres")
+_pg_user = os.getenv("POSTGRES_USER", "osint")
+_pg_db = os.getenv("POSTGRES_DB", "osint")
+if _pg_password:
+    _encoded = urllib.parse.quote(_pg_password, safe="")
+    DATABASE_URL = f"postgresql://{_pg_user}:{_encoded}@{_pg_host}:5432/{_pg_db}"
+else:
+    DATABASE_URL = os.getenv("DATABASE_URL", "")
 STORAGE_BACKEND = "postgres" if DATABASE_URL.startswith("postgres") else "sqlite"
 NEO4J_URI = os.getenv("NEO4J_URI", "")
 NEO4J_USER = os.getenv("NEO4J_USER", "")

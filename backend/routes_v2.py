@@ -273,7 +273,7 @@ async def v2_reports_history(
 async def v2_event_graph(request: Request, limit: int = 350):
     require_analyst_or_admin(request)
     safe_limit = min(max(limit, 30), 1500)
-    if _graph_store is not None and _graph_store.status().get("connected"):
+    if _state._graph_store is not None and _graph_store.status().get("connected"):
         try:
             graph = await asyncio.to_thread(_graph_store.get_graph_data, safe_limit)
             return {
@@ -300,7 +300,7 @@ async def v2_event_graph(request: Request, limit: int = 350):
 @router.get("/api/v2/graph/node/{node_id}")
 async def v2_graph_node_profile(node_id: str, request: Request):
     require_analyst_or_admin(request)
-    if _graph_store is None or not _graph_store.status().get("connected"):
+    if _state._graph_store is None or not _graph_store.status().get("connected"):
         raise HTTPException(status_code=503, detail="Graph store unavailable")
     profile = await asyncio.to_thread(_graph_store.get_node_profile, node_id)
     if not profile:
@@ -414,7 +414,7 @@ async def media_consume(
 async def v2_system():
     pg = postgres_status()
     ai_status = _v2_ai_scheduler.status()
-    graph_status = _graph_store.status() if _graph_store is not None else {"enabled": False, "connected": False, "error": "not initialized"}
+    graph_status = _graph_store.status() if _state._graph_store is not None else {"enabled": False, "connected": False, "error": "not initialized"}
     return {
         "version": "v2-beta",
         "storage_backend": STORAGE_BACKEND,
