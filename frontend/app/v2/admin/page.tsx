@@ -46,9 +46,11 @@ export default function AdminUsersPage() {
   const [passkeyCount, setPasskeyCount] = useState(0)
 
   useEffect(() => {
-    const roleCookie = document.cookie.split("; ").find((x) => x.startsWith("osint_role="))
-    const currentRole = (roleCookie ? decodeURIComponent(roleCookie.split("=")[1]) : "viewer").toLowerCase() as Role
-    setRole(currentRole)
+    try { const r = localStorage.getItem("osint_role"); if (r) setRole(r.toLowerCase() as Role) } catch (_) {}
+    fetch(apiUrl("/api/auth/session"), { credentials: "include", cache: "no-store" })
+      .then((r) => r.ok ? r.json() : null)
+      .then((s) => { if (s?.authenticated) { const r = String(s.role || "viewer").toLowerCase() as Role; setRole(r); try { localStorage.setItem("osint_role", r) } catch (_) {} } })
+      .catch(() => {})
   }, [])
 
   const loadUsers = async () => {

@@ -14,10 +14,19 @@ export default function HomePage() {
   const [user, setUser] = useState("user")
 
   useEffect(() => {
-    const roleCookie = document.cookie.split("; ").find((x) => x.startsWith("osint_role="))
-    const userCookie = document.cookie.split("; ").find((x) => x.startsWith("osint_user="))
-    setRole(roleCookie ? decodeURIComponent(roleCookie.split("=")[1]).toLowerCase() : "viewer")
-    setUser(userCookie ? decodeURIComponent(userCookie.split("=")[1]) : "user")
+    try {
+      const r = localStorage.getItem("osint_role"); if (r) setRole(r.toLowerCase())
+      const u = localStorage.getItem("osint_user"); if (u) setUser(u)
+    } catch (_) {}
+    fetch(apiUrl("/api/auth/session"), { credentials: "include", cache: "no-store" })
+      .then((r) => r.ok ? r.json() : null)
+      .then((s) => {
+        if (!s?.authenticated) return
+        const r = String(s.role || "viewer").toLowerCase()
+        const u = String(s.username || "user")
+        setRole(r); setUser(u)
+        try { localStorage.setItem("osint_role", r); localStorage.setItem("osint_user", u) } catch (_) {}
+      }).catch(() => {})
   }, [])
 
   const logout = async () => {
@@ -32,6 +41,7 @@ export default function HomePage() {
     document.cookie = "osint_role=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; SameSite=Lax"
     document.cookie = "osint_user=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; SameSite=Lax"
     document.cookie = "osint_csrf=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; SameSite=Lax"
+    try { localStorage.removeItem("osint_role"); localStorage.removeItem("osint_user") } catch (_) {}
     window.location.href = "/login"
   }
 
