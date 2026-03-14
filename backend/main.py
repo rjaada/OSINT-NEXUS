@@ -1597,7 +1597,18 @@ def parse_telegram_posts(html_text: str, channel_slug: str) -> list:
             or message.select_one("video.js-message_video")
             or message.select_one("video")
         )
-        video_src = video_node.get("src") if video_node else None
+        video_src = None
+        if video_node:
+            # Telegram lazy-loads via data-src; fall back to <source> children
+            video_src = (
+                video_node.get("src")
+                or video_node.get("data-src")
+                or (video_node.select_one("source") and video_node.select_one("source").get("src"))
+                or None
+            )
+            # Strip empty strings
+            if video_src and not video_src.strip():
+                video_src = None
         has_video = bool(video_node or message.select_one(".tgme_widget_message_video_player") or message.select_one(".tgme_widget_message_video_wrap"))
         if len(text) < 15 and not has_video:
             continue
@@ -1656,6 +1667,37 @@ def download_telegram_video(post_url: str, event_id: str) -> Optional[str]:
     return None
 
 
+def download_video_direct(cdn_url: str, event_id: str) -> Optional[str]:
+    """Download a Telegram CDN video URL directly with httpx, bypassing yt-dlp."""
+    if not cdn_url or not DOWNLOAD_TELEGRAM_MEDIA:
+        return None
+    try:
+        import httpx as _httpx
+        headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://t.me/"}
+        max_bytes = TELEGRAM_MAX_MEDIA_MB * 1024 * 1024
+        with _httpx.stream("GET", cdn_url, headers=headers, follow_redirects=True, timeout=30) as r:
+            if r.status_code != 200:
+                return None
+            ct = r.headers.get("content-type", "")
+            if "video" not in ct and "octet" not in ct:
+                return None
+            ext = "mp4"
+            if "webm" in ct:
+                ext = "webm"
+            dest = TELEGRAM_MEDIA_DIR / f"{event_id}.{ext}"
+            downloaded = 0
+            with open(dest, "wb") as f:
+                for chunk in r.iter_bytes(chunk_size=65536):
+                    downloaded += len(chunk)
+                    if downloaded > max_bytes:
+                        dest.unlink(missing_ok=True)
+                        return None
+                    f.write(chunk)
+        return f"/media/telegram/{dest.name}"
+    except Exception:
+        return None
+
+
 def infer_video_metadata(desc: str, has_video: bool, geo_method: str) -> dict:
     if not has_video:
         return {}
@@ -1692,6 +1734,9 @@ def is_playable_video_url(url: str) -> bool:
         local_path = TELEGRAM_MEDIA_DIR / Path(url).name
         return local_path.exists() and local_path.is_file()
     lower = url.lower()
+    # Accept direct CDN URLs from Telegram even without file extension
+    if "cdn.telegram.org" in lower or "cdn1.telegram.org" in lower or "cdn2.telegram.org" in lower:
+        return True
     return bool(re.search(r"\.(mp4|webm|mov|m4v)(\?|$)", lower))
 
 
@@ -1941,8 +1986,14 @@ async def poll_telegram():
                             "model_inference": geo["model_inference"],
                         }
                         if p.get("has_video"):
-                            local_video = await asyncio.to_thread(download_telegram_video, p["url"], pid)
                             remote_video_src = str(p.get("video_src") or "").strip()
+                            local_video = None
+                            # Try direct CDN download first (yt-dlp telegram extractor is unreliable)
+                            if remote_video_src:
+                                local_video = await asyncio.to_thread(download_video_direct, remote_video_src, pid)
+                            # Fall back to yt-dlp if direct download failed
+                            if not local_video:
+                                local_video = await asyncio.to_thread(download_telegram_video, p["url"], pid)
                             if local_video:
                                 event["video_url"] = local_video
                             elif is_playable_video_url(remote_video_src):
