@@ -8,6 +8,15 @@ import urllib.parse
 from pathlib import Path
 from typing import Dict, List, Set
 
+
+def _secret(name: str, env_fallback: str = "") -> str:
+    """Read from /run/secrets/<name> if it exists, else fall back to env var."""
+    import pathlib
+    p = pathlib.Path(f"/run/secrets/{name}")
+    if p.exists():
+        return p.read_text().strip()
+    return env_fallback
+
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
@@ -25,7 +34,7 @@ DB_PATH = os.getenv("OSINT_DB_PATH", "/tmp/osint_nexus.db")
 # ---------------------------------------------------------------------------
 # Build DATABASE_URL from individual parts so special characters in the
 # password (e.g. "@") are always percent-encoded and never corrupt the URL.
-_pg_password = os.getenv("POSTGRES_PASSWORD", "")
+_pg_password = _secret("postgres_password", os.getenv("POSTGRES_PASSWORD", ""))
 _pg_host = os.getenv("POSTGRES_HOST", "postgres")
 _pg_user = os.getenv("POSTGRES_USER", "osint")
 _pg_db = os.getenv("POSTGRES_DB", "osint")
@@ -37,7 +46,7 @@ else:
 STORAGE_BACKEND = "postgres" if DATABASE_URL.startswith("postgres") else "sqlite"
 NEO4J_URI = os.getenv("NEO4J_URI", "")
 NEO4J_USER = os.getenv("NEO4J_USER", "")
-NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "")
+NEO4J_PASSWORD = _secret("neo4j_password", os.getenv("NEO4J_PASSWORD", ""))
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379")
 
 # ---------------------------------------------------------------------------
@@ -52,7 +61,7 @@ CORS_ORIGINS: List[str] = [
 # ---------------------------------------------------------------------------
 # Authentication
 # ---------------------------------------------------------------------------
-AUTH_SECRET = os.getenv("AUTH_SECRET", "")
+AUTH_SECRET = _secret("auth_secret", os.getenv("AUTH_SECRET", ""))
 AUTH_DEFAULT_ADMIN_USER = os.getenv("AUTH_DEFAULT_ADMIN_USER", "admin")
 AUTH_DEFAULT_ADMIN_PASSWORD = os.getenv("AUTH_DEFAULT_ADMIN_PASSWORD", "")
 AUTH_COOKIE_SECURE = os.getenv("AUTH_COOKIE_SECURE", "0").lower() in ("1", "true", "yes", "on")
@@ -123,11 +132,11 @@ ADSBLOL_POLL_INTERVAL_SEC = int(os.getenv("ADSBLOL_POLL_INTERVAL_SEC", "10"))
 
 ENABLE_AISSTREAM = os.getenv("ENABLE_AISSTREAM", "0").lower() in ("1", "true", "yes", "on")
 AISSTREAM_WS_URL = os.getenv("AISSTREAM_WS_URL", "wss://stream.aisstream.io/v0/stream")
-AISSTREAM_API_KEY = os.getenv("AISSTREAM_API_KEY", "")
+AISSTREAM_API_KEY = _secret("aisstream_api_key", os.getenv("AISSTREAM_API_KEY", ""))
 AISSTREAM_BBOX = os.getenv("AISSTREAM_BBOX", "30,12,63,40")
 
 ENABLE_FIRMS = os.getenv("ENABLE_FIRMS", "0").lower() in ("1", "true", "yes", "on")
-FIRMS_MAP_KEY = os.getenv("FIRMS_MAP_KEY", "")
+FIRMS_MAP_KEY = _secret("firms_map_key", os.getenv("FIRMS_MAP_KEY", ""))
 FIRMS_SOURCE = os.getenv("FIRMS_SOURCE", "VIIRS_SNPP_NRT")
 FIRMS_BBOX = os.getenv("FIRMS_BBOX", "30,12,63,40")
 FIRMS_DAYS = int(os.getenv("FIRMS_DAYS", "1"))
