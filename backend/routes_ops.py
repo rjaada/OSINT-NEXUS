@@ -31,15 +31,43 @@ def _require_analyst_or_admin(request: Request) -> dict:
 # ---------------------------------------------------------------------------
 
 @router.get("/api/health")
-async def health():
-    import main as _m
-    return {
-        "status": "ok",
-        "clients": len(_m.manager.connections),
-        "events_buffered": len(_m.events_buffer),
-        "events_persisted": len(_m.events_history),
-        "watchdog_warnings": _m._watchdog_check(),
-    }
+async def health_check():
+    import psycopg, httpx
+    from config import DATABASE_URL, REDIS_URL, OLLAMA_BASE_URL
+    checks = {}
+    overall = "ok"
+
+    # Postgres
+    try:
+        with psycopg.connect(DATABASE_URL, connect_timeout=2) as conn:
+            conn.execute("SELECT 1")
+        checks["postgres"] = "ok"
+    except Exception as e:
+        checks["postgres"] = f"error: {e}"
+        overall = "degraded"
+
+    # Redis
+    try:
+        import redis as redis_lib
+        r = redis_lib.from_url(REDIS_URL, socket_timeout=1)
+        r.ping()
+        checks["redis"] = "ok"
+    except Exception as e:
+        checks["redis"] = f"error: {e}"
+        overall = "degraded"
+
+    # Ollama
+    try:
+        async with httpx.AsyncClient(timeout=3) as client:
+            resp = await client.get(f"{OLLAMA_BASE_URL}/api/tags")
+            checks["ollama"] = "ok" if resp.status_code == 200 else f"http_{resp.status_code}"
+    except Exception as e:
+        checks["ollama"] = f"error: {str(e)[:60]}"
+        # Ollama down doesn't make us degraded — it's optional
+
+    status_code = 200 if overall == "ok" else 503
+    from fastapi.responses import JSONResponse
+    return JSONResponse({"status": overall, "checks": checks}, status_code=status_code)
 
 
 @router.get("/api/ops/health")
