@@ -1,0 +1,74 @@
+groups:
+  - name: osint_backend
+    interval: 30s
+    rules:
+      # Health check failing → page immediately
+      - alert: BackendDown
+        expr: up{job="osint_backend"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "OSINT backend is unreachable"
+          description: "Prometheus cannot scrape the backend. The service may be down."
+
+      # HTTP 5xx error rate > 5% for 5 minutes
+      - alert: HighErrorRate
+        expr: |
+          (
+            rate(http_requests_total{status=~"5.."}[5m])
+            /
+            rate(http_requests_total[5m])
+          ) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "High HTTP 5xx error rate ({{ $value | humanizePercentage }})"
+          description: "More than 5% of requests are returning 5xx errors for the last 5 minutes."
+
+      # Postgres events table growing unusually fast (>500 new rows/min)
+      - alert: EventIngestionSpike
+        expr: rate(osint_postgres_events_v2_total[5m]) * 60 > 500
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Unusually high event ingestion rate"
+          description: "More than 500 events/min are being written to Postgres."
+
+      # In-memory event buffer near capacity (maxlen=30000)
+      - alert: EventBufferNearFull
+        expr: osint_events_history_total > 27000
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Event history buffer above 90% capacity"
+          description: "events_history deque is at {{ $value }}/30000. Oldest events will be evicted."
+
+      # Ollama error rate > 20%
+      - alert: OllamaHighErrorRate
+        expr: |
+          (
+            rate(osint_adsblol_errors_total[10m]) + rate(osint_ais_polls_total[10m])
+          ) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Background polling errors detected"
+          description: "ADS-B or AIS polling errors are accumulating."
+
+  - name: osint_infra
+    interval: 60s
+    rules:
+      # Container memory usage > 90% of limit (generic node exporter rule if added later)
+      - alert: ContainerMemoryHigh
+        expr: container_memory_usage_bytes / container_spec_memory_limit_bytes > 0.9
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Container {{ $labels.name }} memory > 90%"
+          description: "Container is using over 90% of its memory limit."
