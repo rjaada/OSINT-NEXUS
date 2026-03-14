@@ -1,6 +1,6 @@
 # Production Readiness Plan — OSINT Nexus
 
-> **Status:** Draft — 2026-03-13
+> **Status:** In Progress — last updated 2026-03-14
 > **Goal:** Take OSINT Nexus from "runs on my server" to a deployable, observable, resilient production system.
 > **Rule:** Work in priority order. Don't start Phase 2 until Phase 1 is done.
 
@@ -319,28 +319,36 @@ Do not start this phase until you have real traffic that justifies it.
 
 ## Summary Checklist
 
-| Phase | Item | Priority |
-|-------|------|----------|
-| 1 | TLS / Caddy reverse proxy | 🔴 Critical |
-| 1 | Fix Neo4j auth mismatch | 🔴 Critical |
-| 1 | Consolidate SQLite → PostgreSQL | 🔴 Critical |
-| 1 | Redis-backed rate limiting | 🔴 Critical |
-| 1 | Secrets management (Docker secrets) | 🔴 Critical |
-| 2 | CI/CD pipeline (GitHub Actions) | 🟠 High |
-| 2 | Automated backups + tested restores | 🟠 High |
-| 2 | Real health checks (probe dependencies) | 🟠 High |
-| 2 | Structured logging + Loki | 🟠 High |
-| 2 | Data retention + pruning job | 🟠 High |
-| 2 | Graceful shutdown | 🟠 High |
-| 3 | Prometheus + Grafana + alerting | 🟡 Medium |
-| 3 | Distributed tracing (OpenTelemetry) | 🟡 Medium |
-| 4 | Runbook documentation | 🟡 Medium |
-| 4 | CORS + security headers audit | 🟡 Medium |
-| 4 | Data source license audit | 🟡 Medium |
-| 5 | Redis pub/sub for WebSocket scale-out | 🟢 When needed |
-| 5 | Ollama job queue | 🟢 When needed |
-| 5 | CDN (Cloudflare) | 🟢 When needed |
+| Phase | Item | Priority | Status |
+|-------|------|----------|--------|
+| 1 | TLS / Caddy reverse proxy | 🔴 Critical | ✅ Done — Caddyfile created, added to docker-compose.yml under `prod` profile with Let's Encrypt, security headers, WebSocket upgrade |
+| 1 | Fix Neo4j auth mismatch | 🔴 Critical | ✅ Done — wiped stale volume, restarted with `NEO4J_AUTH=neo4j/${NEO4J_PASSWORD}`; confirmed `cypher-shell` connects cleanly |
+| 1 | Consolidate SQLite → PostgreSQL | 🔴 Critical | ⏳ Partial — SQLite schema extracted to `db_sqlite.py`; migration script exists but full cutover not yet done; SQLite still used in some code paths |
+| 1 | Redis-backed rate limiting | 🔴 Critical | ✅ Done — `_check_rate_limit`, `_track_failed_login`, `_clear_failed_login` all use Redis `INCR`/`EXPIRE`; in-memory fallback if Redis unavailable |
+| 1 | Secrets management (Docker secrets) | 🔴 Critical | ⏳ Not done — secrets still in `.env` env vars; `.env` is gitignored; moving to Docker secrets/Vault is next critical item |
+| 2 | CI/CD pipeline (GitHub Actions) | 🟠 High | ✅ Done — `.github/workflows/ci.yml` with pytest → docker build → SSH deploy on main merge |
+| 2 | Automated backups + tested restores | 🟠 High | ✅ Done — `scripts/backup.sh` with `pg_dump` + gzip + 30-day pruning; `backup` service in docker-compose prod profile. Restore test still pending. |
+| 2 | Real health checks (probe dependencies) | 🟠 High | ✅ Done — `/api/health` probes Postgres (`SELECT 1`), Redis (`PING`), Ollama (`/api/tags`); returns 503 with per-dep status on failure |
+| 2 | Structured logging + Loki | 🟠 High | ✅ Partial — all `print()` replaced with `logging`; JSON formatter via `python-json-logger`. Loki/Grafana aggregation not yet deployed. |
+| 2 | Data retention + pruning job | 🟠 High | ✅ Done — `prune_old_data()` daily task: deletes `events_v2` rows older than 90 days and expired media files |
+| 2 | Graceful shutdown | 🟠 High | ✅ Done — all `asyncio.create_task()` handles tracked in `_bg_tasks`; FastAPI lifespan shutdown cancels them with `asyncio.gather(..., return_exceptions=True)` |
+| 3 | Prometheus + Grafana + alerting | 🟡 Medium | ⏳ Not done — metrics endpoint exists but Prometheus/Grafana not deployed; no alerting |
+| 3 | Distributed tracing (OpenTelemetry) | 🟡 Medium | ⏳ Not done |
+| 4 | Runbook documentation | 🟡 Medium | ✅ Done — `docs/runbook.md` covers deploy, upgrade, rollback, per-dependency recovery, backup/restore, user management, data source licenses |
+| 4 | CORS + security headers audit | 🟡 Medium | ⏳ Not done — Caddy adds HTTP security headers when `prod` profile active; CORSMiddleware not yet explicitly locked down in FastAPI |
+| 4 | Data source license audit | 🟡 Medium | ⏳ Not done — documented in runbook for manual review |
+| 5 | Redis pub/sub for WebSocket scale-out | 🟢 When needed | ⏳ Not done |
+| 5 | Ollama job queue | 🟢 When needed | ⏳ Not done |
+| 5 | CDN (Cloudflare) | 🟢 When needed | ⏳ Not done |
+
+### Remaining Critical Items (do next)
+
+1. **SQLite → PostgreSQL full cutover** — audit remaining `sqlite3` imports and migrate all tables to Postgres.
+2. **Secrets management** — move `AUTH_SECRET`, `POSTGRES_PASSWORD`, `NEO4J_PASSWORD`, API keys to Docker secrets; update `config.py` to read from `/run/secrets/<name>`.
+3. **Loki deployment** — add Loki + Grafana to `docker-compose.yml` for log aggregation.
+4. **CORS lockdown** — add explicit `CORSMiddleware` allowed origins in FastAPI (not just Caddy headers).
+5. **Prometheus + alerting** — wire up existing metrics endpoint to Prometheus + Grafana + Alertmanager.
 
 ---
 
-*Written 2026-03-13. Revisit after completing each phase.*
+*Written 2026-03-13. Updated 2026-03-14 after session implementing Phase 1 (partial) and Phase 2.*
