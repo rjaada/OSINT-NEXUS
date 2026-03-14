@@ -43,7 +43,7 @@ def init_pg_schema(conn: psycopg.Connection) -> None:
                 id TEXT PRIMARY KEY,
                 incident_id TEXT,
                 type TEXT,
-                desc TEXT,
+                "desc" TEXT,
                 lat DOUBLE PRECISION,
                 lng DOUBLE PRECISION,
                 source TEXT,

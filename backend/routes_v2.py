@@ -740,10 +740,11 @@ async def v2_saved_views_create(
     if not name:
         raise HTTPException(status_code=400, detail="missing name")
     if _db is not None:
-        _db.execute(
-            "INSERT INTO saved_views (name, owner, filters_json, created_at) VALUES (?, ?, ?, ?)",
-            (name, actor, json.dumps(filters, ensure_ascii=False), utc_now_iso()),
-        )
+        with _db.cursor() as _cur:
+            _cur.execute(
+                "INSERT INTO saved_views (name, owner, filters_json, created_at) VALUES (%s, %s, %s, %s)",
+                (name, actor, json.dumps(filters, ensure_ascii=False), utc_now_iso()),
+            )
         _db.commit()
     audit_log("saved_view.create", actor, role, payload, target_id=name)
     return {"ok": True}
@@ -755,10 +756,12 @@ async def v2_saved_views(request: Request, owner: str = "anon", x_api_key: Optio
         owner = auth_user_from_request(request).get("username", "anon")
     if _db is None:
         return []
-    rows = _db.execute(
-        "SELECT id, name, owner, filters_json, created_at FROM saved_views WHERE owner = ? ORDER BY id DESC",
-        (owner,),
-    ).fetchall()
+    with _db.cursor() as _cur:
+        _cur.execute(
+            "SELECT id, name, owner, filters_json, created_at FROM saved_views WHERE owner = %s ORDER BY id DESC",
+            (owner,),
+        )
+        rows = _cur.fetchall()
     out = []
     for r in rows:
         out.append(
@@ -790,10 +793,11 @@ async def v2_watchlist_create(
     if not name or not query:
         raise HTTPException(status_code=400, detail="missing name/query")
     if _db is not None:
-        _db.execute(
-            "INSERT INTO watchlists (name, owner, query, tags_json, created_at) VALUES (?, ?, ?, ?, ?)",
-            (name, actor, query, json.dumps(tags, ensure_ascii=False), utc_now_iso()),
-        )
+        with _db.cursor() as _cur:
+            _cur.execute(
+                "INSERT INTO watchlists (name, owner, query, tags_json, created_at) VALUES (%s, %s, %s, %s, %s)",
+                (name, actor, query, json.dumps(tags, ensure_ascii=False), utc_now_iso()),
+            )
         _db.commit()
     audit_log("watchlist.create", actor, role, payload, target_id=name)
     return {"ok": True}
@@ -805,10 +809,12 @@ async def v2_watchlists(request: Request, owner: str = "anon", x_api_key: Option
         owner = auth_user_from_request(request).get("username", "anon")
     if _db is None:
         return []
-    rows = _db.execute(
-        "SELECT id, name, owner, query, tags_json, created_at FROM watchlists WHERE owner = ? ORDER BY id DESC",
-        (owner,),
-    ).fetchall()
+    with _db.cursor() as _cur:
+        _cur.execute(
+            "SELECT id, name, owner, query, tags_json, created_at FROM watchlists WHERE owner = %s ORDER BY id DESC",
+            (owner,),
+        )
+        rows = _cur.fetchall()
     out = []
     for r in rows:
         query = str(r["query"])
@@ -846,13 +852,15 @@ async def v2_pin_incident(
     if not incident_id:
         raise HTTPException(status_code=400, detail="missing incident_id")
     if _db is not None:
-        _db.execute(
-            """
-            INSERT OR REPLACE INTO pinned_incidents (incident_id, owner, note, created_at)
-            VALUES (?, ?, ?, ?)
-            """,
-            (incident_id, actor, note, utc_now_iso()),
-        )
+        with _db.cursor() as _cur:
+            _cur.execute(
+                """
+                INSERT INTO pinned_incidents (incident_id, owner, note, created_at)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (incident_id) DO UPDATE SET note = EXCLUDED.note, owner = EXCLUDED.owner
+                """,
+                (incident_id, actor, note, utc_now_iso()),
+            )
         _db.commit()
     audit_log("pin.set", actor, role, payload, target_id=incident_id)
     return {"ok": True}
@@ -864,10 +872,12 @@ async def v2_pins(request: Request, owner: str = "anon", x_api_key: Optional[str
         owner = auth_user_from_request(request).get("username", "anon")
     if _db is None:
         return []
-    rows = _db.execute(
-        "SELECT incident_id, owner, note, created_at FROM pinned_incidents WHERE owner = ? ORDER BY created_at DESC",
-        (owner,),
-    ).fetchall()
+    with _db.cursor() as _cur:
+        _cur.execute(
+            "SELECT incident_id, owner, note, created_at FROM pinned_incidents WHERE owner = %s ORDER BY created_at DESC",
+            (owner,),
+        )
+        rows = _cur.fetchall()
     return [dict(r) for r in rows]
 
 
@@ -887,10 +897,11 @@ async def v2_handoff_add(
     if not incident_id or not note:
         raise HTTPException(status_code=400, detail="missing incident_id/note")
     if _db is not None:
-        _db.execute(
-            "INSERT INTO handoff_notes (incident_id, owner, note, created_at) VALUES (?, ?, ?, ?)",
-            (incident_id, actor, note, utc_now_iso()),
-        )
+        with _db.cursor() as _cur:
+            _cur.execute(
+                "INSERT INTO handoff_notes (incident_id, owner, note, created_at) VALUES (%s, %s, %s, %s)",
+                (incident_id, actor, note, utc_now_iso()),
+            )
         _db.commit()
     audit_log("handoff.add", actor, role, payload, target_id=incident_id)
     return {"ok": True}
@@ -900,10 +911,12 @@ async def v2_handoff_add(
 async def v2_handoff(incident_id: str):
     if _db is None:
         return []
-    rows = _db.execute(
-        "SELECT id, incident_id, owner, note, created_at FROM handoff_notes WHERE incident_id = ? ORDER BY id DESC",
-        (incident_id,),
-    ).fetchall()
+    with _db.cursor() as _cur:
+        _cur.execute(
+            "SELECT id, incident_id, owner, note, created_at FROM handoff_notes WHERE incident_id = %s ORDER BY id DESC",
+            (incident_id,),
+        )
+        rows = _cur.fetchall()
     return [dict(r) for r in rows]
 
 
@@ -923,13 +936,14 @@ async def v2_notifications_create(
     channels = payload.get("channels", ["in_app"])
     enabled = 1 if payload.get("enabled", True) else 0
     if _db is not None:
-        _db.execute(
-            """
-            INSERT INTO notification_rules (owner, min_confidence, event_types_json, channels_json, enabled, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (actor, min_confidence, json.dumps(event_types), json.dumps(channels), enabled, utc_now_iso()),
-        )
+        with _db.cursor() as _cur:
+            _cur.execute(
+                """
+                INSERT INTO notification_rules (owner, min_confidence, event_types_json, channels_json, enabled, created_at)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                """,
+                (actor, min_confidence, json.dumps(event_types), json.dumps(channels), enabled, utc_now_iso()),
+            )
         _db.commit()
     audit_log("notifications.create", actor, role, payload)
     return {"ok": True}
@@ -941,13 +955,15 @@ async def v2_notifications(request: Request, owner: str = "anon", x_api_key: Opt
         owner = auth_user_from_request(request).get("username", "anon")
     if _db is None:
         return []
-    rows = _db.execute(
-        """
-        SELECT id, owner, min_confidence, event_types_json, channels_json, enabled, created_at
-        FROM notification_rules WHERE owner = ? ORDER BY id DESC
-        """,
-        (owner,),
-    ).fetchall()
+    with _db.cursor() as _cur:
+        _cur.execute(
+            """
+            SELECT id, owner, min_confidence, event_types_json, channels_json, enabled, created_at
+            FROM notification_rules WHERE owner = %s ORDER BY id DESC
+            """,
+            (owner,),
+        )
+        rows = _cur.fetchall()
     return [
         {
             "id": r["id"],
@@ -968,10 +984,12 @@ async def v2_eval_scorecard():
     week_ago = (now - timedelta(days=7)).isoformat()
     reviews = []
     if _db is not None:
-        reviews = _db.execute(
-            "SELECT event_id, status, created_at FROM reviews WHERE created_at >= ?",
-            (week_ago,),
-        ).fetchall()
+        with _db.cursor() as _cur:
+            _cur.execute(
+                "SELECT event_id, status, created_at FROM reviews WHERE created_at >= %s",
+                (week_ago,),
+            )
+            reviews = _cur.fetchall()
     total = len(reviews)
     confirmed = sum(1 for r in reviews if r["status"] == "confirm")
     rejected = sum(1 for r in reviews if r["status"] == "reject")

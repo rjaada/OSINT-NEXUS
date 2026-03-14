@@ -237,14 +237,16 @@ def enforce_csrf(request: Request) -> None:
 def is_token_revoked(db, sig: str) -> bool:
     if not sig or db is None:
         return False
-    row = db.execute("SELECT sig FROM revoked_tokens WHERE sig = ?", (sig,)).fetchone()
-    return row is not None
+    with db.cursor() as cur:
+        cur.execute("SELECT sig FROM revoked_tokens WHERE sig = %s", (sig,))
+        return cur.fetchone() is not None
 
 
 def cleanup_revoked_tokens(db) -> None:
     if db is None:
         return
-    db.execute("DELETE FROM revoked_tokens WHERE expires_epoch < ?", (int(time.time()),))
+    with db.cursor() as cur:
+        cur.execute("DELETE FROM revoked_tokens WHERE expires_epoch < %s", (int(time.time()),))
     db.commit()
 
 
