@@ -1,0 +1,37 @@
+{
+    email {$ACME_EMAIL}
+}
+
+{$DOMAIN} {
+    # Frontend
+    reverse_proxy frontend:3000
+
+    # Backend API + WebSocket
+    handle /api/* {
+        reverse_proxy backend:8000
+    }
+    handle /ws/* {
+        reverse_proxy backend:8000 {
+            transport http {
+                versions h1
+            }
+            header_up Upgrade {http.request.header.Upgrade}
+            header_up Connection {http.request.header.Connection}
+        }
+    }
+    handle /metrics {
+        reverse_proxy backend:8000
+    }
+
+    # Security headers
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Frame-Options "DENY"
+        X-Content-Type-Options "nosniff"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        Permissions-Policy "geolocation=(), microphone=(), camera=()"
+        -Server
+    }
+
+    encode gzip
+}
