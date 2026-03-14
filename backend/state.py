@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import sqlite3
 import time
 from collections import deque
 from typing import Any, Dict, List, Optional, Set
@@ -26,7 +25,7 @@ from ws_manager import ConnectionManager
 manager: ConnectionManager = ConnectionManager()
 
 # ── Database ───────────────────────────────────────────────────────────────────
-_db: Optional[sqlite3.Connection] = None
+_db: Optional[Any] = None  # psycopg3 Connection set at startup
 _graph_store: Any = None  # gstore.GraphStore set at startup
 
 # ── Event runtime buffers ──────────────────────────────────────────────────────

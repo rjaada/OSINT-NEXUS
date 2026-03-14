@@ -9,56 +9,37 @@ _REPLAY_TTL = 90
 
 
 def ensure_table(db) -> None:
-    if db is None:
-        return
-    db.execute(
-        """
-        CREATE TABLE IF NOT EXISTS user_mfa_totp (
-            username TEXT PRIMARY KEY,
-            secret TEXT NOT NULL,
-            enabled INTEGER NOT NULL DEFAULT 0,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL
-        )
-        """
-    )
-    db.execute(
-        """
-        CREATE TABLE IF NOT EXISTS totp_used_codes (
-            username TEXT NOT NULL,
-            code TEXT NOT NULL,
-            used_at INTEGER NOT NULL,
-            PRIMARY KEY (username, code)
-        )
-        """
-    )
-    db.commit()
+    """No-op: schema is managed by db_postgres.init_pg_schema."""
+    return
 
 
 def get_record(db, username: str):
     if db is None:
         return None
-    return db.execute(
-        "SELECT username, secret, enabled, created_at, updated_at FROM user_mfa_totp WHERE username = ?",
-        (username.lower(),),
-    ).fetchone()
+    with db.cursor() as cur:
+        cur.execute(
+            "SELECT username, secret, enabled, created_at, updated_at FROM user_mfa_totp WHERE username = %s",
+            (username.lower(),),
+        )
+        return cur.fetchone()
 
 
 def create_or_rotate_secret(db, username: str, now_iso: str) -> str:
     secret = pyotp.random_base32()
     if db is None:
         return secret
-    db.execute(
-        """
-        INSERT INTO user_mfa_totp (username, secret, enabled, created_at, updated_at)
-        VALUES (?, ?, 0, ?, ?)
-        ON CONFLICT(username) DO UPDATE SET
-            secret = excluded.secret,
-            enabled = 0,
-            updated_at = excluded.updated_at
-        """,
-        (username.lower(), secret, now_iso, now_iso),
-    )
+    with db.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO user_mfa_totp (username, secret, enabled, created_at, updated_at)
+            VALUES (%s, %s, 0, %s, %s)
+            ON CONFLICT (username) DO UPDATE SET
+                secret = EXCLUDED.secret,
+                enabled = 0,
+                updated_at = EXCLUDED.updated_at
+            """,
+            (username.lower(), secret, now_iso, now_iso),
+        )
     db.commit()
     return secret
 
@@ -66,20 +47,22 @@ def create_or_rotate_secret(db, username: str, now_iso: str) -> str:
 def enable_totp(db, username: str, now_iso: str) -> None:
     if db is None:
         return
-    db.execute(
-        "UPDATE user_mfa_totp SET enabled = 1, updated_at = ? WHERE username = ?",
-        (now_iso, username.lower()),
-    )
+    with db.cursor() as cur:
+        cur.execute(
+            "UPDATE user_mfa_totp SET enabled = 1, updated_at = %s WHERE username = %s",
+            (now_iso, username.lower()),
+        )
     db.commit()
 
 
 def disable_totp(db, username: str, now_iso: str) -> None:
     if db is None:
         return
-    db.execute(
-        "UPDATE user_mfa_totp SET enabled = 0, updated_at = ? WHERE username = ?",
-        (now_iso, username.lower()),
-    )
+    with db.cursor() as cur:
+        cur.execute(
+            "UPDATE user_mfa_totp SET enabled = 0, updated_at = %s WHERE username = %s",
+            (now_iso, username.lower()),
+        )
     db.commit()
 
 
@@ -112,19 +95,22 @@ def verify_and_consume(db, username: str, secret: str, code: str, valid_window: 
 
     # Prune expired entries first (keep table small).
     try:
-        db.execute(
-            "DELETE FROM totp_used_codes WHERE used_at < ?",
-            (now - _REPLAY_TTL,),
-        )
+        with db.cursor() as cur:
+            cur.execute(
+                "DELETE FROM totp_used_codes WHERE used_at < %s",
+                (now - _REPLAY_TTL,),
+            )
     except Exception:
         pass
 
     # Reject if this (username, code) pair was already consumed.
     try:
-        row = db.execute(
-            "SELECT 1 FROM totp_used_codes WHERE username = ? AND code = ?",
-            (username.lower(), code),
-        ).fetchone()
+        with db.cursor() as cur:
+            cur.execute(
+                "SELECT 1 FROM totp_used_codes WHERE username = %s AND code = %s",
+                (username.lower(), code),
+            )
+            row = cur.fetchone()
         if row:
             return False
     except Exception:
@@ -132,10 +118,15 @@ def verify_and_consume(db, username: str, secret: str, code: str, valid_window: 
 
     # Mark consumed.
     try:
-        db.execute(
-            "INSERT OR IGNORE INTO totp_used_codes (username, code, used_at) VALUES (?, ?, ?)",
-            (username.lower(), code, now),
-        )
+        with db.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO totp_used_codes (username, code, used_at)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (username, code) DO NOTHING
+                """,
+                (username.lower(), code, now),
+            )
         db.commit()
     except Exception:
         pass
