@@ -94,10 +94,12 @@ async def ops_health():
 async def stats():
     import main as _m
     mil_count = sum(1 for a in _m.last_aircraft if a.get("military"))
+    vessels = sum(1 for e in _m.events_history if "ais" in str(e.get("source", "")).lower())
     return {
         "events_total": len(_m.events_history),
         "aircraft_tracked": len(_m.last_aircraft),
         "military_aircraft": mil_count,
+        "vessels_tracked": vessels,
         "sources_active": len(_m.RSS_FEEDS_EN) + len(_m.TELEGRAM_CHANNELS) + 1,
         "clients": len(_m.manager.connections),
         "uptime_seconds": int(time.time() - _m._start_time),
