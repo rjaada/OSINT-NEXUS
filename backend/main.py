@@ -539,14 +539,14 @@ def persist_event(event: dict):
         _cur.execute(
             """
             INSERT INTO events (
-                id, incident_id, type, desc, lat, lng, source, timestamp, url, video_url,
+                id, incident_id, type, "desc", lat, lng, source, timestamp, url, video_url,
                 lang, confidence_score, confidence_reason, observed_facts, model_inference,
                 video_assessment, video_confidence, video_clues, created_at
             ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (id) DO UPDATE SET
                 incident_id = EXCLUDED.incident_id,
                 type = EXCLUDED.type,
-                desc = EXCLUDED.desc,
+                "desc" = EXCLUDED."desc",
                 lat = EXCLUDED.lat,
                 lng = EXCLUDED.lng,
                 source = EXCLUDED.source,
