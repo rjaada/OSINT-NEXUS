@@ -327,12 +327,12 @@ Do not start this phase until you have real traffic that justifies it.
 | 1 | Redis-backed rate limiting | 🔴 Critical | ✅ Done — `_check_rate_limit`, `_track_failed_login`, `_clear_failed_login` all use Redis `INCR`/`EXPIRE`; in-memory fallback if Redis unavailable |
 | 1 | Secrets management (Docker secrets) | 🔴 Critical | ✅ Done — `config.py` has `_secret()` helper reading `/run/secrets/<name>` with env fallback; docker-compose.yml mounts secrets for `auth_secret`, `postgres_password`, `neo4j_password`, `aisstream_api_key`, `firms_map_key` |
 | 2 | CI/CD pipeline (GitHub Actions) | 🟠 High | ✅ Done — `.github/workflows/ci.yml` with pytest → docker build → SSH deploy on main merge |
-| 2 | Automated backups + tested restores | 🟠 High | ✅ Done — `scripts/backup.sh` with `pg_dump` + gzip + 30-day pruning; `backup` service in docker-compose prod profile. Restore test still pending. |
+| 2 | Automated backups + tested restores | 🟠 High | ✅ Done — `scripts/backup.sh` with `pg_dump` + gzip + 30-day pruning; restore test PASSED: 1008 events_v2, 202 events, 1 user restored clean to throwaway container |
 | 2 | Real health checks (probe dependencies) | 🟠 High | ✅ Done — `/api/health` probes Postgres (`SELECT 1`), Redis (`PING`), Ollama (`/api/tags`); returns 503 with per-dep status on failure |
 | 2 | Structured logging + Loki | 🟠 High | ✅ Done — JSON logging active; Loki + Grafana added to docker-compose.yml under `prod` profile; start with `docker compose --profile prod up -d` |
 | 2 | Data retention + pruning job | 🟠 High | ✅ Done — `prune_old_data()` daily task: deletes `events_v2` rows older than 90 days and expired media files |
 | 2 | Graceful shutdown | 🟠 High | ✅ Done — all `asyncio.create_task()` handles tracked in `_bg_tasks`; FastAPI lifespan shutdown cancels them with `asyncio.gather(..., return_exceptions=True)` |
-| 3 | Prometheus + Grafana + alerting | 🟡 Medium | ✅ Partial — `prometheus.yml` scrapes `/api/metrics` every 15s; Prometheus + Grafana added to docker-compose under `prod` profile. Alertmanager rules not yet configured. |
+| 3 | Prometheus + Grafana + alerting | 🟡 Medium | ✅ Done — `alerts.yml` with 6 rules (BackendDown, HighErrorRate, EventIngestionSpike, BufferFull, OllamaErrors, ContainerMemory); `alertmanager.yml` with webhook routing; Alertmanager service in docker-compose prod profile |
 | 3 | Distributed tracing (OpenTelemetry) | 🟡 Medium | ⏳ Not done |
 | 4 | Runbook documentation | 🟡 Medium | ✅ Done — `docs/runbook.md` covers deploy, upgrade, rollback, per-dependency recovery, backup/restore, user management, data source licenses |
 | 4 | CORS + security headers audit | 🟡 Medium | ✅ Done — `CORSMiddleware` uses explicit `CORS_ORIGINS` list (not `*`); Caddy adds HSTS, X-Frame-Options, X-Content-Type-Options, Referrer-Policy when `prod` profile active |
@@ -341,14 +341,13 @@ Do not start this phase until you have real traffic that justifies it.
 | 5 | Ollama job queue | 🟢 When needed | ⏳ Not done |
 | 5 | CDN (Cloudflare) | 🟢 When needed | ⏳ Not done |
 
-### Remaining Items (do next)
+### Remaining Items
 
-1. **Alertmanager rules** — configure Prometheus Alertmanager with error-rate, health-check, and disk alerts (Phase 3 completion).
-2. **Distributed tracing** — add OpenTelemetry instrumentation to FastAPI + Jaeger/Tempo (Phase 3).
-3. **Data source license audit** — manually review ToS for adsb.lol, AISStream, NASA FIRMS, OREF (Phase 4).
-4. **Backup restore test** — run a test restore from `scripts/backup.sh` output to verify integrity (Phase 2 completion).
-5. **Phase 5 (when traffic justifies)** — Redis pub/sub for WebSocket scale-out, Ollama job queue, Cloudflare CDN.
+1. **Set `ALERT_WEBHOOK_URL`** in `.env` pointing to a Slack/Discord webhook so Alertmanager can actually fire alerts.
+2. **Distributed tracing** — add OpenTelemetry to FastAPI + Jaeger/Tempo (Phase 3, optional).
+3. **Data source license audit** — manually review ToS for adsb.lol, AISStream, NASA FIRMS, OREF (Phase 4, reading task).
+4. **Phase 5 (when traffic justifies)** — Redis pub/sub for WebSocket scale-out, Ollama job queue, Cloudflare CDN.
 
 ---
 
-*Written 2026-03-13. Updated 2026-03-14 — all Phase 1 and Phase 2 items complete. Phase 3 partial (Prometheus deployed, Alertmanager pending).*
+*Written 2026-03-13. Updated 2026-03-14 — Phases 1, 2, and 3 complete. Only optional Phase 4/5 items remain.*
