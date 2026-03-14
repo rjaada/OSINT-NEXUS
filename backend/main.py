@@ -9,7 +9,6 @@ import json
 import os
 import re
 import secrets
-import sqlite3
 import subprocess
 import time
 from collections import defaultdict, deque
@@ -47,7 +46,8 @@ try:
     from . import intel_utils as iutils  # type: ignore
     from . import v2_store  # type: ignore
     from . import graph_store as gstore  # type: ignore
-    from . import db_sqlite  # type: ignore
+    from . import db_sqlite  # type: ignore  # kept for legacy/test compat
+    from . import db_postgres  # type: ignore
     from .config import *  # type: ignore
     from .config import (  # type: ignore
         ADSBLOL_API_URL, ADSBLOL_POLL_INTERVAL_SEC, AISSTREAM_API_KEY,
@@ -86,7 +86,8 @@ except ImportError:
     import intel_utils as iutils
     import v2_store
     import graph_store as gstore
-    import db_sqlite
+    import db_sqlite  # kept for legacy/test compat
+    import db_postgres
     from config import *
     from config import (
         ADSBLOL_API_URL, ADSBLOL_POLL_INTERVAL_SEC, AISSTREAM_API_KEY,
@@ -248,7 +249,7 @@ metrics = {
 }
 
 _start_time = time.time()
-_db: Optional[sqlite3.Connection] = None
+_db: Optional[Any] = None  # psycopg3 Connection, set at startup
 _ollama_http_client: Optional[httpx.AsyncClient] = None
 _geocode_http_client: Optional[httpx.AsyncClient] = None
 _graph_store: Optional[gstore.GraphStore] = None
@@ -468,21 +469,30 @@ async def _sync_event_to_graph_async(event: dict) -> None:
         graph_logger.warning("[GRAPH] failed to sync event %s: %s", str(event.get("id", "")), exc)
 
 
-def init_db() -> sqlite3.Connection:
-    return db_sqlite.init_db()
+def init_db():
+    """Open a PostgreSQL connection and initialise the schema.
+
+    Returns a psycopg3 connection with dict_row so all row access is identical
+    to the former sqlite3.Row dict-style access pattern.
+    """
+    conn = db_postgres.get_pg_conn()
+    db_postgres.init_pg_schema(conn)
+    return conn
 
 
 def load_recent_events(limit: int = 400):
     if _db is None:
         return
-    rows = _db.execute(
-        """
-        SELECT * FROM events
-        ORDER BY timestamp DESC
-        LIMIT ?
-        """,
-        (limit,),
-    ).fetchall()
+    with _db.cursor() as _cur:
+        _cur.execute(
+            """
+            SELECT * FROM events
+            ORDER BY timestamp DESC
+            LIMIT %s
+            """,
+            (limit,),
+        )
+        rows = _cur.fetchall()
     events_history.clear()
     incident_index.clear()
     for row in reversed(rows):
@@ -515,36 +525,55 @@ def load_recent_events(limit: int = 400):
 def persist_event(event: dict):
     if _db is None:
         return
-    _db.execute(
-        """
-        INSERT OR REPLACE INTO events (
-            id, incident_id, type, desc, lat, lng, source, timestamp, url, video_url,
-            lang, confidence_score, confidence_reason, observed_facts, model_inference,
-            video_assessment, video_confidence, video_clues, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            event.get("id"),
-            event.get("incident_id"),
-            event.get("type"),
-            event.get("desc"),
-            event.get("lat"),
-            event.get("lng"),
-            event.get("source"),
-            event.get("timestamp"),
-            event.get("url"),
-            event.get("video_url"),
-            event.get("lang"),
-            int(event.get("confidence_score", 0)),
-            event.get("confidence_reason"),
-            json.dumps(event.get("observed_facts", []), ensure_ascii=False),
-            json.dumps(event.get("model_inference", []), ensure_ascii=False),
-            event.get("video_assessment"),
-            event.get("video_confidence"),
-            json.dumps(event.get("video_clues", []), ensure_ascii=False),
-            utc_now_iso(),
-        ),
-    )
+    with _db.cursor() as _cur:
+        _cur.execute(
+            """
+            INSERT INTO events (
+                id, incident_id, type, desc, lat, lng, source, timestamp, url, video_url,
+                lang, confidence_score, confidence_reason, observed_facts, model_inference,
+                video_assessment, video_confidence, video_clues, created_at
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (id) DO UPDATE SET
+                incident_id = EXCLUDED.incident_id,
+                type = EXCLUDED.type,
+                desc = EXCLUDED.desc,
+                lat = EXCLUDED.lat,
+                lng = EXCLUDED.lng,
+                source = EXCLUDED.source,
+                timestamp = EXCLUDED.timestamp,
+                url = EXCLUDED.url,
+                video_url = EXCLUDED.video_url,
+                lang = EXCLUDED.lang,
+                confidence_score = EXCLUDED.confidence_score,
+                confidence_reason = EXCLUDED.confidence_reason,
+                observed_facts = EXCLUDED.observed_facts,
+                model_inference = EXCLUDED.model_inference,
+                video_assessment = EXCLUDED.video_assessment,
+                video_confidence = EXCLUDED.video_confidence,
+                video_clues = EXCLUDED.video_clues
+            """,
+            (
+                event.get("id"),
+                event.get("incident_id"),
+                event.get("type"),
+                event.get("desc"),
+                event.get("lat"),
+                event.get("lng"),
+                event.get("source"),
+                event.get("timestamp"),
+                event.get("url"),
+                event.get("video_url"),
+                event.get("lang"),
+                int(event.get("confidence_score", 0)),
+                event.get("confidence_reason"),
+                json.dumps(event.get("observed_facts", []), ensure_ascii=False),
+                json.dumps(event.get("model_inference", []), ensure_ascii=False),
+                event.get("video_assessment"),
+                event.get("video_confidence"),
+                json.dumps(event.get("video_clues", []), ensure_ascii=False),
+                utc_now_iso(),
+            ),
+        )
     _db.commit()
     metrics["db_writes"] += 1
 
@@ -552,20 +581,21 @@ def persist_event(event: dict):
 def audit_log(action: str, actor: str, role: str, payload: dict, target_id: Optional[str] = None):
     if _db is None:
         return
-    _db.execute(
-        """
-        INSERT INTO audit_logs (actor, role, action, target_id, payload_json, created_at)
-        VALUES (?, ?, ?, ?, ?, ?)
-        """,
-        (
-            actor or "system",
-            role or "viewer",
-            action,
-            target_id,
-            json.dumps(payload, ensure_ascii=False),
-            utc_now_iso(),
-        ),
-    )
+    with _db.cursor() as _cur:
+        _cur.execute(
+            """
+            INSERT INTO audit_logs (actor, role, action, target_id, payload_json, created_at)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            """,
+            (
+                actor or "system",
+                role or "viewer",
+                action,
+                target_id,
+                json.dumps(payload, ensure_ascii=False),
+                utc_now_iso(),
+            ),
+        )
     _db.commit()
 
 
@@ -663,38 +693,55 @@ def run_media_analysis(event: dict) -> dict:
 def persist_media_analysis(event_id: str, data: dict):
     if _db is None:
         return
-    _db.execute(
-        """
-        INSERT OR REPLACE INTO media_analysis (
-            event_id, status, keyframes_json, ocr_snippets_json, stt_snippets_json,
-            claim_alignment, credibility_note, transcript_text, transcript_language,
-            transcript_error, deepfake_score, deepfake_label, deepfake_error, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            event_id,
-            data.get("status", "pending"),
-            json.dumps(data.get("keyframes", []), ensure_ascii=False),
-            json.dumps(data.get("ocr_snippets", []), ensure_ascii=False),
-            json.dumps(data.get("stt_snippets", []), ensure_ascii=False),
-            data.get("claim_alignment", "UNVERIFIED_VISUAL"),
-            data.get("credibility_note", ""),
-            str(data.get("transcript_text", "")),
-            str(data.get("transcript_language", "")),
-            str(data.get("transcript_error", "")),
-            str(data.get("deepfake_score", "")),
-            str(data.get("deepfake_label", "")),
-            str(data.get("deepfake_error", "")),
-            utc_now_iso(),
-        ),
-    )
+    with _db.cursor() as _cur:
+        _cur.execute(
+            """
+            INSERT INTO media_analysis (
+                event_id, status, keyframes_json, ocr_snippets_json, stt_snippets_json,
+                claim_alignment, credibility_note, transcript_text, transcript_language,
+                transcript_error, deepfake_score, deepfake_label, deepfake_error, updated_at
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (event_id) DO UPDATE SET
+                status = EXCLUDED.status,
+                keyframes_json = EXCLUDED.keyframes_json,
+                ocr_snippets_json = EXCLUDED.ocr_snippets_json,
+                stt_snippets_json = EXCLUDED.stt_snippets_json,
+                claim_alignment = EXCLUDED.claim_alignment,
+                credibility_note = EXCLUDED.credibility_note,
+                transcript_text = EXCLUDED.transcript_text,
+                transcript_language = EXCLUDED.transcript_language,
+                transcript_error = EXCLUDED.transcript_error,
+                deepfake_score = EXCLUDED.deepfake_score,
+                deepfake_label = EXCLUDED.deepfake_label,
+                deepfake_error = EXCLUDED.deepfake_error,
+                updated_at = EXCLUDED.updated_at
+            """,
+            (
+                event_id,
+                data.get("status", "pending"),
+                json.dumps(data.get("keyframes", []), ensure_ascii=False),
+                json.dumps(data.get("ocr_snippets", []), ensure_ascii=False),
+                json.dumps(data.get("stt_snippets", []), ensure_ascii=False),
+                data.get("claim_alignment", "UNVERIFIED_VISUAL"),
+                data.get("credibility_note", ""),
+                str(data.get("transcript_text", "")),
+                str(data.get("transcript_language", "")),
+                str(data.get("transcript_error", "")),
+                str(data.get("deepfake_score", "")),
+                str(data.get("deepfake_label", "")),
+                str(data.get("deepfake_error", "")),
+                utc_now_iso(),
+            ),
+        )
     _db.commit()
 
 
 def get_media_analysis(event_id: str) -> dict:
     if _db is None:
         return {}
-    row = _db.execute("SELECT * FROM media_analysis WHERE event_id = ?", (event_id,)).fetchone()
+    with _db.cursor() as _cur:
+        _cur.execute("SELECT * FROM media_analysis WHERE event_id = %s", (event_id,))
+        row = _cur.fetchone()
     if not row:
         return {}
     return {
@@ -785,7 +832,7 @@ def ensure_default_admin() -> None:
     )
 
 
-def get_user(username: str) -> Optional[sqlite3.Row]:
+def get_user(username: str) -> Optional[Dict[str, Any]]:
     return authstore.get_user(_db, username)
 
 
@@ -2232,7 +2279,8 @@ async def startup_event():
     global _start_time, _db, _ollama_http_client, _geocode_http_client, _graph_store
     _start_time = time.time()
     validate_security_config()
-    _db = init_db()
+    _db = db_postgres.get_pg_conn()
+    db_postgres.init_pg_schema(_db)
     _ollama_http_client = httpx.AsyncClient(timeout=60)
     _geocode_http_client = httpx.AsyncClient(
         timeout=8,
