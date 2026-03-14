@@ -172,23 +172,32 @@ export function TopBar({ headlines }: { headlines?: string[] }) {
   }, [defcon])
 
   useEffect(() => {
-    const roleCookie = document.cookie.split("; ").find((x) => x.startsWith("osint_role="))
-    if (roleCookie) {
-      setRole(decodeURIComponent(roleCookie.split("=")[1]).toLowerCase())
-    } else {
-      // osint_role from backend is HttpOnly; fall back to session API
-      fetch("/api/auth/session", { credentials: "include", cache: "no-store" })
-        .then((r) => r.ok ? r.json() : null)
-        .then((s) => {
-          if (!s?.authenticated) return
-          const r = String(s.role || "viewer").toLowerCase()
-          setRole(r)
-          // Cache in a JS-readable cookie for subsequent renders
-          const exp = new Date(Date.now() + 24 * 60 * 60 * 1000).toUTCString()
-          document.cookie = `osint_role=${r}; Path=/; Expires=${exp}; SameSite=Lax`
-        })
-        .catch(() => {})
+    const resolveRole = () => {
+      const roleCookie = document.cookie.split("; ").find((x) => x.startsWith("osint_role="))
+      if (roleCookie) {
+        setRole(decodeURIComponent(roleCookie.split("=")[1]).toLowerCase())
+      } else {
+        // osint_role from backend is HttpOnly; fall back to session API
+        fetch("/api/auth/session", { credentials: "include", cache: "no-store" })
+          .then((r) => r.ok ? r.json() : null)
+          .then((s) => {
+            if (!s?.authenticated) return
+            const r = String(s.role || "viewer").toLowerCase()
+            setRole(r)
+            const exp = new Date(Date.now() + 24 * 60 * 60 * 1000).toUTCString()
+            document.cookie = `osint_role=${r}; Path=/; Expires=${exp}; SameSite=Lax`
+          })
+          .catch(() => {})
+      }
     }
+    resolveRole()
+    // Re-resolve when login completes (overlay may be covering the dashboard)
+    const onLogin = (e: Event) => {
+      const detail = (e as CustomEvent).detail
+      if (detail?.role) setRole(String(detail.role).toLowerCase())
+    }
+    window.addEventListener("osint:login", onLogin)
+    return () => window.removeEventListener("osint:login", onLogin)
   }, [])
 
   useEffect(() => {
