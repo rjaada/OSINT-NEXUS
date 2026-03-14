@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from 'next'
 import { JetBrains_Mono, IBM_Plex_Serif, IBM_Plex_Mono, Black_Ops_One } from 'next/font/google'
 import { FirstOpenOverlay } from '@/components/system/first-open-overlay'
 import { Toaster } from '@/components/ui/sonner'
+import { AuthProvider } from '@/lib/auth-context'
 import './globals.css'
 
 const jetbrainsMono = JetBrains_Mono({
@@ -61,9 +62,11 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className={`${jetbrainsMono.variable} ${ibmSerif.variable} ${ibmMono.variable} ${blackOps.variable} font-mono antialiased`}>
-        <FirstOpenOverlay />
-        {children}
-        <Toaster richColors closeButton />
+        <AuthProvider>
+          <FirstOpenOverlay />
+          {children}
+          <Toaster richColors closeButton />
+        </AuthProvider>
       </body>
     </html>
   )

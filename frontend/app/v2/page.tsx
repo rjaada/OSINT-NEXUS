@@ -1,49 +1,9 @@
 "use client"
 import Link from "next/link"
-import { useEffect, useState } from "react"
-import { csrfHeaders } from "@/lib/security"
-
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? ""
-function apiUrl(path: string): string {
-  if (API_BASE) return `${API_BASE}${path}`
-  return path
-}
+import { useAuth } from "@/lib/auth-context"
 
 export default function HomePage() {
-  const [role, setRole] = useState("viewer")
-  const [user, setUser] = useState("user")
-
-  useEffect(() => {
-    try {
-      const r = localStorage.getItem("osint_role"); if (r) setRole(r.toLowerCase())
-      const u = localStorage.getItem("osint_user"); if (u) setUser(u)
-    } catch (_) {}
-    fetch(apiUrl("/api/auth/session"), { credentials: "include", cache: "no-store" })
-      .then((r) => r.ok ? r.json() : null)
-      .then((s) => {
-        if (!s?.authenticated) return
-        const r = String(s.role || "viewer").toLowerCase()
-        const u = String(s.username || "user")
-        setRole(r); setUser(u)
-        try { localStorage.setItem("osint_role", r); localStorage.setItem("osint_user", u) } catch (_) {}
-      }).catch(() => {})
-  }, [])
-
-  const logout = async () => {
-    try {
-      await fetch(apiUrl("/api/auth/logout"), {
-        method: "POST",
-        credentials: "include",
-        headers: csrfHeaders({ "Content-Type": "application/json" }),
-      })
-    } catch (_) {}
-    document.cookie = "osint_session=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; SameSite=Lax"
-    document.cookie = "osint_role=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; SameSite=Lax"
-    document.cookie = "osint_user=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; SameSite=Lax"
-    document.cookie = "osint_csrf=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; SameSite=Lax"
-    try { localStorage.removeItem("osint_role"); localStorage.removeItem("osint_user") } catch (_) {}
-    window.location.href = "/login"
-  }
+  const { role, username: user, logout } = useAuth()
 
   return (
     <main className="min-h-screen bg-background text-foreground px-6 py-8 md:px-10">
