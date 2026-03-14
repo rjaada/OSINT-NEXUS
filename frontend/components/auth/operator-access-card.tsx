@@ -328,6 +328,8 @@ export function OperatorAccessCard({ nextPath = "/", displayOnly = false }: Oper
     document.cookie = `osint_session=1; Path=/; Expires=${expires}; SameSite=Lax`
     document.cookie = `osint_role=${finalRole}; Path=/; Expires=${expires}; SameSite=Lax`
     document.cookie = `osint_user=${finalUser}; Path=/; Expires=${expires}; SameSite=Lax`
+    try { localStorage.setItem("osint_role", finalRole) } catch (_) {}
+    try { localStorage.setItem("osint_user", finalUser) } catch (_) {}
     window.dispatchEvent(new CustomEvent("osint:login", { detail: { role: finalRole, username: finalUser } }))
     await fetchCardMeta()
 

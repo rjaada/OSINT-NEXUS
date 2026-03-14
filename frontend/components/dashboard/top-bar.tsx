@@ -172,29 +172,31 @@ export function TopBar({ headlines }: { headlines?: string[] }) {
   }, [defcon])
 
   useEffect(() => {
-    const resolveRole = () => {
-      const roleCookie = document.cookie.split("; ").find((x) => x.startsWith("osint_role="))
-      if (roleCookie) {
-        setRole(decodeURIComponent(roleCookie.split("=")[1]).toLowerCase())
-      } else {
-        // osint_role from backend is HttpOnly; fall back to session API
-        fetch("/api/auth/session", { credentials: "include", cache: "no-store" })
-          .then((r) => r.ok ? r.json() : null)
-          .then((s) => {
-            if (!s?.authenticated) return
-            const r = String(s.role || "viewer").toLowerCase()
-            setRole(r)
-            const exp = new Date(Date.now() + 24 * 60 * 60 * 1000).toUTCString()
-            document.cookie = `osint_role=${r}; Path=/; Expires=${exp}; SameSite=Lax`
-          })
-          .catch(() => {})
-      }
-    }
-    resolveRole()
+    // Fast path: localStorage (always JS-readable, persists across full-page navigations)
+    try {
+      const cached = localStorage.getItem("osint_role")
+      if (cached) setRole(cached.toLowerCase())
+    } catch (_) {}
+
+    // Authoritative: verify with session API
+    fetch("/api/auth/session", { credentials: "include", cache: "no-store" })
+      .then((r) => r.ok ? r.json() : null)
+      .then((s) => {
+        if (!s?.authenticated) {
+          try { localStorage.removeItem("osint_role") } catch (_) {}
+          return
+        }
+        const r = String(s.role || "viewer").toLowerCase()
+        setRole(r)
+        try { localStorage.setItem("osint_role", r) } catch (_) {}
+      })
+      .catch(() => {})
+
     // Re-resolve when login completes (overlay may be covering the dashboard)
     const onLogin = (e: Event) => {
-      const detail = (e as CustomEvent).detail
-      if (detail?.role) setRole(String(detail.role).toLowerCase())
+      const r = String((e as CustomEvent).detail?.role || "viewer").toLowerCase()
+      setRole(r)
+      try { localStorage.setItem("osint_role", r) } catch (_) {}
     }
     window.addEventListener("osint:login", onLogin)
     return () => window.removeEventListener("osint:login", onLogin)
