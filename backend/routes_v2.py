@@ -671,6 +671,86 @@ async def v2_alerts(request: Request, limit: int = 60):
     return cards[:limit]
 
 
+# ── Press conference / statement analyzer ─────────────────────────────────────
+
+@router.post("/api/v2/ai/press-brief")
+async def v2_ai_press_brief(payload: Dict[str, Any], request: Request):
+    import main as _m
+    _m.require_analyst_or_admin(request)
+
+    text = str(payload.get("text", "")).strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="text required")
+    if len(text) > 20_000:
+        raise HTTPException(status_code=400, detail="text too long (max 20,000 chars)")
+
+    import groq_client
+
+    if not groq_client.groq_available():
+        raise HTTPException(status_code=503, detail="AI unavailable — GROQ_API_KEY not set")
+
+    prompt = f"""You are an intelligence analyst specializing in decoding political and military statements.
+
+Analyze the following statement/transcript and return STRICT JSON:
+{{
+  "speaker": "Name or 'Unknown'",
+  "speaker_role": "Title/position or 'Unknown'",
+  "speaker_country": "Country or 'Unknown'",
+  "statement_type": "press_conference|speech|statement|interview|briefing|other",
+  "date_mentioned": "date if mentioned in text, else null",
+  "headline": "One-line intelligence summary (max 120 chars)",
+  "key_claims": ["List of factual claims made"],
+  "threats_warnings": ["Explicit or implicit threats/warnings issued"],
+  "military_signals": ["Military posture, readiness, or capability signals"],
+  "diplomatic_signals": ["Diplomatic openings, closings, or posture shifts"],
+  "actors_mentioned": ["Named actors, groups, or states referenced"],
+  "locations_mentioned": ["Specific places or regions referenced"],
+  "intel_value": "HIGH|MEDIUM|LOW",
+  "intel_value_reason": "Why this is HIGH/MEDIUM/LOW intelligence value",
+  "deception_indicators": ["Phrases suggesting misdirection, hedging, or omission"],
+  "observed_facts": ["Statements verifiable as facts"],
+  "speculation_flags": ["Claims that are assertions without evidence"],
+  "recommended_follow_up": ["Intelligence collection gaps this statement reveals"]
+}}
+
+Do NOT invent information. Only extract what is actually in the text.
+If a field has no relevant content, use an empty array [] or null.
+
+TEXT TO ANALYZE:
+---
+{text[:8000]}
+---"""
+
+    try:
+        raw = await asyncio.to_thread(
+            groq_client.chat,
+            [{"role": "user", "content": prompt}],
+            temperature=0.1,
+            max_tokens=2000,
+            timeout=45,
+        )
+        if not raw:
+            raise HTTPException(status_code=502, detail="AI returned no response")
+        # Strip markdown fences if present
+        cleaned = raw.strip()
+        if cleaned.startswith("```"):
+            cleaned = cleaned.split("\n", 1)[-1]
+            cleaned = cleaned.rsplit("```", 1)[0]
+        result = json.loads(cleaned)
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=502, detail="AI returned invalid JSON — try again")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"AI error: {str(exc)[:120]}")
+
+    return {
+        "analysis": result,
+        "text_length": len(text),
+        "generated_at": utc_now_iso(),
+    }
+
+
 @router.get("/api/v2/sources")
 async def v2_sources(request: Request, limit: int = 200):
     import main as _m
