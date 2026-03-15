@@ -210,11 +210,10 @@ export default function SitrepPage() {
   const sitrep = report?.sitrep
 
   return (
-    <div className="min-h-screen bg-zinc-950 text-zinc-100 flex flex-col">
+    <div className="min-h-screen bg-zinc-950 text-zinc-100">
       <TopBar />
-      <div className="flex flex-1 overflow-hidden">
-        <CommandNav />
-        <main className="flex-1 overflow-y-auto p-6">
+      <CommandNav />
+      <main className="p-6 max-w-7xl mx-auto">
 
           {/* Header */}
           <div className="mb-6 flex items-start justify-between">
@@ -254,7 +253,7 @@ export default function SitrepPage() {
             </div>
           )}
 
-          {!loading && !sitrep && (
+          {!loading && !error && !sitrep && (
             <div className="rounded border border-zinc-700 bg-zinc-900/60 p-8 text-center">
               <div className="text-zinc-500 font-mono text-sm mb-2">NO SITREP AVAILABLE YET</div>
               <div className="text-zinc-600 text-xs font-mono">
@@ -352,7 +351,6 @@ export default function SitrepPage() {
                   <div className="text-[10px] font-mono text-red-400/70 tracking-widest uppercase mb-3">
                     ⚠ CONTRADICTIONS DETECTED ({report.contradictions.length})
                   </div>
-                  <p className="text-zinc-300 text-sm mb-3">{sitrep.contradictions_summary}</p>
                   <div className="space-y-2">
                     {report.contradictions.map((c, i) => (
                       <div key={i} className="flex items-start gap-3 text-xs font-mono border border-zinc-700 rounded p-3">
@@ -427,7 +425,6 @@ export default function SitrepPage() {
             </div>
           )}
         </main>
-      </div>
     </div>
   )
 }

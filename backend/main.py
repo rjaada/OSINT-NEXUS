@@ -2557,6 +2557,13 @@ async def startup_event():
     _bg_tasks.append(asyncio.create_task(poll_telegram()))
     _bg_tasks.append(asyncio.create_task(poll_red_alert()))
     _bg_tasks.append(asyncio.create_task(poll_sitrep()))
+    import market_poller as _market_poller
+    _bg_tasks.append(asyncio.create_task(
+        _market_poller.poll_markets(
+            ingest_fn=ingest_event,
+            now_iso_fn=utc_now_iso,
+        )
+    ))
     _bg_tasks.append(asyncio.create_task(
         osint_layers.poll_adsblol(
             enabled=ENABLE_ADSBLOL,

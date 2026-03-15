@@ -1083,7 +1083,7 @@ async def ws_endpoint_v2(websocket: WebSocket):
 @router.get("/api/v2/sitrep/latest")
 async def v2_sitrep_latest(request: Request):
     import main as _m
-    _m.require_auth(request)
+    _m.require_analyst_or_admin(request)
     result = _m.load_latest_ai_report("sitrep")
     if not result:
         return {"sitrep": None, "generated_at": None, "message": "No SITREP generated yet — runs every 60 min after startup"}
@@ -1093,7 +1093,7 @@ async def v2_sitrep_latest(request: Request):
 @router.get("/api/v2/sitrep/history")
 async def v2_sitrep_history(request: Request, limit: int = 10):
     import main as _m
-    _m.require_auth(request)
+    _m.require_analyst_or_admin(request)
     limit = min(max(limit, 1), 50)
     return _m.fetch_ai_report_history("sitrep", limit=limit)
 
@@ -1101,7 +1101,7 @@ async def v2_sitrep_history(request: Request, limit: int = 10):
 @router.get("/api/v2/sitrep/accuracy")
 async def v2_sitrep_accuracy(request: Request):
     import main as _m
-    _m.require_auth(request)
+    _m.require_analyst_or_admin(request)
     return _m.fetch_sitrep_accuracy()
 
 
