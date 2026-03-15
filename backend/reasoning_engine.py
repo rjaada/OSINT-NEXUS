@@ -354,26 +354,41 @@ def generate_sitrep(
     if not recent_events:
         return base
 
-    clusters = correlate_events(recent_events, window_hours=window_hours)
+    # Split: editorial events (news/Telegram) vs sensor events (FIRMS/ADSB/AIS)
+    _SENSOR_SRCS = {"NASA FIRMS", "ADSB.lol", "AISStream", "FR24-MIL"}
+    editorial_events = [e for e in recent_events if e.get("source") not in _SENSOR_SRCS]
+    # Use editorial events for clustering if we have enough; else fall back to all
+    events_for_clustering = editorial_events if len(editorial_events) >= 10 else recent_events
+
+    clusters = correlate_events(events_for_clustering, window_hours=window_hours)
     base["cluster_count"] = len(clusters)
 
     # Pick the biggest cluster with highest-confidence events
-    # Priority event types — operational intelligence over sensor noise
-    _HIGH_VALUE_TYPES = {"STRIKE", "CRITICAL", "CLASH", "MOVEMENT", "NOTAM"}
-    _LOW_VALUE_SOURCES = {"NASA FIRMS", "ADSB.lol", "AISStream", "FR24-MIL", "Market Data"}
+    _SENSOR_SOURCES = {"NASA FIRMS", "ADSB.lol", "AISStream", "FR24-MIL", "Market Data"}
+    _EDITORIAL_TYPES = {"STRIKE", "CRITICAL", "CLASH", "MOVEMENT", "NOTAM"}
+
+    def _editorial_ratio(c: List[dict]) -> float:
+        """Fraction of events from human-editorial sources (news/Telegram) vs sensors."""
+        editorial = sum(1 for e in c if e.get("source") not in _SENSOR_SOURCES)
+        return editorial / max(len(c), 1)
 
     def _cluster_score(c: List[dict]) -> float:
-        """Score a cluster: penalize sensor-only clusters, reward operational events."""
-        high_value = sum(1 for e in c if e.get("type") in _HIGH_VALUE_TYPES)
-        diverse_sources = len({e.get("source") for e in c if e.get("source") not in _LOW_VALUE_SOURCES})
-        avg_conf = sum((e.get("confidence_score") or 0) for e in c) / max(len(c), 1)
-        # Heavy weight on operational events + source diversity
-        return high_value * 10 + diverse_sources * 5 + avg_conf * 0.1 + len(c) * 0.5
+        ratio = _editorial_ratio(c)
+        editorial_events = sum(1 for e in c if e.get("source") not in _SENSOR_SOURCES)
+        source_diversity = len({e.get("source") for e in c if e.get("source") not in _SENSOR_SOURCES})
+        operational = sum(1 for e in c
+                         if e.get("source") not in _SENSOR_SOURCES
+                         and e.get("type") in _EDITORIAL_TYPES)
+        # Hard penalty for sensor-dominated clusters
+        sensor_penalty = 0.05 if ratio < 0.3 else 1.0
+        return (editorial_events * 8 + source_diversity * 15 + operational * 20) * sensor_penalty
 
     dominant: List[dict] = []
     if clusters:
-        # Pick cluster with best operational score, not just biggest
-        dominant = max(clusters, key=_cluster_score)
+        # Prefer clusters with editorial/human sources — filter sensor-only clusters first
+        editorial_clusters = [c for c in clusters if _editorial_ratio(c) >= 0.3]
+        candidate_pool = editorial_clusters if editorial_clusters else clusters
+        dominant = max(candidate_pool, key=_cluster_score)
 
     base["dominant_cluster_size"] = len(dominant)
 
