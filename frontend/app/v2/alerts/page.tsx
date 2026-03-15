@@ -6,6 +6,8 @@ import { CommandNav } from "@/components/dashboard/command-nav"
 import { VideoModal } from "@/components/system/video-modal"
 import { readCookie } from "@/lib/security"
 
+const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? ""
+
 type Confidence = "LOW" | "MEDIUM" | "HIGH"
 
 interface MediaCred {
@@ -83,7 +85,7 @@ export default function AlertsPage() {
 
   const loadMain = useCallback(async () => {
     try {
-      const res = await fetch(`http://localhost:8000/api/v2/alerts?limit=${crisisMode ? 80 : 60}`, { cache: "no-store" })
+      const res = await fetch(`${API_BASE}/api/v2/alerts?limit=${crisisMode ? 80 : 60}`, { cache: "no-store", credentials: "include" })
       if (!res.ok) return
       const data: AlertAssessment[] = await res.json()
       const normalized = crisisMode ? data.filter((a) => a.type === "CRITICAL" || a.type === "STRIKE") : data

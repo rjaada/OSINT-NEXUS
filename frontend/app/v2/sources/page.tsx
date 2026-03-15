@@ -4,6 +4,8 @@ import { useEffect, useMemo, useState } from "react"
 import { TopBar } from "@/components/dashboard/top-bar"
 import { CommandNav } from "@/components/dashboard/command-nav"
 
+const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? ""
+
 interface SourceItem {
   id: string
   type: string
@@ -79,9 +81,9 @@ export default function SourcesPage() {
     const load = async () => {
       try {
         const [r1, r2, r3] = await Promise.all([
-          fetch("http://localhost:8000/api/v2/sources?limit=220"),
-          fetch("http://localhost:8000/api/v2/evaluation/scorecard"),
-          fetch("http://localhost:8000/api/v2/system"),
+          fetch(`${API_BASE}/api/v2/sources?limit=220`, { credentials: "include" }),
+          fetch(`${API_BASE}/api/v2/evaluation/scorecard`, { credentials: "include" }),
+          fetch(`${API_BASE}/api/v2/system`, { credentials: "include" }),
         ])
         if (r1.ok) setData(await r1.json())
         if (r2.ok) setScorecard(await r2.json())
@@ -96,7 +98,7 @@ export default function SourcesPage() {
   const loadReport = async (force = false) => {
     setReportLoading(true)
     try {
-      const res = await fetch(`http://localhost:8000/api/v2/ai/report${force ? "?force=true" : ""}`, { cache: "no-store" })
+      const res = await fetch(`${API_BASE}/api/v2/ai/report${force ? "?force=true" : ""}`, { cache: "no-store", credentials: "include" })
       if (!res.ok) return
       const data: AiReport = await res.json()
       setReport(data)

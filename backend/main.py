@@ -856,7 +856,7 @@ def _set_auth_cookies(response: Response, username: str, role: str) -> dict:
             value=value,
             path="/",
             expires=cookie_expires,
-            httponly=(key in ("osint_auth", "osint_role", "osint_session")),
+            httponly=(key in ("osint_auth", "osint_session")),
             samesite="lax",
             secure=AUTH_COOKIE_SECURE,
         )
