@@ -255,6 +255,7 @@ Produce a structured JSON SITREP with these exact keys:
   "key_locations": ["location1", "location2"]
 }
 Base EVERYTHING on the provided events. Do not invent facts.
+IMPORTANT: "dominant_actors" must be real political/military actors (countries, factions, militaries) — NOT data sources like "NASA FIRMS", "BBC News", "AISStream".
 If the data is weak, say so in confidence_reason. Return ONLY valid JSON."""
 
 
@@ -357,15 +358,22 @@ def generate_sitrep(
     base["cluster_count"] = len(clusters)
 
     # Pick the biggest cluster with highest-confidence events
+    # Priority event types — operational intelligence over sensor noise
+    _HIGH_VALUE_TYPES = {"STRIKE", "CRITICAL", "CLASH", "MOVEMENT", "NOTAM"}
+    _LOW_VALUE_SOURCES = {"NASA FIRMS", "ADSB.lol", "AISStream", "FR24-MIL", "Market Data"}
+
+    def _cluster_score(c: List[dict]) -> float:
+        """Score a cluster: penalize sensor-only clusters, reward operational events."""
+        high_value = sum(1 for e in c if e.get("type") in _HIGH_VALUE_TYPES)
+        diverse_sources = len({e.get("source") for e in c if e.get("source") not in _LOW_VALUE_SOURCES})
+        avg_conf = sum((e.get("confidence_score") or 0) for e in c) / max(len(c), 1)
+        # Heavy weight on operational events + source diversity
+        return high_value * 10 + diverse_sources * 5 + avg_conf * 0.1 + len(c) * 0.5
+
     dominant: List[dict] = []
     if clusters:
-        dominant = clusters[0]
-        # Prefer cluster with more HIGH-confidence events if similar size
-        for c in clusters[1:3]:
-            high_c = sum(1 for e in c if (e.get("confidence_score") or 0) >= 75)
-            high_d = sum(1 for e in dominant if (e.get("confidence_score") or 0) >= 75)
-            if len(c) >= len(dominant) * 0.8 and high_c > high_d:
-                dominant = c
+        # Pick cluster with best operational score, not just biggest
+        dominant = max(clusters, key=_cluster_score)
 
     base["dominant_cluster_size"] = len(dominant)
 

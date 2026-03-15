@@ -100,7 +100,7 @@ def _format_sitrep(report: dict) -> str:
 
     lines.append("")
     lines.append("——")
-    lines.append("🔗 <a href='http://localhost:3000/v2/sitrep'>Open full SITREP</a>")
+    lines.append("🔗 <i>Open OSINT Nexus → SITREP tab for full report</i>")
 
     return "\n".join(lines)
 
