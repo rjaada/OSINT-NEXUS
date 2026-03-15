@@ -60,6 +60,10 @@ services:
     environment:
       - REDIS_URL=redis://redis:6379
       - GROQ_API_KEY=${GROQ_API_KEY:-}
+      - GROQ_MODEL=${GROQ_MODEL:-llama-3.3-70b-versatile}
+      - TG_DIGEST_TOKEN=${TG_DIGEST_TOKEN:-}
+      - TG_DIGEST_CHAT_ID=${TG_DIGEST_CHAT_ID:-}
+      - TG_DIGEST_HOUR_UTC=${TG_DIGEST_HOUR_UTC:-6}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
       - POSTGRES_HOST=postgres
       - POSTGRES_USER=osint

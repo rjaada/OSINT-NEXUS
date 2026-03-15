@@ -101,6 +101,10 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
 GROQ_TRACE_TIMEOUT_SEC = int(os.getenv("GROQ_TRACE_TIMEOUT_SEC", "60"))
 
+TG_DIGEST_TOKEN = os.getenv("TG_DIGEST_TOKEN", "")
+TG_DIGEST_CHAT_ID = os.getenv("TG_DIGEST_CHAT_ID", "")
+TG_DIGEST_HOUR_UTC = int(os.getenv("TG_DIGEST_HOUR_UTC", "6"))
+
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://ollama:11434/api/generate")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.1:8b")
 OLLAMA_FALLBACK_MODEL = os.getenv("OLLAMA_FALLBACK_MODEL", "llama3.1:8b")
