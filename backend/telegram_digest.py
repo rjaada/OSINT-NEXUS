@@ -1,18 +1,23 @@
 """
-Telegram daily digest — sends SITREP summary every day at 0600 UTC.
-Also supports on-demand sends via send_digest_now().
+Telegram daily digest — sends SITREP summary 3× per day (06:00, 12:00, 18:00 UTC).
+English message first, then full Arabic translation via Groq.
+
+No startup ping — only fires at the scheduled times.
 """
 
 import asyncio
 import logging
-from datetime import datetime, timezone
-from typing import Callable, Optional
+from datetime import datetime, timedelta, timezone
+from typing import Callable, List, Optional
 
 import httpx
 
 logger = logging.getLogger("osint.telegram_digest")
 
 _TG_API = "https://api.telegram.org/bot{token}/sendMessage"
+
+# Default send times (UTC hours). Override via TG_DIGEST_HOURS_UTC env var (comma-separated).
+DEFAULT_SEND_HOURS = [6, 12, 18]
 
 
 async def _send(token: str, chat_id: str, text: str) -> bool:
@@ -39,7 +44,6 @@ def _format_sitrep(report: dict) -> str:
 
     confidence = sitrep.get("confidence", "?")
     conf_icon = {"HIGH": "🟢", "MEDIUM": "🟡", "LOW": "🔴"}.get(confidence, "⚪")
-
     quality = report.get("data_quality", "?")
     events = report.get("event_count", 0)
     cluster = report.get("dominant_cluster_size", 0)
@@ -60,7 +64,6 @@ def _format_sitrep(report: dict) -> str:
         sitrep.get("why_it_matters", ""),
     ]
 
-    # Causal chain
     chain = sitrep.get("causal_chain") or []
     if chain:
         lines.append("")
@@ -68,7 +71,6 @@ def _format_sitrep(report: dict) -> str:
         for i, step in enumerate(chain, 1):
             lines.append(f"  {i}. {step}")
 
-    # Watch items
     watches = sitrep.get("watch_items") or []
     if watches:
         lines.append("")
@@ -77,12 +79,10 @@ def _format_sitrep(report: dict) -> str:
             lines.append(f"  • <b>{w.get('item','')}</b> [{w.get('timeframe','')}]")
             lines.append(f"    {w.get('why','')}")
 
-    # Contradictions
     if contradictions:
         lines.append("")
         lines.append(f"⚠️ <b>{contradictions} CONTRADICTIONS DETECTED</b> — cross-check sources")
 
-    # Actors / locations
     actors = sitrep.get("dominant_actors") or []
     locations = sitrep.get("key_locations") or []
     if actors or locations:
@@ -92,7 +92,6 @@ def _format_sitrep(report: dict) -> str:
         if locations:
             lines.append(f"📍 Locations: {', '.join(locations)}")
 
-    # Historical parallel
     parallel = sitrep.get("historical_parallel", "")
     if parallel and "no clear" not in parallel.lower():
         lines.append("")
@@ -105,80 +104,33 @@ def _format_sitrep(report: dict) -> str:
     return "\n".join(lines)
 
 
-def _format_sitrep_ar(report: dict) -> str:
-    sitrep = report.get("sitrep") or {}
-    if not sitrep:
-        return "⚠️ <b>نيكسوس للاستخبارات — تقرير</b>\n\nلا توجد صورة استخباراتية متاحة بعد."
+def _translate_to_arabic(text: str) -> Optional[str]:
+    """Use Groq to translate the English SITREP message to full Arabic."""
+    try:
+        import groq_client
+        if not groq_client.groq_available():
+            return None
 
-    confidence = sitrep.get("confidence", "?")
-    conf_icon = {"HIGH": "🟢", "MEDIUM": "🟡", "LOW": "🔴"}.get(confidence, "⚪")
-    conf_ar = {"HIGH": "عالية", "MEDIUM": "متوسطة", "LOW": "منخفضة"}.get(confidence, confidence)
+        prompt = f"""Translate the following intelligence report from English to Arabic.
+Keep all HTML tags (<b>, <i>) exactly as they are.
+Keep emojis exactly as they are.
+Keep dates, numbers, and proper nouns as-is.
+Translate ALL English text to natural, formal Arabic suitable for intelligence reports.
+Return ONLY the translated text, nothing else.
 
-    quality = report.get("data_quality", "?")
-    quality_ar = {"RICH DATA": "بيانات غنية", "PARTIAL DATA": "بيانات جزئية", "SPARSE DATA": "بيانات شحيحة"}.get(
-        quality.upper() + " DATA" if "DATA" not in quality.upper() else quality.upper(), quality.upper()
-    )
-    events = report.get("event_count", 0)
-    contradictions = len(report.get("contradictions") or [])
-    gen_at = str(report.get("generated_at", ""))[:16].replace("T", " ")
+TEXT:
+{text}"""
 
-    lines = [
-        "🛰 <b>نيكسوس للاستخبارات — التقرير اليومي</b>",
-        f"📅 {gen_at} UTC | {events} أحداث محللة | {quality_ar}",
-        "",
-        f"{conf_icon} <b>{sitrep.get('headline', 'لا يوجد عنوان')}</b>",
-        f"الثقة: <b>{conf_ar}</b> — {sitrep.get('confidence_reason', '')}",
-        "",
-        "📋 <b>الوضع الميداني</b>",
-        sitrep.get("what_happened", ""),
-        "",
-        "⚡ <b>لماذا يهم</b>",
-        sitrep.get("why_it_matters", ""),
-    ]
-
-    # Causal chain
-    chain = sitrep.get("causal_chain") or []
-    if chain:
-        lines.append("")
-        lines.append("🔗 <b>سلسلة الأسباب</b>")
-        for i, step in enumerate(chain, 1):
-            lines.append(f"  {i}. {step}")
-
-    # Watch items
-    watches = sitrep.get("watch_items") or []
-    if watches:
-        lines.append("")
-        lines.append("👁 <b>راقب التالي</b>")
-        for w in watches:
-            lines.append(f"  • <b>{w.get('item','')}</b> [{w.get('timeframe','')}]")
-            lines.append(f"    {w.get('why','')}")
-
-    # Contradictions
-    if contradictions:
-        lines.append("")
-        lines.append(f"⚠️ <b>{contradictions} تناقضات مرصودة</b> — تحقق من المصادر")
-
-    # Actors / locations
-    actors = sitrep.get("dominant_actors") or []
-    locations = sitrep.get("key_locations") or []
-    if actors or locations:
-        lines.append("")
-        if actors:
-            lines.append(f"👤 الأطراف: {', '.join(actors)}")
-        if locations:
-            lines.append(f"📍 المواقع: {', '.join(locations)}")
-
-    # Historical parallel
-    parallel = sitrep.get("historical_parallel", "")
-    if parallel and "no clear" not in parallel.lower():
-        lines.append("")
-        lines.append(f"📚 <i>{parallel}</i>")
-
-    lines.append("")
-    lines.append("——")
-    lines.append("🔗 <i>افتح نيكسوس للاستخبارات ← تبويب التقرير للتقرير الكامل</i>")
-
-    return "\n".join(lines)
+        result = groq_client.chat(
+            [{"role": "user", "content": prompt}],
+            temperature=0.1,
+            max_tokens=2000,
+            timeout=30,
+        )
+        return result
+    except Exception as exc:
+        logger.warning("[TG_DIGEST] Arabic translation failed: %s", exc)
+        return None
 
 
 async def send_digest_now(
@@ -186,54 +138,71 @@ async def send_digest_now(
     chat_id: str,
     load_latest_fn: Callable,
 ) -> bool:
-    """Send the current SITREP immediately in English then Arabic. Called on-demand or by scheduler."""
+    """Send current SITREP — English first, then full Arabic translation."""
     result = load_latest_fn("sitrep")
     if not result:
         text_en = "⚠️ <b>OSINT NEXUS</b>\n\nNo SITREP available yet. Check back after the first cycle."
-        text_ar = "⚠️ <b>نيكسوس للاستخبارات</b>\n\nلا يوجد تقرير بعد. تحقق لاحقاً بعد الدورة الأولى."
     else:
         report = result.get("report") or {}
         text_en = _format_sitrep(report)
-        text_ar = _format_sitrep_ar(report)
 
     ok_en = await _send(token, chat_id, text_en)
     await asyncio.sleep(1)
+
+    # Translate the English message to full Arabic via Groq
+    text_ar = await asyncio.to_thread(_translate_to_arabic, text_en)
+    if not text_ar:
+        # Fallback header if translation fails
+        text_ar = "⚠️ <b>نيكسوس للاستخبارات</b>\n\nتعذّر ترجمة التقرير. يرجى مراجعة النسخة الإنجليزية."
+
     ok_ar = await _send(token, chat_id, text_ar)
     return ok_en and ok_ar
+
+
+def _seconds_until_next(send_hours: List[int]) -> float:
+    """Return seconds until the next scheduled send time."""
+    now = datetime.now(timezone.utc)
+    candidates = []
+    for hour in send_hours:
+        target = now.replace(hour=hour, minute=0, second=0, microsecond=0)
+        if target <= now:
+            target += timedelta(days=1)
+        candidates.append(target)
+    next_target = min(candidates)
+    return (next_target - now).total_seconds()
 
 
 async def poll_daily_digest(
     token: str,
     chat_id: str,
     load_latest_fn: Callable,
+    send_hours_utc: Optional[List[int]] = None,
+    # Legacy param kept for backward compat — ignored if send_hours_utc is set
     send_hour_utc: int = 6,
 ) -> None:
     """
-    Background task: sends digest every day at send_hour_utc:00 UTC.
-    Also sends one on startup (after 3 min) so you know it's working.
+    Background task: sends digest at each hour in send_hours_utc (UTC).
+    Default: 06:00, 12:00, 18:00 UTC (3× per day).
+    No startup ping — only fires at scheduled times.
     """
     if not token or not chat_id:
         logger.warning("[TG_DIGEST] Token or chat_id not set — digest disabled")
         return
 
-    # Startup ping after 3 minutes
-    await asyncio.sleep(180)
-    logger.info("[TG_DIGEST] Sending startup digest")
-    await send_digest_now(token, chat_id, load_latest_fn)
+    hours = send_hours_utc if send_hours_utc else DEFAULT_SEND_HOURS
+    logger.info("[TG_DIGEST] Scheduled at %s UTC daily", hours)
 
     while True:
-        now = datetime.now(timezone.utc)
-        # Seconds until next send_hour:00 UTC
-        target_hour = now.replace(hour=send_hour_utc, minute=0, second=0, microsecond=0)
-        if now >= target_hour:
-            # Already past today's send time — wait for tomorrow
-            from datetime import timedelta
-            target_hour = target_hour + timedelta(days=1)
-        wait_sec = (target_hour - now).total_seconds()
-        logger.info("[TG_DIGEST] Next digest in %.0f minutes", wait_sec / 60)
+        wait_sec = _seconds_until_next(hours)
+        next_dt = datetime.now(timezone.utc) + timedelta(seconds=wait_sec)
+        logger.info(
+            "[TG_DIGEST] Next digest in %.0f minutes at %s UTC",
+            wait_sec / 60,
+            next_dt.strftime("%H:%M"),
+        )
         await asyncio.sleep(wait_sec)
 
-        logger.info("[TG_DIGEST] Sending daily digest")
+        logger.info("[TG_DIGEST] Sending scheduled digest")
         ok = await send_digest_now(token, chat_id, load_latest_fn)
         logger.info("[TG_DIGEST] Digest sent: %s", ok)
-        await asyncio.sleep(60)  # prevent double-send within same minute
+        await asyncio.sleep(90)  # prevent double-send within same window
