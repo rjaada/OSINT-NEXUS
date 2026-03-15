@@ -451,7 +451,7 @@ async def v2_overlays():
 @router.get("/api/v2/metoc")
 async def v2_metoc(lat: Optional[float] = None, lng: Optional[float] = None):
     if lat is None or lng is None:
-        sample = fetch_recent_v2_events_pg(limit=120, source_whitelist=sorted(TELEGRAM_SOURCE_SET))
+        sample = fetch_recent_v2_events_pg(limit=120)
         if not sample:
             sample = list(events_history[-120:])
         if sample:
@@ -469,11 +469,10 @@ async def v2_ai_ops_brief(payload: OpsBriefPayload):
     limit = min(max(int(payload.limit or 20), 5), 40)
     recent = fetch_recent_v2_events_pg(
         limit=500,
-        source_whitelist=sorted(TELEGRAM_SOURCE_SET),
         type_whitelist=["STRIKE", "CRITICAL", "CLASH", "MOVEMENT", "NOTAM"],
     )
     if not recent:
-        recent = [e for e in events_history[-1200:] if _is_telegram_source(e)]
+        recent = list(events_history[-1200:])
     recent_sorted = sorted(recent, key=lambda x: _parse_iso(str(x.get("timestamp", utc_now_iso()))), reverse=True)
     sample = recent_sorted[:limit]
     if not sample:
@@ -567,9 +566,11 @@ Context:
 @router.get("/api/v2/events")
 async def v2_events(limit: int = 120, clustered: bool = False):
     limit = min(max(limit, 1), 400)
-    rows = fetch_recent_v2_events_pg(limit=limit, source_whitelist=sorted(TELEGRAM_SOURCE_SET))
+    # No source whitelist — return all sources (Telegram + RSS + FIRMS).
+    # Frontend applies its own trust/confidence gate per source type.
+    rows = fetch_recent_v2_events_pg(limit=limit)
     if not rows:
-        rows = [e for e in events_history[-1200:][::-1] if _is_telegram_source(e)][:limit]
+        rows = list(reversed(events_history[-1200:]))[:limit]
     now = datetime.now(timezone.utc)
     by_bucket = defaultdict(list)
     for e in rows:
@@ -607,11 +608,10 @@ async def v2_alerts(limit: int = 60):
     now = datetime.now(timezone.utc)
     recent = fetch_recent_v2_events_pg(
         limit=700,
-        source_whitelist=sorted(TELEGRAM_SOURCE_SET),
         type_whitelist=["STRIKE", "CRITICAL", "CLASH"],
     )
     if not recent:
-        recent = [e for e in events_history[-1000:] if _is_telegram_source(e) and e.get("type") in {"STRIKE", "CRITICAL", "CLASH"}]
+        recent = [e for e in events_history[-1000:] if e.get("type") in {"STRIKE", "CRITICAL", "CLASH"}]
     by_bucket = defaultdict(list)
     for e in recent:
         by_bucket[(round(float(e.get("lat", 0.0)), 1), round(float(e.get("lng", 0.0)), 1))].append(e)
@@ -658,9 +658,9 @@ async def v2_alerts(limit: int = 60):
 @router.get("/api/v2/sources")
 async def v2_sources(limit: int = 200):
     limit = min(max(limit, 1), 400)
-    rows = fetch_recent_v2_events_pg(limit=limit, source_whitelist=sorted(TELEGRAM_SOURCE_SET))
+    rows = fetch_recent_v2_events_pg(limit=limit)
     if not rows:
-        rows = [r for r in events_history[-1200:][::-1] if _is_telegram_source(r)][:limit]
+        rows = list(reversed(events_history[-1200:]))[:limit]
     grouped = defaultdict(int)
     for r in rows:
         grouped[_extract_source(r)] += 1
