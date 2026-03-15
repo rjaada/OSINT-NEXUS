@@ -97,6 +97,10 @@ PASSKEY_CHALLENGE_TTL_SEC = int(os.getenv("PASSKEY_CHALLENGE_TTL_SEC", "180"))
 # ---------------------------------------------------------------------------
 # Ollama / AI Models
 # ---------------------------------------------------------------------------
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+GROQ_TRACE_TIMEOUT_SEC = int(os.getenv("GROQ_TRACE_TIMEOUT_SEC", "60"))
+
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://ollama:11434/api/generate")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.1:8b")
 OLLAMA_FALLBACK_MODEL = os.getenv("OLLAMA_FALLBACK_MODEL", "llama3.1:8b")
@@ -159,12 +163,15 @@ DEFCON_MANUAL_OVERRIDE = int(os.getenv("DEFCON_MANUAL_OVERRIDE", "0"))
 # ---------------------------------------------------------------------------
 SOURCE_RELIABILITY: Dict[str, int] = {
     "Red Alert": 95,
-    "Reuters": 82,
-    "BBC News": 80,
-    "CBS News": 75,
-    "The Guardian": 72,
-    "Times of Israel": 72,
-    "Al Jazeera": 68,
+    "Market Data": 92,
+    "BBC News": 88,
+    "DW News": 85,
+    "France 24": 83,
+    "NPR": 82,
+    "Sky News": 78,
+    "The Guardian": 75,
+    "Al Jazeera": 72,
+    "Jerusalem Post": 70,
     "AJ Mubasher (TG)": 60,
     "Roaa War Studies (TG)": 55,
     "FR24-MIL": 65,
@@ -223,12 +230,18 @@ EVENT_TYPE_KEYWORDS_AR: Dict[str, List[str]] = {
 # RSS feeds
 # ---------------------------------------------------------------------------
 RSS_FEEDS_EN = [
-    {"name": "AP News", "url": "https://apnews.com/apf-topnews?format=feed&tag=apf-topnews", "source": "AP News"},
-    {"name": "Al Jazeera English", "url": "https://www.aljazeera.com/xml/rss/all.xml", "source": "Al Jazeera"},
-    {"name": "BBC World", "url": "http://feeds.bbci.co.uk/news/world/rss.xml", "source": "BBC News"},
-    {"name": "CBS News World", "url": "https://www.cbsnews.com/latest/rss/world", "source": "CBS News"},
-    {"name": "The Guardian World", "url": "https://www.theguardian.com/world/rss", "source": "The Guardian"},
-    {"name": "Times of Israel", "url": "https://www.timesofisrael.com/feed", "source": "Times of Israel"},
+    # Trust tier 1 — public broadcasters with strict editorial standards, no owner agenda
+    {"name": "BBC World", "url": "https://feeds.bbci.co.uk/news/world/rss.xml", "source": "BBC News", "trust": 0.88},
+    {"name": "BBC Middle East", "url": "https://feeds.bbci.co.uk/news/world/middle_east/rss.xml", "source": "BBC News", "trust": 0.88},
+    {"name": "DW World", "url": "https://rss.dw.com/rdf/rss-en-all", "source": "DW News", "trust": 0.85},
+    {"name": "France 24 World", "url": "https://www.france24.com/en/rss", "source": "France 24", "trust": 0.82},
+    {"name": "France 24 Middle East", "url": "https://www.france24.com/en/middle-east/rss", "source": "France 24", "trust": 0.84},
+    {"name": "NPR World", "url": "https://feeds.npr.org/1004/rss.xml", "source": "NPR", "trust": 0.82},
+    {"name": "Sky News World", "url": "https://feeds.skynews.com/feeds/rss/world.xml", "source": "Sky News", "trust": 0.78},
+    # Trust tier 2 — regional perspective, strong factual record on the conflict
+    {"name": "Al Jazeera English", "url": "https://www.aljazeera.com/xml/rss/all.xml", "source": "Al Jazeera", "trust": 0.72},
+    {"name": "The Guardian World", "url": "https://www.theguardian.com/world/rss", "source": "The Guardian", "trust": 0.75},
+    {"name": "Jerusalem Post", "url": "https://www.jpost.com/rss/rssfeedsheadlines.aspx", "source": "Jerusalem Post", "trust": 0.70},
 ]
 
 # ---------------------------------------------------------------------------
