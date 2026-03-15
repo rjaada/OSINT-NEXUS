@@ -289,18 +289,19 @@ def _call_groq_sitrep(
     patterns: List[str],
 ) -> Optional[Dict[str, Any]]:
     """Send the cluster to Groq and get a structured SITREP back."""
-    if groq_client is None or not groq_client.groq_available():
+    if groq_client is None:
         return None
 
-    # Build compact event summaries
+    # Build compact event summaries — cap desc length so payload stays within
+    # llama3:latest 8K context window (system ~500t + payload ~900t + output 1200t ≈ 2600t)
     event_summaries = []
-    for e in cluster[:20]:  # cap at 20 events
+    for e in cluster[:15]:  # 15 events × ~120 chars desc ≈ safe payload size
         event_summaries.append({
             "id": e.get("id"),
             "type": e.get("type"),
             "source": e.get("source"),
             "timestamp": str(e.get("timestamp", ""))[:19],
-            "desc": str(e.get("desc") or "")[:200],
+            "desc": str(e.get("desc") or "")[:120],
             "confidence_score": e.get("confidence_score"),
             "lat": e.get("lat"),
             "lng": e.get("lng"),
@@ -308,19 +309,24 @@ def _call_groq_sitrep(
 
     payload = {
         "event_count": len(cluster),
+        "events_in_prompt": len(event_summaries),
         "events": event_summaries,
-        "contradictions": contradictions,
-        "historical_patterns": patterns,
+        "contradictions": contradictions[:3],
+        "historical_patterns": patterns[:4],
         "honesty_note": (
-            f"This SITREP covers {len(cluster)} correlated events from "
+            f"This SITREP is based on {len(event_summaries)} representative events "
+            f"selected from a cluster of {len(cluster)} correlated events across "
             f"{len({e.get('source') for e in cluster})} sources. "
             "Do NOT invent facts. If data is sparse, say so."
         ),
     }
 
+    # Serialize cleanly — no string slicing that could produce malformed JSON
+    payload_str = json.dumps(payload, default=str)
+
     messages = [
         {"role": "system", "content": _SITREP_SYSTEM},
-        {"role": "user", "content": json.dumps(payload, default=str)[:5000]},
+        {"role": "user", "content": payload_str},
     ]
 
     raw = groq_client.chat(messages, max_tokens=1200, temperature=0.15)
