@@ -2564,6 +2564,15 @@ async def startup_event():
             now_iso_fn=utc_now_iso,
         )
     ))
+    import telegram_digest as _tg_digest
+    _bg_tasks.append(asyncio.create_task(
+        _tg_digest.poll_daily_digest(
+            token=TG_DIGEST_TOKEN,
+            chat_id=TG_DIGEST_CHAT_ID,
+            load_latest_fn=load_latest_ai_report,
+            send_hour_utc=TG_DIGEST_HOUR_UTC,
+        )
+    ))
     _bg_tasks.append(asyncio.create_task(
         osint_layers.poll_adsblol(
             enabled=ENABLE_ADSBLOL,
