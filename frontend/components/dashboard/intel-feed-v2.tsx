@@ -247,6 +247,7 @@ export function Dashboard() {
           seenIdsRef.current.clear()
           setEvents([])
           data.filter((evt) => isOperationalEventSource(evt.source)).forEach((evt) => addEvent(evt, true))
+          setWsStatus("live")
         }
       } catch (_) {}
     }
@@ -469,7 +470,7 @@ export function Dashboard() {
                   </div>
                   <p className="text-[11px] text-[#d4dbe8] leading-snug line-clamp-2">{evt.desc}</p>
                   {evt.timestamp && (
-                    <p className="text-[9px] text-muted-foreground mt-1">{new Date(evt.timestamp).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", second: "2-digit", timeZone: "UTC" })} UTC</p>
+                    <p className="text-[9px] text-muted-foreground mt-1">{evt.timestamp} UTC</p>
                   )}
                   <button
                     onClick={(e) => { e.stopPropagation(); void runTrace(evt.id) }}
