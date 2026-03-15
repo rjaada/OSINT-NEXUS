@@ -34,7 +34,6 @@ export default function ArabicAdminUsersPage() {
         return
       }
       setUsers(Array.isArray(data?.items) ? data.items : [])
-      setActor(String(data?.actor || ""))
     } catch (_) {
       setMsg("خطأ شبكة أثناء التحميل")
     } finally {
