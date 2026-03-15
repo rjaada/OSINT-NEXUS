@@ -88,7 +88,7 @@ def _make_market_event(
 
     # Unique ID per symbol per 5-minute bucket
     bucket = now_iso[:15]  # YYYY-MM-DDTHH:MM truncated
-    uid = hashlib.md5(f"market_{symbol}_{bucket}".encode()).hexdigest()[:10]
+    uid = hashlib.sha256(f"market_{symbol}_{bucket}".encode()).hexdigest()[:10]
 
     return {
         "id": f"mkt_{uid}",

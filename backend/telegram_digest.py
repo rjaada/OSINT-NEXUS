@@ -105,20 +105,101 @@ def _format_sitrep(report: dict) -> str:
     return "\n".join(lines)
 
 
+def _format_sitrep_ar(report: dict) -> str:
+    sitrep = report.get("sitrep") or {}
+    if not sitrep:
+        return "⚠️ <b>نيكسوس للاستخبارات — تقرير</b>\n\nلا توجد صورة استخباراتية متاحة بعد."
+
+    confidence = sitrep.get("confidence", "?")
+    conf_icon = {"HIGH": "🟢", "MEDIUM": "🟡", "LOW": "🔴"}.get(confidence, "⚪")
+    conf_ar = {"HIGH": "عالية", "MEDIUM": "متوسطة", "LOW": "منخفضة"}.get(confidence, confidence)
+
+    quality = report.get("data_quality", "?")
+    quality_ar = {"RICH DATA": "بيانات غنية", "PARTIAL DATA": "بيانات جزئية", "SPARSE DATA": "بيانات شحيحة"}.get(
+        quality.upper() + " DATA" if "DATA" not in quality.upper() else quality.upper(), quality.upper()
+    )
+    events = report.get("event_count", 0)
+    contradictions = len(report.get("contradictions") or [])
+    gen_at = str(report.get("generated_at", ""))[:16].replace("T", " ")
+
+    lines = [
+        "🛰 <b>نيكسوس للاستخبارات — التقرير اليومي</b>",
+        f"📅 {gen_at} UTC | {events} أحداث محللة | {quality_ar}",
+        "",
+        f"{conf_icon} <b>{sitrep.get('headline', 'لا يوجد عنوان')}</b>",
+        f"الثقة: <b>{conf_ar}</b> — {sitrep.get('confidence_reason', '')}",
+        "",
+        "📋 <b>الوضع الميداني</b>",
+        sitrep.get("what_happened", ""),
+        "",
+        "⚡ <b>لماذا يهم</b>",
+        sitrep.get("why_it_matters", ""),
+    ]
+
+    # Causal chain
+    chain = sitrep.get("causal_chain") or []
+    if chain:
+        lines.append("")
+        lines.append("🔗 <b>سلسلة الأسباب</b>")
+        for i, step in enumerate(chain, 1):
+            lines.append(f"  {i}. {step}")
+
+    # Watch items
+    watches = sitrep.get("watch_items") or []
+    if watches:
+        lines.append("")
+        lines.append("👁 <b>راقب التالي</b>")
+        for w in watches:
+            lines.append(f"  • <b>{w.get('item','')}</b> [{w.get('timeframe','')}]")
+            lines.append(f"    {w.get('why','')}")
+
+    # Contradictions
+    if contradictions:
+        lines.append("")
+        lines.append(f"⚠️ <b>{contradictions} تناقضات مرصودة</b> — تحقق من المصادر")
+
+    # Actors / locations
+    actors = sitrep.get("dominant_actors") or []
+    locations = sitrep.get("key_locations") or []
+    if actors or locations:
+        lines.append("")
+        if actors:
+            lines.append(f"👤 الأطراف: {', '.join(actors)}")
+        if locations:
+            lines.append(f"📍 المواقع: {', '.join(locations)}")
+
+    # Historical parallel
+    parallel = sitrep.get("historical_parallel", "")
+    if parallel and "no clear" not in parallel.lower():
+        lines.append("")
+        lines.append(f"📚 <i>{parallel}</i>")
+
+    lines.append("")
+    lines.append("——")
+    lines.append("🔗 <i>افتح نيكسوس للاستخبارات ← تبويب التقرير للتقرير الكامل</i>")
+
+    return "\n".join(lines)
+
+
 async def send_digest_now(
     token: str,
     chat_id: str,
     load_latest_fn: Callable,
 ) -> bool:
-    """Send the current SITREP immediately. Called on-demand or by scheduler."""
+    """Send the current SITREP immediately in English then Arabic. Called on-demand or by scheduler."""
     result = load_latest_fn("sitrep")
     if not result:
-        text = "⚠️ <b>OSINT NEXUS</b>\n\nNo SITREP available yet. Check back after the first cycle."
+        text_en = "⚠️ <b>OSINT NEXUS</b>\n\nNo SITREP available yet. Check back after the first cycle."
+        text_ar = "⚠️ <b>نيكسوس للاستخبارات</b>\n\nلا يوجد تقرير بعد. تحقق لاحقاً بعد الدورة الأولى."
     else:
         report = result.get("report") or {}
-        text = _format_sitrep(report)
+        text_en = _format_sitrep(report)
+        text_ar = _format_sitrep_ar(report)
 
-    return await _send(token, chat_id, text)
+    ok_en = await _send(token, chat_id, text_en)
+    await asyncio.sleep(1)
+    ok_ar = await _send(token, chat_id, text_ar)
+    return ok_en and ok_ar
 
 
 async def poll_daily_digest(

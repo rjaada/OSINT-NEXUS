@@ -129,7 +129,9 @@ def _require_analyst_or_admin(request: Request) -> dict:
     return _m.require_analyst_or_admin(request)
 
 @router.get("/api/v2/ai/policy")
-async def v2_ai_policy():
+async def v2_ai_policy(request: Request):
+    import main as _m
+    _m.require_analyst_or_admin(request)
     return _v2_ai_scheduler.status()
 
 
@@ -377,6 +379,8 @@ async def media_consume(
     x_role: str = Header(default="viewer", alias="x-role"),
     x_actor: str = Header(default="anon", alias="x-actor"),
 ):
+    import main as _m
+    _m.require_analyst_or_admin(request)
     resolve_write_identity(request, x_api_key=x_api_key, x_actor=x_actor, x_role=x_role)
     event_id = str(payload.get("event_id", "")).strip()
     video_url = str(payload.get("video_url", "")).strip()
@@ -411,7 +415,9 @@ async def media_consume(
 
 
 @router.get("/api/v2/system")
-async def v2_system():
+async def v2_system(request: Request):
+    import main as _m
+    _m.require_analyst_or_admin(request)
     pg = postgres_status()
     ai_status = _v2_ai_scheduler.status()
     graph_status = _graph_store.status() if _state._graph_store is not None else {"enabled": False, "connected": False, "error": "not initialized"}
@@ -441,7 +447,9 @@ async def v2_system():
 
 
 @router.get("/api/v2/overlays")
-async def v2_overlays():
+async def v2_overlays(request: Request):
+    import main as _m
+    _m.require_analyst_or_admin(request)
     return {
         "items": load_overlays(),
         "generated_at": utc_now_iso(),
@@ -449,7 +457,9 @@ async def v2_overlays():
 
 
 @router.get("/api/v2/metoc")
-async def v2_metoc(lat: Optional[float] = None, lng: Optional[float] = None):
+async def v2_metoc(request: Request, lat: Optional[float] = None, lng: Optional[float] = None):
+    import main as _m
+    _m.require_analyst_or_admin(request)
     if lat is None or lng is None:
         sample = fetch_recent_v2_events_pg(limit=120)
         if not sample:
@@ -464,7 +474,9 @@ async def v2_metoc(lat: Optional[float] = None, lng: Optional[float] = None):
 
 
 @router.post("/api/v2/ai/ops-brief")
-async def v2_ai_ops_brief(payload: OpsBriefPayload):
+async def v2_ai_ops_brief(payload: OpsBriefPayload, request: Request):
+    import main as _m
+    _m.require_analyst_or_admin(request)
     mode = str(payload.mode or "INTSUM").upper()
     limit = min(max(int(payload.limit or 20), 5), 40)
     recent = fetch_recent_v2_events_pg(
@@ -564,7 +576,9 @@ Context:
 
 
 @router.get("/api/v2/events")
-async def v2_events(limit: int = 120, clustered: bool = False):
+async def v2_events(request: Request, limit: int = 120, clustered: bool = False):
+    import main as _m
+    _m.require_analyst_or_admin(request)
     limit = min(max(limit, 1), 400)
     # No source whitelist — return all sources (Telegram + RSS + FIRMS).
     # Frontend applies its own trust/confidence gate per source type.
@@ -603,7 +617,9 @@ async def v2_events(limit: int = 120, clustered: bool = False):
 
 
 @router.get("/api/v2/alerts")
-async def v2_alerts(limit: int = 60):
+async def v2_alerts(request: Request, limit: int = 60):
+    import main as _m
+    _m.require_analyst_or_admin(request)
     limit = min(max(limit, 1), 120)
     now = datetime.now(timezone.utc)
     recent = fetch_recent_v2_events_pg(
@@ -656,7 +672,9 @@ async def v2_alerts(limit: int = 60):
 
 
 @router.get("/api/v2/sources")
-async def v2_sources(limit: int = 200):
+async def v2_sources(request: Request, limit: int = 200):
+    import main as _m
+    _m.require_analyst_or_admin(request)
     limit = min(max(limit, 1), 400)
     rows = fetch_recent_v2_events_pg(limit=limit)
     if not rows:
@@ -684,6 +702,8 @@ async def v2_reviews(
     x_role: str = Header(default="viewer", alias="x-role"),
     x_actor: str = Header(default="anon", alias="x-actor"),
 ):
+    import main as _m
+    _m.require_analyst_or_admin(request)
     identity = resolve_write_identity(request, x_api_key=x_api_key, x_actor=x_actor, x_role=x_role)
     actor = identity["username"]
     role = identity["role"]
@@ -710,7 +730,9 @@ async def v2_reviews(
 
 
 @router.get("/api/v2/reviews")
-async def v2_reviews_list(limit: int = 200):
+async def v2_reviews_list(request: Request, limit: int = 200):
+    import main as _m
+    _m.require_analyst_or_admin(request)
     limit = min(max(limit, 1), 500)
     if _db is None:
         return []
@@ -732,6 +754,8 @@ async def v2_saved_views_create(
     x_role: str = Header(default="viewer", alias="x-role"),
     x_actor: str = Header(default="anon", alias="x-actor"),
 ):
+    import main as _m
+    _m.require_analyst_or_admin(request)
     identity = resolve_write_identity(request, x_api_key=x_api_key, x_actor=x_actor, x_role=x_role)
     actor = identity["username"]
     role = identity["role"]
@@ -752,6 +776,8 @@ async def v2_saved_views_create(
 
 @router.get("/api/v2/saved-views")
 async def v2_saved_views(request: Request, owner: str = "anon", x_api_key: Optional[str] = Header(default=None, alias="x-api-key")):
+    import main as _m
+    _m.require_analyst_or_admin(request)
     if x_api_key != V2_API_KEY:
         owner = auth_user_from_request(request).get("username", "anon")
     if _db is None:
@@ -784,6 +810,8 @@ async def v2_watchlist_create(
     x_role: str = Header(default="viewer", alias="x-role"),
     x_actor: str = Header(default="anon", alias="x-actor"),
 ):
+    import main as _m
+    _m.require_analyst_or_admin(request)
     identity = resolve_write_identity(request, x_api_key=x_api_key, x_actor=x_actor, x_role=x_role)
     actor = identity["username"]
     role = identity["role"]
@@ -805,6 +833,8 @@ async def v2_watchlist_create(
 
 @router.get("/api/v2/watchlists")
 async def v2_watchlists(request: Request, owner: str = "anon", x_api_key: Optional[str] = Header(default=None, alias="x-api-key")):
+    import main as _m
+    _m.require_analyst_or_admin(request)
     if x_api_key != V2_API_KEY:
         owner = auth_user_from_request(request).get("username", "anon")
     if _db is None:
@@ -844,6 +874,8 @@ async def v2_pin_incident(
     x_role: str = Header(default="viewer", alias="x-role"),
     x_actor: str = Header(default="anon", alias="x-actor"),
 ):
+    import main as _m
+    _m.require_analyst_or_admin(request)
     identity = resolve_write_identity(request, x_api_key=x_api_key, x_actor=x_actor, x_role=x_role)
     actor = identity["username"]
     role = identity["role"]
@@ -868,6 +900,8 @@ async def v2_pin_incident(
 
 @router.get("/api/v2/pins")
 async def v2_pins(request: Request, owner: str = "anon", x_api_key: Optional[str] = Header(default=None, alias="x-api-key")):
+    import main as _m
+    _m.require_analyst_or_admin(request)
     if x_api_key != V2_API_KEY:
         owner = auth_user_from_request(request).get("username", "anon")
     if _db is None:
@@ -889,6 +923,8 @@ async def v2_handoff_add(
     x_role: str = Header(default="viewer", alias="x-role"),
     x_actor: str = Header(default="anon", alias="x-actor"),
 ):
+    import main as _m
+    _m.require_analyst_or_admin(request)
     identity = resolve_write_identity(request, x_api_key=x_api_key, x_actor=x_actor, x_role=x_role)
     actor = identity["username"]
     role = identity["role"]
@@ -908,7 +944,9 @@ async def v2_handoff_add(
 
 
 @router.get("/api/v2/handoff")
-async def v2_handoff(incident_id: str):
+async def v2_handoff(request: Request, incident_id: str):
+    import main as _m
+    _m.require_analyst_or_admin(request)
     if _db is None:
         return []
     with _db.cursor() as _cur:
@@ -928,6 +966,8 @@ async def v2_notifications_create(
     x_role: str = Header(default="viewer", alias="x-role"),
     x_actor: str = Header(default="anon", alias="x-actor"),
 ):
+    import main as _m
+    _m.require_analyst_or_admin(request)
     identity = resolve_write_identity(request, x_api_key=x_api_key, x_actor=x_actor, x_role=x_role)
     actor = identity["username"]
     role = identity["role"]
@@ -951,6 +991,8 @@ async def v2_notifications_create(
 
 @router.get("/api/v2/notifications")
 async def v2_notifications(request: Request, owner: str = "anon", x_api_key: Optional[str] = Header(default=None, alias="x-api-key")):
+    import main as _m
+    _m.require_analyst_or_admin(request)
     if x_api_key != V2_API_KEY:
         owner = auth_user_from_request(request).get("username", "anon")
     if _db is None:
@@ -979,7 +1021,9 @@ async def v2_notifications(request: Request, owner: str = "anon", x_api_key: Opt
 
 
 @router.get("/api/v2/evaluation/scorecard")
-async def v2_eval_scorecard():
+async def v2_eval_scorecard(request: Request):
+    import main as _m
+    _m.require_analyst_or_admin(request)
     now = datetime.now(timezone.utc)
     week_ago = (now - timedelta(days=7)).isoformat()
     reviews = []
@@ -1010,7 +1054,9 @@ async def v2_eval_scorecard():
 
 
 @router.get("/api/v2/onboarding")
-async def v2_onboarding():
+async def v2_onboarding(request: Request):
+    import main as _m
+    _m.require_analyst_or_admin(request)
     return {
         "title": "How to read confidence",
         "steps": [
@@ -1024,7 +1070,9 @@ async def v2_onboarding():
 
 
 @router.get("/api/v2/ops/dashboard")
-async def v2_ops_dashboard():
+async def v2_ops_dashboard(request: Request):
+    import main as _m
+    _m.require_analyst_or_admin(request)
     warnings = _watchdog_check()
     pg = postgres_status()
     return {
@@ -1046,7 +1094,9 @@ async def v2_ops_dashboard():
 
 
 @router.get("/api/v2/ops/alerts")
-async def v2_ops_alerts():
+async def v2_ops_alerts(request: Request):
+    import main as _m
+    _m.require_analyst_or_admin(request)
     alerts = build_ops_alerts()
     return {
         "alerts": alerts,
