@@ -727,17 +727,21 @@ TEXT TO ANALYZE:
             [{"role": "user", "content": prompt}],
             temperature=0.1,
             max_tokens=2000,
-            timeout=45,
+            timeout=120,  # allow Ollama fallback time
         )
         if not raw:
             raise HTTPException(status_code=502, detail="AI returned no response")
-        # Strip markdown fences if present
-        cleaned = raw.strip()
-        if cleaned.startswith("```"):
-            cleaned = cleaned.split("\n", 1)[-1]
-            cleaned = cleaned.rsplit("```", 1)[0]
+        import re as _re
+        # Robust extraction: strip <think> blocks, markdown fences, find outermost {}
+        cleaned = _re.sub(r"<think>.*?</think>", "", raw, flags=_re.DOTALL).strip()
+        if "```" in cleaned:
+            cleaned = _re.sub(r"```(?:json)?\s*", "", cleaned).replace("```", "").strip()
+        start, end = cleaned.find("{"), cleaned.rfind("}")
+        if start != -1 and end > start:
+            cleaned = cleaned[start:end + 1]
         result = json.loads(cleaned)
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as exc:
+        logger.warning("[PRESS_BRIEF] JSON parse failed: %s | raw[:200]: %s", exc, (raw or "")[:200])
         raise HTTPException(status_code=502, detail="AI returned invalid JSON — try again")
     except HTTPException:
         raise

@@ -12,6 +12,7 @@ Groq narrates — it does not invent.
 import json
 import logging
 import math
+import re
 from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
@@ -259,6 +260,28 @@ IMPORTANT: "dominant_actors" must be real political/military actors (countries, 
 If the data is weak, say so in confidence_reason. Return ONLY valid JSON."""
 
 
+def _extract_json(raw: str) -> dict:
+    """
+    Robustly extract a JSON object from any LLM output.
+    Handles: <think> blocks, markdown fences, extra text before/after JSON.
+    Raises json.JSONDecodeError if no valid JSON found.
+    """
+    # 1. Strip <think>...</think> blocks (Qwen3 thinking mode)
+    text = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
+
+    # 2. Strip markdown fences
+    if "```" in text:
+        text = re.sub(r"```(?:json)?\s*", "", text).replace("```", "").strip()
+
+    # 3. Find outermost { ... } — handles extra text before/after JSON
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        text = text[start:end + 1]
+
+    return json.loads(text)
+
+
 def _call_groq_sitrep(
     groq_client: Any,
     cluster: List[dict],
@@ -305,17 +328,9 @@ def _call_groq_sitrep(
         return None
 
     try:
-        cleaned = raw
-        if "<think>" in cleaned:
-            end = cleaned.rfind("</think>")
-            cleaned = cleaned[end + 8:].strip() if end != -1 else cleaned
-        if cleaned.startswith("```"):
-            cleaned = cleaned.split("\n", 1)[-1]
-            if "```" in cleaned:
-                cleaned = cleaned[: cleaned.rfind("```")]
-            cleaned = cleaned.strip()
-        return json.loads(cleaned)
+        return _extract_json(raw)
     except Exception:
+        logger.warning("[SITREP] JSON parse failed, raw[:200]: %s", raw[:200])
         return {"headline": "SITREP parse error", "raw": raw[:500]}
 
 

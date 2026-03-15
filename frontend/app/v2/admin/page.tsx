@@ -57,7 +57,6 @@ export default function AdminUsersPage() {
         return
       }
       setUsers(Array.isArray(data?.items) ? data.items : [])
-      setActor(String(data?.actor || ""))
     } catch (_) {
       setMsg("Network error while loading users")
     } finally {
@@ -87,22 +86,6 @@ export default function AdminUsersPage() {
     void loadPasskeyStatus()
   }, [role])
 
-  useEffect(() => {
-    if (role !== "admin") return
-    const loadSession = async () => {
-      try {
-        const res = await fetch(apiUrl("/api/auth/session"), { credentials: "include", cache: "no-store" })
-        const data = await res.json().catch(() => ({}))
-        if (!res.ok) return
-        if (data?.authenticated && data?.username) {
-          setActor(String(data.username))
-        }
-      } catch {
-        // best effort
-      }
-    }
-    void loadSession()
-  }, [role])
 
   const enrollPasskey = async () => {
     if (!window.PublicKeyCredential || !navigator.credentials) {
