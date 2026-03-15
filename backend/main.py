@@ -47,6 +47,7 @@ try:
     from . import intel_utils as iutils  # type: ignore
     from . import v2_store  # type: ignore
     from . import graph_store as gstore  # type: ignore
+    from . import groq_client  # type: ignore
     from . import db_sqlite  # type: ignore  # kept for legacy/test compat
     from . import db_postgres  # type: ignore
     from .config import *  # type: ignore
@@ -87,6 +88,7 @@ except ImportError:
     import intel_utils as iutils
     import v2_store
     import graph_store as gstore
+    import groq_client
     import db_sqlite  # kept for legacy/test compat
     import db_postgres
     from config import *
@@ -475,6 +477,33 @@ async def _sync_event_to_graph_async(event: dict) -> None:
         payload["source_name"] = _extract_source(event)
         payload["source"] = payload["source_name"]
         await asyncio.to_thread(_graph_store.upsert_event_node, payload)
+
+        # Entity extraction via Groq — Telegram + high-trust RSS sources (trust >= 0.80)
+        # High-trust RSS: BBC News, DW News, France 24, NPR
+        _HIGH_TRUST_RSS = {"BBC News", "DW News", "France 24", "NPR"}
+        src_name = payload["source_name"]
+        _run_extraction = _is_telegram_source(event) or src_name in _HIGH_TRUST_RSS
+        if groq_client.groq_available() and _run_extraction:
+            desc = str(event.get("description") or event.get("desc") or event.get("title") or "")
+            if desc:
+                event_id = str(event.get("id") or "")
+                entities = await asyncio.to_thread(groq_client.extract_entities, desc)
+                if entities.get("actors"):
+                    await asyncio.to_thread(_graph_store.link_event_actors, event_id, entities["actors"])
+                if entities.get("weapons"):
+                    await asyncio.to_thread(_graph_store.link_event_weapons, event_id, entities["weapons"])
+
+        # Temporal enrichment — predecessor linking + anomaly scoring
+        import temporal_kg
+        event_id = str(event.get("id") or "")
+        ts = str(event.get("timestamp") or "")
+        lat = event.get("lat")
+        lng = event.get("lng")
+        if event_id and ts and lat is not None and lng is not None:
+            await asyncio.to_thread(
+                temporal_kg.enrich_event_with_temporal_context,
+                _graph_store, event_id, ts, float(lat), float(lng),
+            )
     except Exception as exc:
         graph_logger.warning("[GRAPH] failed to sync event %s: %s", str(event.get("id", "")), exc)
 
@@ -1109,6 +1138,37 @@ def cluster_events_for_map(items: List[dict], zoom_bucket: int = 2) -> List[dict
     return iutils.cluster_events_for_map(items, zoom_bucket=zoom_bucket)
 
 
+# ---------------------------------------------------------------------------
+# SITREP + prediction tracker accessors (Layer 3 + 4)
+# ---------------------------------------------------------------------------
+import reasoning_engine as _reasoning_engine
+import prediction_tracker as _prediction_tracker
+
+
+def fetch_sitrep_accuracy() -> dict:
+    return _prediction_tracker.fetch_accuracy_stats(
+        database_url=DATABASE_URL,
+        psycopg_mod=psycopg,
+    )
+
+
+def store_sitrep_watch_items(sitrep_id: str, watch_items: list) -> None:
+    _prediction_tracker.store_watch_items(
+        sitrep_id=sitrep_id,
+        watch_items=watch_items,
+        database_url=DATABASE_URL,
+        psycopg_mod=psycopg,
+    )
+
+
+def score_sitrep_predictions(recent_events: list) -> int:
+    return _prediction_tracker.score_pending_predictions(
+        recent_events=recent_events,
+        database_url=DATABASE_URL,
+        psycopg_mod=psycopg,
+    )
+
+
 def assess_confidence_v2(event: dict, nearby: list, age_min: float) -> Tuple[int, str, List[str]]:
     return iutils.assess_confidence_v2(event, nearby, age_min, assess_confidence_fn=assess_confidence)
 
@@ -1515,7 +1575,7 @@ Summary: {summary}
         return None
 
 
-async def geolocate_event(title: str, summary: str, fallback_seed: str, allow_ai: bool = True) -> dict:
+async def geolocate_event(title: str, summary: str, fallback_seed: str, allow_ai: bool = True, use_geocoder: bool = True) -> dict:
     """Geolocation chain: place dictionary -> geocoder -> AI -> deterministic fallback."""
     observed: List[str] = []
     inferred: List[str] = []
@@ -1537,7 +1597,7 @@ async def geolocate_event(title: str, summary: str, fallback_seed: str, allow_ai
                 "geo_method": "place-dict",
             }
 
-    for place in candidates[:2]:
+    for place in (candidates[:2] if use_geocoder else []):
         geo = await geocode_place(place)
         if geo:
             observed.append(f"Geocoded place mention: {place}")
@@ -1908,8 +1968,9 @@ async def poll_rss():
                     resp = await client.get(feed_cfg["url"])
                     if resp.status_code != 200:
                         continue
-                    parsed = feedparser.parse(resp.text)
-                    for entry in parsed.entries:
+                    feed_text = resp.text
+                    parsed = await asyncio.to_thread(feedparser.parse, feed_text)
+                    for entry in parsed.entries[:25]:
                         aid = article_id(entry)
                         if not _track_seen_article(aid):
                             continue
@@ -1926,7 +1987,9 @@ async def poll_rss():
                         summary = getattr(entry, "summary", getattr(entry, "description", ""))
                         summary = re.sub(r"<[^>]+>", "", summary)[:300]
 
-                        geo = await geolocate_event(title, summary, aid)
+                        geo = await geolocate_event(title, summary, aid, allow_ai=False, use_geocoder=False)
+                        _trust = SOURCE_RELIABILITY.get(feed_cfg["source"], 65)
+                        _confidence = "HIGH" if _trust >= 75 else "MEDIUM" if _trust >= 60 else "LOW"
                         event = {
                             "id": f"rss_{aid[:10]}",
                             "type": geo["type"],
@@ -1934,10 +1997,14 @@ async def poll_rss():
                             "lat": geo["lat"],
                             "lng": geo["lng"],
                             "source": feed_cfg["source"],
+                            "url": getattr(entry, "link", None) or getattr(entry, "id", None) or "",
                             "timestamp": utc_now_iso(),
                             "insufficient_evidence": geo["insufficient_evidence"],
                             "observed_facts": geo["observed_facts"],
                             "model_inference": geo["model_inference"],
+                            "confidence_score": _trust,
+                            "confidence": _confidence,
+                            "confidence_reason": f"{feed_cfg['source']} — source trust {_trust}/100",
                         }
                         await ingest_event(event)
                         await asyncio.sleep(0.2)
@@ -2016,6 +2083,46 @@ async def poll_telegram():
 
 RED_ALERT_URL = "https://www.oref.org.il/WarningMessages/alert/alerts.json"
 _red_alert_403_last_logged: float = 0.0
+
+
+async def poll_sitrep(interval_sec: int = 3600):
+    """Layer 3+4: generate SITREP every hour, score past predictions."""
+    await asyncio.sleep(120)  # wait for pollers to fill data first
+    while True:
+        try:
+            recent = v2_store.fetch_recent_v2_events_pg(
+                database_url=DATABASE_URL,
+                psycopg_mod=psycopg,
+                now_iso=utc_now_iso,
+                limit=300,
+            )
+            if not recent:
+                recent = list(reversed(events_history[-300:]))
+
+            # Score pending predictions before generating new ones
+            scored = score_sitrep_predictions(recent)
+            if scored:
+                logger.info("[SITREP] Scored %d pending predictions", scored)
+
+            result = await asyncio.to_thread(
+                _reasoning_engine.generate_sitrep,
+                _graph_store, groq_client, recent,
+            )
+
+            if result.get("sitrep"):
+                sitrep_id = f"sitrep_{utc_now_iso()}"
+                persist_ai_report("sitrep", result, event_fp="")
+                watch_items = result.get("watch_items") or []
+                if watch_items:
+                    store_sitrep_watch_items(sitrep_id, watch_items)
+                logger.info(
+                    "[SITREP] Generated: quality=%s cluster=%d contradictions=%d watches=%d",
+                    result.get("data_quality"), result.get("dominant_cluster_size", 0),
+                    len(result.get("contradictions") or []), len(watch_items),
+                )
+        except Exception as exc:
+            logger.error("[SITREP] poll_sitrep failed: %s", exc)
+        await asyncio.sleep(interval_sec)
 
 
 async def poll_red_alert():
@@ -2449,6 +2556,7 @@ async def startup_event():
     _bg_tasks.append(asyncio.create_task(poll_rss()))
     _bg_tasks.append(asyncio.create_task(poll_telegram()))
     _bg_tasks.append(asyncio.create_task(poll_red_alert()))
+    _bg_tasks.append(asyncio.create_task(poll_sitrep()))
     _bg_tasks.append(asyncio.create_task(
         osint_layers.poll_adsblol(
             enabled=ENABLE_ADSBLOL,
@@ -2575,6 +2683,56 @@ def build_event_graph(items: List[dict]) -> dict:
                 edges[key]["weight"] += 1
 
     return {"nodes": list(nodes.values()), "edges": list(edges.values())}
+
+
+# ---------------------------------------------------------------------------
+# Intel Trace endpoint — Neo4j subgraph + Groq causal analysis
+# ---------------------------------------------------------------------------
+
+@app.get("/api/v2/intel/trace/{event_id}")
+async def intel_trace(event_id: str, request: Request):
+    """
+    Return a full temporal intelligence trace for a given event.
+    Pulls Neo4j subgraph (actors, weapons, locations, predecessors, sources),
+    computes anomaly score, then asks Groq to narrate — only from graph data.
+    Requires analyst or admin role.
+    """
+    user = auth_user_from_request(request)
+    if user.get("role") not in ("analyst", "admin"):
+        from fastapi import HTTPException
+        raise HTTPException(status_code=403, detail="Analyst or admin required")
+
+    eid = (event_id or "").strip()
+    if not eid:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=400, detail="event_id required")
+
+    import temporal_kg
+    result = await asyncio.to_thread(
+        temporal_kg.build_intelligence_trace,
+        _graph_store,
+        groq_client,
+        eid,
+    )
+
+    # If Neo4j has no record, fall back to local history for basic info
+    if not result.get("subgraph", {}).get("event"):
+        ev = next((e for e in events_history if str(e.get("id") or "") == eid), None)
+        if ev:
+            result["subgraph"] = {
+                "event": ev,
+                "related_events": [],
+                "sources": [{"name": ev.get("source", "Unknown")}],
+                "actors": [],
+                "weapons": [],
+                "locations": [],
+            }
+            result["data_quality"] = "local_fallback"
+        else:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=404, detail="Event not found")
+
+    return result
 
 
 _landing_dir = Path(__file__).parent / "landing"
