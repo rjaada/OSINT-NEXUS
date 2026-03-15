@@ -4,6 +4,8 @@ import { useEffect, useState } from "react"
 import { TopBar } from "@/components/dashboard/top-bar"
 import { CommandNav } from "@/components/dashboard/command-nav"
 
+const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? ""
+
 interface OpsDashboard {
   status: string
   uptime_seconds: number
@@ -29,8 +31,8 @@ export default function V2HealthPage() {
     const load = async () => {
       try {
         const [r1, r2] = await Promise.all([
-          fetch("http://localhost:8000/api/v2/ops/dashboard", { cache: "no-store" }),
-          fetch("http://localhost:8000/api/v2/ops/alerts", { cache: "no-store" }),
+          fetch(`${API_BASE}/api/v2/ops/dashboard`, { cache: "no-store", credentials: "include" }),
+          fetch(`${API_BASE}/api/v2/ops/alerts`, { cache: "no-store", credentials: "include" }),
         ])
         if (r1.ok) setData(await r1.json())
         if (r2.ok) setAlerts(await r2.json())
