@@ -105,29 +105,17 @@ def _format_sitrep(report: dict) -> str:
 
 
 def _translate_to_arabic(text: str) -> Optional[str]:
-    """Use Groq to translate the English SITREP message to full Arabic."""
+    """Translate English SITREP to Arabic — uses Groq with automatic Ollama fallback."""
     try:
         import groq_client
-        if not groq_client.groq_available():
-            return None
-
-        prompt = f"""Translate the following intelligence report from English to Arabic.
-Keep all HTML tags (<b>, <i>) exactly as they are.
-Keep emojis exactly as they are.
-Keep dates, numbers, and proper nouns as-is.
-Translate ALL English text to natural, formal Arabic suitable for intelligence reports.
-Return ONLY the translated text, nothing else.
-
-TEXT:
-{text}"""
-
-        result = groq_client.chat(
-            [{"role": "user", "content": prompt}],
-            temperature=0.1,
-            max_tokens=2000,
-            timeout=30,
-        )
-        return result
+        messages = [{
+            "role": "system",
+            "content": "Translate to Arabic. Keep HTML tags, emojis, dates, numbers, and proper nouns as-is. Return only the translated text.",
+        }, {
+            "role": "user",
+            "content": text,
+        }]
+        return groq_client.chat(messages, temperature=0.1, max_tokens=2000, timeout=120)
     except Exception as exc:
         logger.warning("[TG_DIGEST] Arabic translation failed: %s", exc)
         return None

@@ -9,11 +9,12 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
-from config import GROQ_API_KEY, GROQ_MODEL, GROQ_TRACE_TIMEOUT_SEC
+from config import GROQ_API_KEY, GROQ_MODEL, GROQ_TRACE_TIMEOUT_SEC, OLLAMA_BASE_URL, OLLAMA_MODEL
 
 logger = logging.getLogger("osint.groq")
 
 _GROQ_CHAT_URL = "https://api.groq.com/openai/v1/chat/completions"
+_OLLAMA_CHAT_URL = f"{OLLAMA_BASE_URL}/api/chat"
 
 
 def _headers() -> Dict[str, str]:
@@ -27,6 +28,28 @@ def groq_available() -> bool:
     return bool(GROQ_API_KEY)
 
 
+def _ollama_chat(
+    messages: List[Dict[str, str]],
+    temperature: float = 0.2,
+    max_tokens: int = 1024,
+    timeout: int = 120,
+) -> Optional[str]:
+    """Fallback: send chat request to local Ollama. Returns text or None."""
+    try:
+        payload = {
+            "model": OLLAMA_MODEL,
+            "messages": messages,
+            "stream": False,
+            "options": {"temperature": temperature, "num_predict": max_tokens},
+        }
+        resp = httpx.post(_OLLAMA_CHAT_URL, json=payload, timeout=timeout)
+        resp.raise_for_status()
+        return resp.json()["message"]["content"]
+    except Exception as exc:
+        logger.error("[OLLAMA_FALLBACK] Error: %s", exc)
+        return None
+
+
 def chat(
     messages: List[Dict[str, str]],
     model: Optional[str] = None,
@@ -34,30 +57,32 @@ def chat(
     max_tokens: int = 1024,
     timeout: Optional[int] = None,
 ) -> Optional[str]:
-    """Send a chat request to Groq. Returns assistant message text or None on error."""
-    if not GROQ_API_KEY:
-        logger.warning("[GROQ] No API key configured")
-        return None
-
-    payload: Dict[str, Any] = {
-        "model": model or GROQ_MODEL,
-        "messages": messages,
-        "temperature": temperature,
-        "max_tokens": max_tokens,
-    }
+    """Send a chat request to Groq, falling back to local Ollama on 429 or failure."""
     t = timeout if timeout is not None else GROQ_TRACE_TIMEOUT_SEC
 
-    try:
-        resp = httpx.post(_GROQ_CHAT_URL, headers=_headers(), json=payload, timeout=t)
-        resp.raise_for_status()
-        data = resp.json()
-        return data["choices"][0]["message"]["content"]
-    except httpx.HTTPStatusError as exc:
-        logger.error("[GROQ] HTTP %s: %s", exc.response.status_code, exc.response.text[:300])
-        return None
-    except Exception as exc:
-        logger.error("[GROQ] Error: %s", exc)
-        return None
+    if GROQ_API_KEY:
+        payload: Dict[str, Any] = {
+            "model": model or GROQ_MODEL,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }
+        try:
+            resp = httpx.post(_GROQ_CHAT_URL, headers=_headers(), json=payload, timeout=t)
+            if resp.status_code == 429:
+                logger.warning("[GROQ] Rate limit hit — falling back to local Ollama")
+                return _ollama_chat(messages, temperature, max_tokens)
+            resp.raise_for_status()
+            return resp.json()["choices"][0]["message"]["content"]
+        except httpx.HTTPStatusError as exc:
+            logger.error("[GROQ] HTTP %s — falling back to Ollama: %s", exc.response.status_code, exc.response.text[:200])
+            return _ollama_chat(messages, temperature, max_tokens)
+        except Exception as exc:
+            logger.error("[GROQ] Error — falling back to Ollama: %s", exc)
+            return _ollama_chat(messages, temperature, max_tokens)
+    else:
+        logger.warning("[GROQ] No API key — using local Ollama directly")
+        return _ollama_chat(messages, temperature, max_tokens)
 
 
 # ---------------------------------------------------------------------------
