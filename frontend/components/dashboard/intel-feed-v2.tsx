@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback, useRef, useMemo } from "react"
 import { MapArea } from "./map-area"
 import { AiAnalyst } from "./ai-analyst-v2"
+import { csrfHeaders } from "@/lib/security"
 
 type EventType = "STRIKE" | "MOVEMENT" | "NOTAM" | "CLASH" | "CRITICAL"
 
@@ -53,8 +54,31 @@ function isFirmsSource(src?: string): boolean {
   return s.includes("FIRMS") || s.includes("NASA")
 }
 
+// Trusted RSS sources — editorially independent, documented factual record
+const TRUSTED_RSS_SOURCES = new Set([
+  "BBC News",
+  "DW News",
+  "France 24",
+  "NPR",
+  "Sky News",
+  "Al Jazeera",
+  "The Guardian",
+  "Jerusalem Post",
+])
+
+function isRssSource(src?: string): boolean {
+  return TRUSTED_RSS_SOURCES.has((src || "").trim())
+}
+
+// RSS events must pass confidence gate: score >= 60 or explicitly HIGH/MEDIUM
+function rssEventIsHighConfidence(evt: IntelEvent): boolean {
+  if (evt.confidence === "LOW") return false
+  if (typeof evt.confidence_score === "number" && evt.confidence_score < 60) return false
+  return true
+}
+
 function isOperationalEventSource(src?: string): boolean {
-  return isTelegramSource(src) || isFirmsSource(src)
+  return isTelegramSource(src) || isFirmsSource(src) || isRssSource(src)
 }
 
 function playAlertBeep(type: "CRITICAL" | "STRIKE") {
@@ -98,6 +122,10 @@ export function Dashboard() {
   const [showWeatherOverlay, setShowWeatherOverlay] = useState(false)
   const [defcon, setDefcon] = useState<number>(5)
   const [metoc, setMetoc] = useState({ windKts: 0, visibilityKm: 0, ceilingFt: 0, condition: "Loading...", source: "open-meteo" })
+  const [traceEventId, setTraceEventId] = useState<string | null>(null)
+  const [traceData, setTraceData] = useState<Record<string, unknown> | null>(null)
+  const [traceLoading, setTraceLoading] = useState(false)
+  const [traceError, setTraceError] = useState("")
   const seenIdsRef = useRef<Set<string>>(new Set())
   const hasInteractedRef = useRef(false)
   const eventsRef = useRef<IntelEvent[]>([])
@@ -105,6 +133,30 @@ export function Dashboard() {
   useEffect(() => {
     eventsRef.current = events
   }, [events])
+
+  const runTrace = useCallback(async (eventId: string) => {
+    setTraceEventId(eventId)
+    setTraceData(null)
+    setTraceError("")
+    setTraceLoading(true)
+    try {
+      const res = await fetch(`${API_BASE}/api/v2/intel/trace/${encodeURIComponent(eventId)}`, {
+        headers: csrfHeaders(),
+        credentials: "include",
+        cache: "no-store",
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        setTraceError(String(data?.detail || "Trace failed"))
+        return
+      }
+      setTraceData(data as Record<string, unknown>)
+    } catch {
+      setTraceError("Network error")
+    } finally {
+      setTraceLoading(false)
+    }
+  }, [])
 
   useEffect(() => {
     const handler = () => { hasInteractedRef.current = true }
@@ -168,6 +220,8 @@ export function Dashboard() {
 
   const addEvent = useCallback((evt: IntelEvent, fromBackfill = false) => {
     if (!isOperationalEventSource(evt.source)) return
+    // RSS events must pass the confidence gate — drop LOW or sub-60 score items
+    if (isRssSource(evt.source) && !rssEventIsHighConfidence(evt)) return
     if (!evt?.id || seenIdsRef.current.has(evt.id)) return
     seenIdsRef.current.add(evt.id)
     evt.timestamp = evt.timestamp ? new Date(evt.timestamp).toISOString().slice(11, 19) + "Z" : new Date().toISOString().slice(11, 19) + "Z"
@@ -396,9 +450,159 @@ export function Dashboard() {
 
         <div className="flex-1 min-h-0 overflow-y-auto osint-feed-scroll">
           <div className="flex flex-col gap-2 p-3">
+            {events.slice(0, 60).map((evt) => {
+              const confColor = evt.confidence === "HIGH" ? "#00ff88" : evt.confidence === "MEDIUM" ? "#ffa630" : "#ff4d6d"
+              return (
+                <article
+                  key={evt.id}
+                  onClick={() => setSelectedMapEvent(evt)}
+                  className={`rounded border p-2 cursor-pointer transition-colors ${selectedMapEvent?.id === evt.id ? "border-osint-blue/50 bg-osint-blue/5" : "border-white/8 hover:border-white/15 bg-black/20"}`}
+                >
+                  <div className="flex items-center gap-1.5 mb-1">
+                    <span className="text-[9px] px-1.5 py-px rounded border border-white/15 text-muted-foreground uppercase tracking-wider">{evt.type}</span>
+                    {evt.confidence && (
+                      <span className="text-[9px] px-1.5 py-px rounded" style={{ color: confColor, border: `1px solid ${confColor}40`, background: `${confColor}10` }}>
+                        {evt.confidence}{typeof evt.confidence_score === "number" ? ` ${evt.confidence_score}` : ""}
+                      </span>
+                    )}
+                    <span className="ml-auto text-[9px] text-muted-foreground truncate max-w-[80px]">{evt.source}</span>
+                  </div>
+                  <p className="text-[11px] text-[#d4dbe8] leading-snug line-clamp-2">{evt.desc}</p>
+                  {evt.timestamp && (
+                    <p className="text-[9px] text-muted-foreground mt-1">{new Date(evt.timestamp).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", second: "2-digit", timeZone: "UTC" })} UTC</p>
+                  )}
+                  <button
+                    onClick={(e) => { e.stopPropagation(); void runTrace(evt.id) }}
+                    className="mt-1.5 text-[9px] px-2 py-0.5 rounded border border-osint-purple/40 text-osint-purple hover:bg-osint-purple/10 transition-colors"
+                  >
+                    Trace Intel
+                  </button>
+                </article>
+              )
+            })}
           </div>
         </div>
       </aside>
+
+      {/* Intel Trace Panel */}
+      {traceEventId && (
+        <div className="fixed inset-y-0 right-0 z-50 w-[420px] flex flex-col border-l border-osint-purple/30" style={{ background: "rgba(7,8,18,0.97)", backdropFilter: "blur(20px)" }}>
+          <div className="flex items-center gap-2 px-4 py-3 border-b border-white/10">
+            <span className="text-[9px] uppercase tracking-[0.2em] text-osint-purple">Intel Trace</span>
+            <span className="text-[10px] text-muted-foreground truncate flex-1">{traceEventId}</span>
+            <button onClick={() => { setTraceEventId(null); setTraceData(null) }} className="text-[10px] text-muted-foreground hover:text-white ml-auto">✕</button>
+          </div>
+
+          <div className="flex-1 overflow-y-auto osint-feed-scroll p-4 space-y-4 text-[11px]">
+            {traceLoading && (
+              <div className="flex items-center gap-2 text-osint-purple">
+                <span className="inline-block w-3 h-3 rounded-full border-2 border-osint-purple/40 border-t-osint-purple animate-spin" />
+                Running DeepSeek-R1 causal analysis...
+              </div>
+            )}
+
+            {traceError && (
+              <p className="text-osint-red text-[11px]">{traceError}</p>
+            )}
+
+            {traceData && (() => {
+              const trace = (traceData.trace as Record<string, unknown> | null) ?? {}
+              const subgraph = (traceData.subgraph as Record<string, unknown>) ?? {}
+              const groqOk = Boolean(traceData.groq_available)
+              const neo4jOk = Boolean(traceData.neo4j_available)
+
+              return (
+                <>
+                  <div className="flex gap-2 text-[9px]">
+                    <span className={`px-1.5 py-px rounded border ${neo4jOk ? "border-osint-green/40 text-osint-green" : "border-white/15 text-muted-foreground"}`}>Neo4j {neo4jOk ? "●" : "○"}</span>
+                    <span className={`px-1.5 py-px rounded border ${groqOk ? "border-osint-purple/40 text-osint-purple" : "border-white/15 text-muted-foreground"}`}>Groq {groqOk ? "●" : "○"}</span>
+                    {(() => { const conf = String(trace.confidence || ""); return conf ? (
+                      <span className={`px-1.5 py-px rounded border ${conf === "HIGH" ? "border-osint-green/40 text-osint-green" : conf === "MEDIUM" ? "border-osint-amber/40 text-osint-amber" : "border-osint-red/40 text-osint-red"}`}>
+                        {conf}
+                      </span>
+                    ) : null })()}
+                  </div>
+
+                  {trace.summary && (
+                    <div>
+                      <p className="text-[9px] uppercase tracking-[0.16em] text-muted-foreground mb-1">Summary</p>
+                      <p className="text-[#d4dbe8] leading-relaxed">{String(trace.summary)}</p>
+                    </div>
+                  )}
+
+                  {trace.confidence_reason && (
+                    <p className="text-[10px] text-osint-blue italic">{String(trace.confidence_reason)}</p>
+                  )}
+
+                  {Array.isArray(trace.preceded_by) && trace.preceded_by.length > 0 && (
+                    <div>
+                      <p className="text-[9px] uppercase tracking-[0.16em] text-osint-amber mb-1">Preceded By</p>
+                      <ul className="space-y-1">{(trace.preceded_by as string[]).map((s, i) => <li key={i} className="text-muted-foreground">↑ {s}</li>)}</ul>
+                    </div>
+                  )}
+
+                  {Array.isArray(trace.followed_by) && trace.followed_by.length > 0 && (
+                    <div>
+                      <p className="text-[9px] uppercase tracking-[0.16em] text-osint-green mb-1">Followed By</p>
+                      <ul className="space-y-1">{(trace.followed_by as string[]).map((s, i) => <li key={i} className="text-muted-foreground">↓ {s}</li>)}</ul>
+                    </div>
+                  )}
+
+                  {Array.isArray(trace.involved_actors) && trace.involved_actors.length > 0 && (
+                    <div>
+                      <p className="text-[9px] uppercase tracking-[0.16em] text-osint-blue mb-1">Actors</p>
+                      <div className="flex flex-wrap gap-1">{(trace.involved_actors as string[]).map((a, i) => <span key={i} className="px-1.5 py-px rounded border border-osint-blue/30 text-osint-blue">{a}</span>)}</div>
+                    </div>
+                  )}
+
+                  {Array.isArray(trace.weapon_types) && trace.weapon_types.length > 0 && (
+                    <div>
+                      <p className="text-[9px] uppercase tracking-[0.16em] text-osint-red mb-1">Weapons</p>
+                      <div className="flex flex-wrap gap-1">{(trace.weapon_types as string[]).map((w, i) => <span key={i} className="px-1.5 py-px rounded border border-osint-red/30 text-osint-red">{w}</span>)}</div>
+                    </div>
+                  )}
+
+                  {Array.isArray(trace.contradictions) && trace.contradictions.length > 0 && (
+                    <div>
+                      <p className="text-[9px] uppercase tracking-[0.16em] text-osint-amber mb-1">Contradictions</p>
+                      <ul className="space-y-1">{(trace.contradictions as string[]).map((c, i) => <li key={i} className="text-osint-amber">⚠ {c}</li>)}</ul>
+                    </div>
+                  )}
+
+                  {Array.isArray(trace.sources_used) && trace.sources_used.length > 0 && (
+                    <div>
+                      <p className="text-[9px] uppercase tracking-[0.16em] text-muted-foreground mb-1">Sources Used</p>
+                      <div className="flex flex-wrap gap-1">{(trace.sources_used as string[]).map((s, i) => <span key={i} className="text-[9px] text-muted-foreground border border-white/10 px-1.5 py-px rounded">{s}</span>)}</div>
+                    </div>
+                  )}
+
+                  {trace.raw && (
+                    <div>
+                      <p className="text-[9px] uppercase tracking-[0.16em] text-muted-foreground mb-1">Raw Analysis</p>
+                      <pre className="text-[10px] text-muted-foreground whitespace-pre-wrap break-words">{String(trace.raw)}</pre>
+                    </div>
+                  )}
+
+                  {/* Subgraph context */}
+                  {(Array.isArray((subgraph as any).related_events) && ((subgraph as any).related_events as unknown[]).length > 0) && (
+                    <div>
+                      <p className="text-[9px] uppercase tracking-[0.16em] text-muted-foreground mb-1">Related Events ({((subgraph as any).related_events as unknown[]).length})</p>
+                      <div className="space-y-1">
+                        {((subgraph as any).related_events as Array<Record<string, unknown>>).slice(0, 5).map((re, i) => (
+                          <div key={i} className="rounded border border-white/8 px-2 py-1">
+                            <span className="text-[9px] text-osint-blue mr-1">{String(re.rel_type || "")}</span>
+                            <span className="text-[10px] text-muted-foreground line-clamp-1">{String(re.description || re.type || re.id || "")}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </>
+              )
+            })()}
+          </div>
+        </div>
+      )}
 
       <style>{`
         .osint-feed-scroll {

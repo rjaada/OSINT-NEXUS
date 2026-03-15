@@ -127,6 +127,7 @@ def _decode_pg_event(row: Any, now_iso: Callable[[], str]) -> dict:
         "observed_facts": payload.get("observed_facts", []),
         "model_inference": payload.get("model_inference", []),
         "confidence_score": int(payload.get("confidence_score", 0) or 0),
+        "confidence": payload.get("confidence"),
         "confidence_reason": payload.get("confidence_reason"),
         "video_assessment": payload.get("video_assessment"),
         "video_confidence": payload.get("video_confidence"),
