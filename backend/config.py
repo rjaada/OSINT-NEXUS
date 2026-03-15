@@ -103,7 +103,13 @@ GROQ_TRACE_TIMEOUT_SEC = int(os.getenv("GROQ_TRACE_TIMEOUT_SEC", "60"))
 
 TG_DIGEST_TOKEN = os.getenv("TG_DIGEST_TOKEN", "")
 TG_DIGEST_CHAT_ID = os.getenv("TG_DIGEST_CHAT_ID", "")
+# Legacy single-hour kept for compat; TG_DIGEST_HOURS_UTC takes precedence
 TG_DIGEST_HOUR_UTC = int(os.getenv("TG_DIGEST_HOUR_UTC", "6"))
+# Comma-separated UTC hours, e.g. "6,12,18" → 3× per day
+TG_DIGEST_HOURS_UTC = [
+    int(h.strip()) for h in os.getenv("TG_DIGEST_HOURS_UTC", "6,12,18").split(",")
+    if h.strip().isdigit()
+] or [6, 12, 18]
 
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://ollama:11434/api/generate")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.1:8b")

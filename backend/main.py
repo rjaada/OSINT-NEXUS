@@ -2391,7 +2391,7 @@ async def startup_event():
             token=TG_DIGEST_TOKEN,
             chat_id=TG_DIGEST_CHAT_ID,
             load_latest_fn=load_latest_ai_report,
-            send_hour_utc=TG_DIGEST_HOUR_UTC,
+            send_hours_utc=TG_DIGEST_HOURS_UTC,
         )
     ))
     _bg_tasks.append(asyncio.create_task(
