@@ -2552,9 +2552,25 @@ async def intel_trace(event_id: str, request: Request):
         eid,
     )
 
-    # If Neo4j has no record, fall back to local history for basic info
+    # If Neo4j has no record, fall back to in-memory then PostgreSQL
     if not result.get("subgraph", {}).get("event"):
         ev = next((e for e in events_history if str(e.get("id") or "") == eid), None)
+
+        # Try PostgreSQL (events_v2) if not in memory
+        if ev is None and DATABASE_URL.startswith("postgres") and psycopg is not None:
+            try:
+                import json as _json
+                with psycopg.connect(DATABASE_URL) as _con:
+                    row = _con.execute(
+                        "SELECT id, type, source, timestamp, lat, lng, description, payload_json FROM events_v2 WHERE id = %s LIMIT 1",
+                        (eid,)
+                    ).fetchone()
+                    if row:
+                        payload = _json.loads(row[7]) if row[7] else {}
+                        ev = {"id": row[0], "type": row[1], "source": row[2], "timestamp": str(row[3]), "lat": row[4], "lng": row[5], "desc": row[6], "confidence_score": payload.get("confidence_score")}
+            except Exception:
+                pass
+
         if ev:
             result["subgraph"] = {
                 "event": ev,
@@ -2565,6 +2581,16 @@ async def intel_trace(event_id: str, request: Request):
                 "locations": [],
             }
             result["data_quality"] = "local_fallback"
+            # Run AI trace using event data only (no graph context)
+            if result.get("trace") is None and groq_client:
+                desc = str(ev.get("desc") or ev.get("description") or "")
+                if desc:
+                    try:
+                        minimal_ctx = {"node_count": 0, "data_quality": "local_fallback", "source_trust": {}, "anomaly_score": 0.0, "subgraph": result["subgraph"], "honesty_note": "Neo4j unavailable. Analysis based solely on event description. Do not invent graph relationships."}
+                        result["trace"] = await asyncio.to_thread(groq_client.trace_event, desc, minimal_ctx)
+                        result["groq_available"] = True
+                    except Exception:
+                        pass
         else:
             from fastapi import HTTPException
             raise HTTPException(status_code=404, detail="Event not found")

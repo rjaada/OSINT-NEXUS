@@ -153,9 +153,9 @@ def trace_event(
     """
     Given an event description and its subgraph context, ask Groq to produce
     a full causal intelligence trace. Returns parsed JSON dict or None.
+    Falls back to Ollama if Groq key is unavailable.
     """
-    if not GROQ_API_KEY:
-        return None
+    import re
 
     context_str = json.dumps(graph_context, indent=2, default=str)[:4000]
     messages = [
@@ -171,17 +171,16 @@ def trace_event(
     raw = chat(messages, max_tokens=1024, temperature=0.15)
     if not raw:
         return None
+
+    # Robust extraction: strip <think> blocks, markdown fences, find outermost {}
     try:
-        cleaned = raw
-        if "<think>" in cleaned:
-            end = cleaned.rfind("</think>")
-            cleaned = cleaned[end + 8:].strip() if end != -1 else cleaned
-        # Strip markdown code fences (```json ... ``` or ``` ... ```)
-        if cleaned.startswith("```"):
-            cleaned = cleaned.split("\n", 1)[-1]
-            if "```" in cleaned:
-                cleaned = cleaned[:cleaned.rfind("```")]
-            cleaned = cleaned.strip()
-        return json.loads(cleaned)
+        text = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
+        if "```" in text:
+            text = re.sub(r"```(?:json)?\s*", "", text).replace("```", "").strip()
+        start = text.find("{")
+        end = text.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            text = text[start:end + 1]
+        return json.loads(text)
     except Exception:
-        return {"raw": raw}
+        return None

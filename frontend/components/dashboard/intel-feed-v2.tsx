@@ -126,9 +126,43 @@ export function Dashboard() {
   const [traceData, setTraceData] = useState<Record<string, unknown> | null>(null)
   const [traceLoading, setTraceLoading] = useState(false)
   const [traceError, setTraceError] = useState("")
+  const [suppressedIds, setSuppressedIds] = useState<Set<string>>(new Set())
   const seenIdsRef = useRef<Set<string>>(new Set())
   const hasInteractedRef = useRef(false)
   const eventsRef = useRef<IntelEvent[]>([])
+
+  // Priority Action Panel — ranked by: confidence × corroboration × freshness × type_weight
+  const topEvents = useMemo(() => {
+    const typeWeight: Record<string, number> = {
+      STRIKE: 3.0, ALERT: 3.0, CRITICAL: 2.0, ACTIVITY: 2.0,
+      MARITIME: 1.2, FLIGHT: 1.2, FIRE: 1.0, MEDIA: 1.0, UPDATE: 1.0,
+      CLASH: 2.0, MOVEMENT: 1.5, NOTAM: 1.2,
+    }
+    const costLabel: Record<string, string> = {
+      STRIKE: "CRITICAL", ALERT: "CRITICAL", CRITICAL: "HIGH", CLASH: "HIGH",
+      ACTIVITY: "HIGH", MOVEMENT: "MODERATE", MARITIME: "MODERATE",
+      FLIGHT: "MODERATE", FIRE: "LOW", MEDIA: "LOW", UPDATE: "LOW", NOTAM: "LOW",
+    }
+    return events
+      .filter(e => !suppressedIds.has(e.id))
+      .map((evt, idx) => {
+        const conf = (typeof evt.confidence_score === "number" ? evt.confidence_score : 50) / 100
+        const corr = Math.min((evt.corroborating_sources?.length || 0) + 1, 5)
+        const freshness = 1 / (idx + 1)
+        const tw = typeWeight[evt.type] ?? 1.0
+        const score = conf * corr * freshness * tw
+        const uncertain = typeof evt.confidence_score === "number" && evt.confidence_score >= 50 && evt.confidence_score <= 70
+        const why = [
+          `${evt.type} event`,
+          corr > 1 ? `${corr} sources` : "single source",
+          typeof evt.confidence_score === "number" ? `confidence ${evt.confidence_score}` : "",
+          idx < 5 ? "recent" : "",
+        ].filter(Boolean).join(" · ")
+        return { evt, score, uncertain, cost: costLabel[evt.type] ?? "MODERATE", why }
+      })
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 3)
+  }, [events, suppressedIds])
 
   useEffect(() => {
     eventsRef.current = events
@@ -411,6 +445,70 @@ export function Dashboard() {
           <span className="ml-auto text-[9px] text-muted-foreground tabular-nums">{events.length} items</span>
         </div>
 
+        {/* Priority Action Panel */}
+        {topEvents.length > 0 && (
+          <div className="px-3 pt-2 pb-1">
+            <div className="rounded-lg border border-osint-amber/30 bg-black/30 overflow-hidden">
+              <div className="flex items-center gap-2 px-2 py-1.5 border-b border-white/10 bg-osint-amber/5">
+                <span className="text-[9px] font-bold tracking-[0.2em] uppercase text-osint-amber">Priority Actions</span>
+                <span className="text-[8px] text-muted-foreground ml-auto">NATO MHC — ranked by impact</span>
+              </div>
+              <div className="divide-y divide-white/5">
+                {topEvents.map(({ evt, score, uncertain, cost, why }, rank) => {
+                  const costColor = cost === "CRITICAL" ? "text-osint-red border-osint-red/40 bg-osint-red/10"
+                    : cost === "HIGH" ? "text-osint-amber border-osint-amber/40 bg-osint-amber/10"
+                    : cost === "MODERATE" ? "text-osint-blue border-osint-blue/40 bg-osint-blue/10"
+                    : "text-muted-foreground border-white/20 bg-white/5"
+                  return (
+                    <div key={evt.id} className="p-2 text-[10px] group">
+                      <div className="flex items-start gap-2">
+                        <span className="mt-0.5 text-[9px] font-bold text-muted-foreground w-3 shrink-0">#{rank + 1}</span>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-1.5 mb-1 flex-wrap">
+                            <span className="px-1 py-px rounded border text-[8px] font-bold tracking-wide" style={{ color: evt.type === "STRIKE" || evt.type === "ALERT" || evt.type === "CRITICAL" ? "#ff4444" : evt.type === "CLASH" || evt.type === "ACTIVITY" ? "#ffa630" : "#4fc3f7", borderColor: evt.type === "STRIKE" || evt.type === "ALERT" || evt.type === "CRITICAL" ? "#ff444440" : evt.type === "CLASH" || evt.type === "ACTIVITY" ? "#ffa63040" : "#4fc3f740", background: evt.type === "STRIKE" || evt.type === "ALERT" || evt.type === "CRITICAL" ? "#ff444410" : evt.type === "CLASH" || evt.type === "ACTIVITY" ? "#ffa63010" : "#4fc3f710" }}>{evt.type}</span>
+                            <span className={`px-1 py-px rounded border text-[8px] font-bold ${costColor}`}>{cost}</span>
+                            {uncertain && <span className="px-1 py-px rounded border border-yellow-500/40 bg-yellow-500/10 text-yellow-400 text-[8px]">UNCERTAIN</span>}
+                            {(evt.corroborating_sources?.length ?? 0) > 0 && (
+                              <span className="px-1 py-px rounded border border-osint-green/40 bg-osint-green/10 text-osint-green text-[8px]">{evt.corroborating_sources!.length + 1} src</span>
+                            )}
+                            <span className="text-[8px] text-muted-foreground ml-auto shrink-0">{evt.source}</span>
+                          </div>
+                          <p className="text-[#e0e0e8] line-clamp-2 leading-snug mb-1">
+                            {(evt.observed_facts && evt.observed_facts[0]) || evt.desc}
+                          </p>
+                          {typeof evt.confidence_score === "number" && (
+                            <div className="flex items-center gap-1.5 mb-1">
+                              <div className="flex-1 h-1 rounded-full bg-white/10 overflow-hidden">
+                                <div className="h-full rounded-full" style={{ width: `${evt.confidence_score}%`, background: evt.confidence_score >= 80 ? "#00ff88" : evt.confidence_score >= 60 ? "#ffa630" : "#ff4444" }} />
+                              </div>
+                              <span className="text-[8px] text-muted-foreground tabular-nums">{evt.confidence_score}%</span>
+                            </div>
+                          )}
+                          <p className="text-[8px] text-muted-foreground/60 italic mb-1.5">ranked: {why}</p>
+                          <div className="flex gap-1.5">
+                            <button
+                              onClick={() => runTrace(evt.id)}
+                              className="px-2 py-0.5 rounded border border-osint-blue/40 bg-osint-blue/10 text-osint-blue text-[8px] hover:bg-osint-blue/20 transition-colors"
+                            >
+                              Trace Intel
+                            </button>
+                            <button
+                              onClick={() => setSuppressedIds(prev => new Set([...prev, evt.id]))}
+                              className="px-2 py-0.5 rounded border border-white/10 bg-white/5 text-muted-foreground text-[8px] hover:bg-white/10 transition-colors"
+                            >
+                              Suppress
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          </div>
+        )}
+
         <div className="px-3 pt-2 pb-1">
           <div className="rounded-lg border border-white/10 bg-black/25 p-2 text-[10px]">
             <div className="flex items-center justify-between mb-1">
@@ -538,14 +636,26 @@ export function Dashboard() {
                   {Array.isArray(trace.preceded_by) && trace.preceded_by.length > 0 && (
                     <div>
                       <p className="text-[9px] uppercase tracking-[0.16em] text-osint-amber mb-1">Preceded By</p>
-                      <ul className="space-y-1">{(trace.preceded_by as string[]).map((s, i) => <li key={i} className="text-muted-foreground">↑ {s}</li>)}</ul>
+                      <ul className="space-y-1">{(trace.preceded_by as string[]).map((s, i) => (
+                        <li key={i} className="text-muted-foreground cursor-pointer hover:text-[#e0e0e8] transition-colors"
+                          onClick={e => { const span = e.currentTarget.querySelector("span.body") as HTMLElement; if (span) span.style.webkitLineClamp = span.style.webkitLineClamp === "unset" ? "2" : "unset" }}>
+                          <span className="text-osint-amber mr-1">↑</span>
+                          <span className="body" style={{ display: "-webkit-box", WebkitBoxOrient: "vertical", overflow: "hidden", WebkitLineClamp: "2" }}>{s}</span>
+                        </li>
+                      ))}</ul>
                     </div>
                   )}
 
                   {Array.isArray(trace.followed_by) && trace.followed_by.length > 0 && (
                     <div>
                       <p className="text-[9px] uppercase tracking-[0.16em] text-osint-green mb-1">Followed By</p>
-                      <ul className="space-y-1">{(trace.followed_by as string[]).map((s, i) => <li key={i} className="text-muted-foreground">↓ {s}</li>)}</ul>
+                      <ul className="space-y-1">{(trace.followed_by as string[]).map((s, i) => (
+                        <li key={i} className="text-muted-foreground cursor-pointer hover:text-[#e0e0e8] transition-colors"
+                          onClick={e => { const span = e.currentTarget.querySelector("span.body") as HTMLElement; if (span) span.style.webkitLineClamp = span.style.webkitLineClamp === "unset" ? "2" : "unset" }}>
+                          <span className="text-osint-green mr-1">↓</span>
+                          <span className="body" style={{ display: "-webkit-box", WebkitBoxOrient: "vertical", overflow: "hidden", WebkitLineClamp: "2" }}>{s}</span>
+                        </li>
+                      ))}</ul>
                     </div>
                   )}
 
@@ -577,12 +687,6 @@ export function Dashboard() {
                     </div>
                   )}
 
-                  {trace.raw && (
-                    <div>
-                      <p className="text-[9px] uppercase tracking-[0.16em] text-muted-foreground mb-1">Raw Analysis</p>
-                      <pre className="text-[10px] text-muted-foreground whitespace-pre-wrap break-words">{String(trace.raw)}</pre>
-                    </div>
-                  )}
 
                   {/* Subgraph context */}
                   {(Array.isArray((subgraph as any).related_events) && ((subgraph as any).related_events as unknown[]).length > 0) && (
@@ -590,9 +694,13 @@ export function Dashboard() {
                       <p className="text-[9px] uppercase tracking-[0.16em] text-muted-foreground mb-1">Related Events ({((subgraph as any).related_events as unknown[]).length})</p>
                       <div className="space-y-1">
                         {((subgraph as any).related_events as Array<Record<string, unknown>>).slice(0, 5).map((re, i) => (
-                          <div key={i} className="rounded border border-white/8 px-2 py-1">
-                            <span className="text-[9px] text-osint-blue mr-1">{String(re.rel_type || "")}</span>
-                            <span className="text-[10px] text-muted-foreground line-clamp-1">{String(re.description || re.type || re.id || "")}</span>
+                          <div key={i} className="rounded border border-white/8 px-2 py-1 cursor-pointer hover:border-white/20 transition-colors"
+                            onClick={e => { const span = e.currentTarget.querySelector("span.body") as HTMLElement; if (span) span.style.webkitLineClamp = span.style.webkitLineClamp === "unset" ? "2" : "unset" }}>
+                            <div className="flex items-center gap-1 mb-0.5">
+                              <span className="text-[9px] text-osint-blue">{String(re.rel_type || "")}</span>
+                              {re.source && <span className="text-[8px] text-muted-foreground/60 ml-auto">[{String(re.source)}]</span>}
+                            </div>
+                            <span className="body text-[10px] text-muted-foreground" style={{ display: "-webkit-box", WebkitBoxOrient: "vertical", overflow: "hidden", WebkitLineClamp: "2" }}>{String(re.description || re.type || re.id || "")}</span>
                           </div>
                         ))}
                       </div>
