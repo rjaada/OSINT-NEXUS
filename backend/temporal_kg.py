@@ -114,7 +114,7 @@ def build_intelligence_trace(
     description = str(event_node.get("description") or event_node.get("label") or "")
 
     trace_result = None
-    if groq_client and groq_client.groq_available() and description:
+    if groq_client and description:
         graph_context = {
             "node_count": node_count,
             "data_quality": data_quality,
