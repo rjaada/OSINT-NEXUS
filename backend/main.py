@@ -138,6 +138,17 @@ from db_ops import (  # noqa: E402
     postgres_status,
 )
 
+# ── Poll loops (extracted to pollers.py) ──────────────────────────────────────
+from pollers import (  # noqa: E402
+    poll_flights,
+    poll_rss,
+    poll_telegram,
+    poll_sitrep,
+    poll_red_alert,
+    RED_ALERT_URL,
+    _red_alert_403_last_logged,
+)
+
 app = FastAPI(title="OSINT Nexus Engine v3")
 
 try:
@@ -1731,279 +1742,8 @@ def geolocate_alert(city: str) -> tuple:
     return iutils.geolocate_alert(city, ISRAEL_CITY_COORDS)
 
 
-async def poll_flights():
-    headers = {"User-Agent": "Mozilla/5.0"}
-    async with httpx.AsyncClient(timeout=15, headers=headers) as client:
-        while True:
-            await asyncio.sleep(30)
-            metrics["flight_polls"] += 1
-            try:
-                resp = await client.get(FR24_URL)
-                if resp.status_code != 200:
-                    continue
-                data = resp.json()
-                aircraft_list = []
-                for key, val in data.items():
-                    if key in ["full_count", "version", "stats"]:
-                        continue
-                    if not isinstance(val, list) or len(val) < 14:
-                        continue
-                    icao = str(val[0])
-                    lat = val[1]
-                    lng = val[2]
-                    heading = val[3]
-                    alt_ft = val[4]
-                    speed_kts = val[5]
-                    ac_type = str(val[8])
-                    callsign = str(val[13] or val[16] or icao).strip()
-                    alt_m = round(alt_ft * 0.3048)
-                    speed_m = round(speed_kts * 0.51444)
-                    is_mil = is_military(callsign, icao) or is_military(ac_type, "")
-                    aircraft_list.append({
-                        "id": key,
-                        "callsign": callsign.upper(),
-                        "country": "Unknown",
-                        "lat": lat,
-                        "lng": lng,
-                        "alt": alt_m,
-                        "speed": speed_m,
-                        "heading": heading,
-                        "military": is_mil,
-                    })
-                aircraft_list = aircraft_list[:150]
-                if aircraft_list:
-                    last_aircraft[:] = aircraft_list
-                    await manager.broadcast({"type": "AIRCRAFT_UPDATE", "data": aircraft_list, "ts": time.time()})
-                    metrics["last_success"]["flights"] = utc_now_iso()
-            except Exception as e:
-                metrics["flight_errors"] += 1
-                logger.warning(f"[FR24] Error: {e}")
-
-
-async def poll_rss():
-    async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
-        while True:
-            metrics["rss_polls"] += 1
-            for feed_cfg in RSS_FEEDS_EN:
-                try:
-                    resp = await client.get(feed_cfg["url"])
-                    if resp.status_code != 200:
-                        continue
-                    feed_text = resp.text
-                    parsed = await asyncio.to_thread(feedparser.parse, feed_text)
-                    for entry in parsed.entries[:25]:
-                        aid = article_id(entry)
-                        if not _track_seen_article(aid):
-                            continue
-                        if not is_relevant(entry):
-                            # Keep non-relevant article ids out of dedupe registry.
-                            seen_articles.discard(aid)
-                            try:
-                                _seen_articles_order.remove(aid)
-                            except ValueError:
-                                pass
-                            continue
-
-                        title = getattr(entry, "title", "No title")
-                        summary = getattr(entry, "summary", getattr(entry, "description", ""))
-                        summary = re.sub(r"<[^>]+>", "", summary)[:300]
-
-                        geo = await geolocate_event(title, summary, aid, allow_ai=False, use_geocoder=False)
-                        _trust = SOURCE_RELIABILITY.get(feed_cfg["source"], 65)
-                        _confidence = "HIGH" if _trust >= 75 else "MEDIUM" if _trust >= 60 else "LOW"
-                        event = {
-                            "id": f"rss_{aid[:10]}",
-                            "type": geo["type"],
-                            "desc": f"[{feed_cfg['source']}] {title}",
-                            "lat": geo["lat"],
-                            "lng": geo["lng"],
-                            "source": feed_cfg["source"],
-                            "url": getattr(entry, "link", None) or getattr(entry, "id", None) or "",
-                            "timestamp": utc_now_iso(),
-                            "insufficient_evidence": geo["insufficient_evidence"],
-                            "observed_facts": geo["observed_facts"],
-                            "model_inference": geo["model_inference"],
-                            "confidence_score": _trust,
-                            "confidence": _confidence,
-                            "confidence_reason": f"{feed_cfg['source']} — source trust {_trust}/100",
-                        }
-                        await ingest_event(event)
-                        await asyncio.sleep(0.2)
-                    metrics["last_success"]["rss"] = utc_now_iso()
-                except Exception as e:
-                    metrics["rss_errors"] += 1
-                    logger.warning(f"[RSS] Error: {e}")
-            await asyncio.sleep(60)
-
-
-async def poll_telegram():
-    headers = {"User-Agent": "Mozilla/5.0 (OSINT-Nexus/1.0)"}
-    async with httpx.AsyncClient(timeout=20, headers=headers, follow_redirects=True) as client:
-        while True:
-            metrics["telegram_polls"] += 1
-            for cfg in TELEGRAM_CHANNELS:
-                try:
-                    url = f"https://t.me/s/{cfg['slug']}"
-                    resp = await client.get(url)
-                    if resp.status_code != 200:
-                        continue
-                    posts = parse_telegram_posts(resp.text, cfg["slug"])
-                    if not posts:
-                        continue
-
-                    candidates = posts[-max(1, TELEGRAM_LOOKBACK_POSTS):]
-                    pending = [p for p in candidates if f"tg_{cfg['slug']}_{p['post_id']}" not in seen_telegram_posts]
-                    for p in pending[-max(1, TELEGRAM_MAX_NEW_PER_POLL):]:
-                        pid = f"tg_{cfg['slug']}_{p['post_id']}"
-                        _track_seen_telegram(pid)
-
-                        text = p["text"][:500]
-                        geo = await geolocate_event(f"[{cfg['source']}] Telegram Update", text, pid, allow_ai=True)
-                        event = {
-                            "id": pid,
-                            "type": geo["type"],
-                            "desc": f"[{cfg['source']}] {text[:240]}",
-                            "lat": geo["lat"],
-                            "lng": geo["lng"],
-                            "source": cfg["source"],
-                            "timestamp": p["timestamp"],
-                            "url": p["url"],
-                            "lang": cfg["lang"],
-                            "insufficient_evidence": geo["insufficient_evidence"],
-                            "observed_facts": geo["observed_facts"],
-                            "model_inference": geo["model_inference"],
-                        }
-                        if p.get("has_video"):
-                            remote_video_src = str(p.get("video_src") or "").strip()
-                            local_video = None
-                            # Try direct CDN download first (yt-dlp telegram extractor is unreliable)
-                            if remote_video_src:
-                                local_video = await asyncio.to_thread(download_video_direct, remote_video_src, pid)
-                            # Fall back to yt-dlp if direct download failed
-                            if not local_video:
-                                local_video = await asyncio.to_thread(download_telegram_video, p["url"], pid)
-                            if local_video:
-                                event["video_url"] = local_video
-                            elif is_playable_video_url(remote_video_src):
-                                event["video_url"] = remote_video_src
-                            event["has_video"] = True
-
-                        video_meta = infer_video_metadata(event.get("desc", ""), bool(event.get("has_video")), geo.get("geo_method", "fallback"))
-                        event.update(video_meta)
-
-                        await ingest_event(event)
-
-                    if len(seen_telegram_posts) > 6000:
-                        seen_telegram_posts.clear()
-                    metrics["last_success"]["telegram"] = utc_now_iso()
-                except Exception as e:
-                    metrics["telegram_errors"] += 1
-                    logger.warning(f"[TELEGRAM] Error {cfg['slug']}: {e}")
-            await asyncio.sleep(max(1, TELEGRAM_POLL_INTERVAL_SEC))
-
-
-RED_ALERT_URL = "https://www.oref.org.il/WarningMessages/alert/alerts.json"
-_red_alert_403_last_logged: float = 0.0
-
-
-async def poll_sitrep(interval_sec: int = 3600):
-    """Layer 3+4: generate SITREP every hour, score past predictions."""
-    await asyncio.sleep(120)  # wait for pollers to fill data first
-    while True:
-        try:
-            recent = v2_store.fetch_recent_v2_events_pg(
-                database_url=DATABASE_URL,
-                psycopg_mod=psycopg,
-                now_iso=utc_now_iso,
-                limit=300,
-            )
-            if not recent:
-                recent = list(reversed(events_history[-300:]))
-
-            # Score pending predictions before generating new ones
-            scored = score_sitrep_predictions(recent)
-            if scored:
-                logger.info("[SITREP] Scored %d pending predictions", scored)
-
-            result = await asyncio.to_thread(
-                _reasoning_engine.generate_sitrep,
-                _graph_store, groq_client, recent,
-            )
-
-            if result.get("sitrep"):
-                sitrep_id = f"sitrep_{utc_now_iso()}"
-                persist_ai_report("sitrep", result, event_fp="")
-                watch_items = result.get("watch_items") or []
-                if watch_items:
-                    store_sitrep_watch_items(sitrep_id, watch_items)
-                logger.info(
-                    "[SITREP] Generated: quality=%s cluster=%d contradictions=%d watches=%d",
-                    result.get("data_quality"), result.get("dominant_cluster_size", 0),
-                    len(result.get("contradictions") or []), len(watch_items),
-                )
-        except Exception as exc:
-            logger.error("[SITREP] poll_sitrep failed: %s", exc)
-        await asyncio.sleep(interval_sec)
-
-
-async def poll_red_alert():
-    headers = {
-        "Referer": "https://www.oref.org.il/",
-        "X-Requested-With": "XMLHttpRequest",
-        "User-Agent": "Mozilla/5.0",
-    }
-    async with httpx.AsyncClient(timeout=5, headers=headers) as client:
-        while True:
-            await asyncio.sleep(3)
-            metrics["red_alert_polls"] += 1
-            try:
-                resp = await client.get(RED_ALERT_URL)
-                if resp.status_code != 200:
-                    metrics["red_alert_errors"] += 1
-                    if resp.status_code == 403:
-                        global _red_alert_403_last_logged
-                        _now = asyncio.get_event_loop().time()
-                        if _now - _red_alert_403_last_logged > 600:
-                            logger.warning("[RED ALERT] 403 Forbidden — OREF geo-blocking this IP (logged once per 10m)")
-                            _red_alert_403_last_logged = _now
-                    continue
-                if not resp.text.strip():
-                    continue
-                try:
-                    data = resp.json()
-                except Exception:
-                    continue
-                if not data:
-                    continue
-
-                alert_id = data.get("id", "")
-                if not _track_seen_alert(alert_id):
-                    continue
-
-                alert_title = data.get("title", "Red Alert")
-                cities = data.get("data", [])
-                ts_now = utc_now_iso()
-
-                for city in cities:
-                    lat, lng = geolocate_alert(city)
-                    eid = hashlib.sha256(f"{alert_id}_{city}".encode()).hexdigest()[:10]
-                    event = {
-                        "id": f"alert_{eid}",
-                        "type": "STRIKE",
-                        "desc": f"[Red Alert] {alert_title}: {city}",
-                        "lat": lat,
-                        "lng": lng,
-                        "source": "Red Alert",
-                        "timestamp": ts_now,
-                        "insufficient_evidence": False,
-                        "observed_facts": ["Official civil-defense alert feed"],
-                        "model_inference": [],
-                    }
-                    await ingest_event(event)
-                metrics["last_success"]["red_alert"] = utc_now_iso()
-            except Exception as e:
-                metrics["red_alert_errors"] += 1
-                logger.warning(f"[RED ALERT] Error: {e}")
+# poll_flights, poll_rss, poll_telegram, poll_sitrep, poll_red_alert
+# are imported from pollers.py at the top of this file.
 
 
 def _watchdog_check() -> list:
@@ -2520,6 +2260,29 @@ def build_event_graph(items: List[dict]) -> dict:
                 edges[key]["weight"] += 1
 
     return {"nodes": list(nodes.values()), "edges": list(edges.values())}
+
+
+# ---------------------------------------------------------------------------
+# Disinformation detector endpoint
+# ---------------------------------------------------------------------------
+
+@app.get("/api/v2/disinfo/scan")
+async def disinfo_scan(request: Request):
+    """
+    Scan recent events for coordinated information operation signatures.
+    Returns clusters of events that appeared simultaneously across 3+ sources.
+    Analyst-facing only — flags suspicion, does not draw conclusions.
+    """
+    user = auth_user_from_request(request)
+    if user.get("role") not in ("analyst", "admin"):
+        from fastapi import HTTPException
+        raise HTTPException(status_code=403, detail="Analyst or admin required")
+
+    import disinfo_detector
+    # Use DB events (survives restarts); fall back to in-memory
+    recent = fetch_recent_v2_events_pg(limit=500) if DATABASE_URL.startswith("postgres") else list(events_history[-500:])
+    result = await asyncio.to_thread(disinfo_detector.scan_for_disinfo, recent)
+    return result
 
 
 # ---------------------------------------------------------------------------

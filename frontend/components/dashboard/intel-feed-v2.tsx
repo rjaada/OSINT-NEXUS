@@ -126,6 +126,7 @@ export function Dashboard() {
   const [traceData, setTraceData] = useState<Record<string, unknown> | null>(null)
   const [traceLoading, setTraceLoading] = useState(false)
   const [traceError, setTraceError] = useState("")
+  const [disinfoData, setDisinfoData] = useState<{ clusters_detected: number; high_suspicion: number; medium_suspicion: number; clusters: Array<{ cluster_id: string; suspicion_level: string; sources: string[]; time_spread_minutes: number; common_tokens: string[]; flag_reason: string; event_count: number; analyst_note: string }> } | null>(null)
   const [suppressedIds, setSuppressedIds] = useState<Set<string>>(new Set())
   const seenIdsRef = useRef<Set<string>>(new Set())
   const hasInteractedRef = useRef(false)
@@ -239,6 +240,19 @@ export function Dashboard() {
     const t = setInterval(() => void pull(), 30000)
     return () => clearInterval(t)
   }, [selectedMapEvent])
+
+  // Disinformation detector — scan every 20 minutes
+  useEffect(() => {
+    const scan = async () => {
+      try {
+        const res = await fetch(`${API_BASE}/api/v2/disinfo/scan`, { credentials: "include", cache: "no-store" })
+        if (res.ok) setDisinfoData(await res.json())
+      } catch (_) {}
+    }
+    void scan()
+    const t = setInterval(() => void scan(), 20 * 60 * 1000)
+    return () => clearInterval(t)
+  }, [])
 
   useEffect(() => {
     try {
@@ -509,6 +523,37 @@ export function Dashboard() {
           </div>
         )}
 
+        {/* Disinformation Detector Panel */}
+        {disinfoData && disinfoData.clusters_detected > 0 && (
+          <div className="px-3 pt-2 pb-1">
+            <div className="rounded-lg border border-osint-red/30 bg-black/30 overflow-hidden">
+              <div className="flex items-center gap-2 px-2 py-1.5 border-b border-white/10 bg-osint-red/5">
+                <span className="text-[9px] font-bold tracking-[0.2em] uppercase text-osint-red">⚠ Info Op Detection</span>
+                <span className="text-[8px] ml-auto px-1.5 py-px rounded border border-osint-red/40 text-osint-red">{disinfoData.high_suspicion} HIGH · {disinfoData.medium_suspicion} MED</span>
+              </div>
+              <div className="divide-y divide-white/5">
+                {disinfoData.clusters.slice(0, 3).map((cluster) => (
+                  <div key={cluster.cluster_id} className="p-2 text-[10px]">
+                    <div className="flex items-center gap-1.5 mb-1">
+                      <span className={`px-1 py-px rounded border text-[8px] font-bold ${cluster.suspicion_level === "HIGH" ? "text-osint-red border-osint-red/40 bg-osint-red/10" : "text-osint-amber border-osint-amber/40 bg-osint-amber/10"}`}>{cluster.suspicion_level}</span>
+                      <span className="text-muted-foreground text-[8px]">{cluster.event_count} events · {cluster.sources.length} sources · {cluster.time_spread_minutes}min</span>
+                    </div>
+                    <p className="text-muted-foreground/80 mb-1">{cluster.flag_reason}</p>
+                    {cluster.common_tokens.length > 0 && (
+                      <div className="flex flex-wrap gap-1">
+                        {cluster.common_tokens.slice(0, 5).map((tok, i) => (
+                          <span key={i} className="px-1 py-px rounded bg-white/5 text-[8px] text-muted-foreground">{tok}</span>
+                        ))}
+                      </div>
+                    )}
+                    <p className="text-[8px] text-muted-foreground/50 mt-1 italic">{cluster.analyst_note}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+
         <div className="px-3 pt-2 pb-1">
           <div className="rounded-lg border border-white/10 bg-black/25 p-2 text-[10px]">
             <div className="flex items-center justify-between mb-1">
@@ -563,6 +608,9 @@ export function Dashboard() {
                       <span className="text-[9px] px-1.5 py-px rounded" style={{ color: confColor, border: `1px solid ${confColor}40`, background: `${confColor}10` }}>
                         {evt.confidence}{typeof evt.confidence_score === "number" ? ` ${evt.confidence_score}` : ""}
                       </span>
+                    )}
+                    {(evt.corroborating_sources?.length ?? 0) > 0 && (
+                      <span className="px-1 py-px rounded border border-osint-green/40 bg-osint-green/10 text-osint-green text-[8px]">{evt.corroborating_sources!.length + 1} src</span>
                     )}
                     <span className="ml-auto text-[9px] text-muted-foreground truncate max-w-[80px]">{evt.source}</span>
                   </div>
