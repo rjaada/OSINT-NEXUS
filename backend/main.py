@@ -2263,6 +2263,159 @@ def build_event_graph(items: List[dict]) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Conflict zones — dynamic admin-managed bounding boxes
+# ---------------------------------------------------------------------------
+
+@app.get("/api/v2/conflict-zones")
+async def get_conflict_zones(request: Request):
+    """Return all active conflict zones from DB (no auth — map reads this)."""
+    if not DATABASE_URL.startswith("postgres") or psycopg is None:
+        return {"zones": []}
+    try:
+        with psycopg.connect(DATABASE_URL) as con:
+            rows = con.execute(
+                "SELECT id, label, color, severity, coordinates FROM conflict_zones WHERE active = TRUE ORDER BY created_at"
+            ).fetchall()
+            return {"zones": [{"id": r[0], "label": r[1], "color": r[2], "severity": r[3], "coordinates": r[4]} for r in rows]}
+    except Exception:
+        return {"zones": []}
+
+
+@app.post("/api/v2/conflict-zones")
+async def create_conflict_zone(request: Request):
+    """Create or update a conflict zone. Admin only."""
+    user = auth_user_from_request(request)
+    if user.get("role") != "admin":
+        from fastapi import HTTPException
+        raise HTTPException(status_code=403, detail="Admin required")
+    body = await request.json()
+    zone_id = str(body.get("id") or body.get("label", "zone")).lower().replace(" ", "_")[:40]
+    label = str(body.get("label") or zone_id)[:80]
+    color = str(body.get("color") or "#ff4444")
+    severity = str(body.get("severity") or "high")
+    coords = body.get("coordinates")  # list of [lng, lat] pairs or bbox [minLng, minLat, maxLng, maxLat]
+    creator = str(user.get("username") or "admin")
+
+    if not coords:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=400, detail="coordinates required")
+
+    # Accept bbox [minLng, minLat, maxLng, maxLat] and convert to polygon
+    if len(coords) == 4 and all(isinstance(c, (int, float)) for c in coords):
+        min_lng, min_lat, max_lng, max_lat = coords
+        coords = [[min_lng, min_lat], [max_lng, min_lat], [max_lng, max_lat], [min_lng, max_lat], [min_lng, min_lat]]
+
+    if not DATABASE_URL.startswith("postgres") or psycopg is None:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=503, detail="Database not available")
+
+    import json as _json
+    with psycopg.connect(DATABASE_URL) as con:
+        con.execute(
+            """INSERT INTO conflict_zones (id, label, color, severity, coordinates, created_by)
+               VALUES (%s, %s, %s, %s, %s::jsonb, %s)
+               ON CONFLICT (id) DO UPDATE SET label=EXCLUDED.label, color=EXCLUDED.color,
+               severity=EXCLUDED.severity, coordinates=EXCLUDED.coordinates, active=TRUE""",
+            (zone_id, label, color, severity, _json.dumps(coords), creator)
+        )
+        con.commit()
+    return {"status": "ok", "id": zone_id}
+
+
+@app.delete("/api/v2/conflict-zones/{zone_id}")
+async def delete_conflict_zone(zone_id: str, request: Request):
+    """Soft-delete a conflict zone. Admin only."""
+    user = auth_user_from_request(request)
+    if user.get("role") != "admin":
+        from fastapi import HTTPException
+        raise HTTPException(status_code=403, detail="Admin required")
+    if not DATABASE_URL.startswith("postgres") or psycopg is None:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=503, detail="Database not available")
+    with psycopg.connect(DATABASE_URL) as con:
+        con.execute("UPDATE conflict_zones SET active = FALSE WHERE id = %s", (zone_id,))
+        con.commit()
+    return {"status": "ok"}
+
+
+# ---------------------------------------------------------------------------
+# Analyst review / source feedback loop
+# ---------------------------------------------------------------------------
+
+@app.post("/api/v2/events/{event_id}/review")
+async def submit_event_review(event_id: str, request: Request):
+    """
+    Submit an analyst review of an event.
+    Stores rating (1-5), optional corrected type, and notes.
+    These reviews feed back into source reliability weights over time.
+    """
+    user = auth_user_from_request(request)
+    if user.get("role") not in ("analyst", "admin"):
+        from fastapi import HTTPException
+        raise HTTPException(status_code=403, detail="Analyst or admin required")
+
+    body = await request.json()
+    rating = int(body.get("rating") or 3)
+    correct_type = str(body.get("correct_type") or "").strip() or None
+    notes = str(body.get("notes") or "").strip()[:500] or None
+    reviewer = str(user.get("username") or user.get("role") or "analyst")
+
+    if not DATABASE_URL.startswith("postgres") or psycopg is None:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=503, detail="Database not available")
+
+    try:
+        with psycopg.connect(DATABASE_URL) as con:
+            con.execute(
+                "INSERT INTO source_reviews (event_id, reviewer, rating, correct_type, notes) VALUES (%s, %s, %s, %s, %s)",
+                (event_id, reviewer, max(1, min(5, rating)), correct_type, notes)
+            )
+            con.commit()
+    except Exception as exc:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    return {"status": "ok", "event_id": event_id, "reviewer": reviewer}
+
+
+@app.get("/api/v2/source-reliability")
+async def get_source_reliability(request: Request):
+    """
+    Return source reliability scores derived from analyst reviews.
+    Aggregates avg rating per source, returns alongside event counts.
+    """
+    user = auth_user_from_request(request)
+    if user.get("role") not in ("analyst", "admin"):
+        from fastapi import HTTPException
+        raise HTTPException(status_code=403, detail="Analyst or admin required")
+
+    if not DATABASE_URL.startswith("postgres") or psycopg is None:
+        return {"sources": []}
+
+    try:
+        with psycopg.connect(DATABASE_URL) as con:
+            rows = con.execute("""
+                SELECT e.source,
+                       COUNT(r.id) AS review_count,
+                       ROUND(AVG(r.rating)::numeric, 2) AS avg_rating,
+                       COUNT(e.id) AS event_count
+                FROM events_v2 e
+                LEFT JOIN source_reviews r ON r.event_id = e.id
+                GROUP BY e.source
+                ORDER BY review_count DESC, event_count DESC
+                LIMIT 50
+            """).fetchall()
+            return {
+                "sources": [
+                    {"source": r[0], "review_count": r[1], "avg_rating": float(r[2] or 0), "event_count": r[3]}
+                    for r in rows
+                ]
+            }
+    except Exception:
+        return {"sources": []}
+
+
+# ---------------------------------------------------------------------------
 # Disinformation detector endpoint
 # ---------------------------------------------------------------------------
 

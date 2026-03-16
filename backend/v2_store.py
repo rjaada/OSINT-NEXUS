@@ -32,6 +32,64 @@ def postgres_status(database_url: str, psycopg_mod) -> dict:
         return {"configured": True, "connected": False, "events_count": None, "error": str(e)}
 
 
+_ACLED_TYPE_MAP = {
+    "STRIKE": ("Explosions/Remote violence", "Air/drone strike"),
+    "CRITICAL": ("Explosions/Remote violence", "Shelling/artillery/missile attack"),
+    "CLASH": ("Battles", "Armed clash"),
+    "ACTIVITY": ("Strategic developments", "Looting/property destruction"),
+    "MOVEMENT": ("Strategic developments", "Troop movements"),
+    "ALERT": ("Strategic developments", "Government regains territory"),
+    "MARITIME": ("Strategic developments", "Naval/maritime incident"),
+    "FLIGHT": ("Strategic developments", "Air force activity"),
+    "FIRE": ("Explosions/Remote violence", "Remote explosive/landmine/IED"),
+    "NOTAM": ("Strategic developments", "Agreement"),
+    "UPDATE": ("Strategic developments", "Other"),
+    "MEDIA": ("Strategic developments", "Other"),
+}
+
+_INTL_SOURCES = {"BBC News", "Reuters", "AFP", "AP", "France24", "Al Jazeera", "DW News", "CNN", "Guardian", "NYT"}
+_NATIONAL_SOURCES = {"Jerusalem Post", "Haaretz", "Times of Israel", "Axios", "Politico", "Washington Post"}
+
+_CIVILIAN_KEYWORDS = {"civilian", "hospital", "school", "market", "residential", "kindergarten", "mosque", "church", "aid worker"}
+
+
+def _compute_acled_fields(event: dict, source: str) -> dict:
+    etype = str(event.get("type") or "UPDATE")
+    acled_type, acled_sub = _ACLED_TYPE_MAP.get(etype, ("Strategic developments", "Other"))
+
+    # Source scale
+    if source in _INTL_SOURCES or any(s in source for s in ("BBC", "Reuters", "AFP", "France", "Al Jazeera")):
+        source_scale = "international"
+    elif source in _NATIONAL_SOURCES or any(s in source for s in ("Post", "Times", "Haaretz")):
+        source_scale = "national"
+    elif "(TG)" in source or "Telegram" in source.lower():
+        source_scale = "subnational"
+    else:
+        source_scale = "local"
+
+    # Civilian targeting
+    desc_lower = str(event.get("desc") or "").lower()
+    civilian_targeting = any(kw in desc_lower for kw in _CIVILIAN_KEYWORDS)
+
+    # Time precision: 1=exact (has seconds), 2=day, 3=estimated
+    ts = str(event.get("timestamp") or "")
+    time_precision = 1 if len(ts) >= 19 else (2 if len(ts) >= 10 else 3)
+
+    # Geo precision: 1=exact coords from event, 2=city-level, 3=region
+    lat = float(event.get("lat") or 0.0)
+    lng = float(event.get("lng") or 0.0)
+    geo_precision = 1 if (lat != 0.0 and lng != 0.0) else 3
+
+    return {
+        "time_precision": time_precision,
+        "geo_precision": geo_precision,
+        "source_scale": source_scale,
+        "civilian_targeting": civilian_targeting,
+        "acled_event_type": acled_type,
+        "acled_sub_event_type": acled_sub,
+    }
+
+
 def persist_event_v2_pg(
     event: dict,
     database_url: str,
@@ -58,6 +116,8 @@ def persist_event_v2_pg(
             "source": extract_source(event),
             "updated_at": now_iso(),
         }
+        src = extract_source(event)
+        acled = _compute_acled_fields(event, src)
         with psycopg_mod.connect(database_url, connect_timeout=3) as conn:
             with conn.cursor() as cur:
                 cur.execute(
@@ -76,8 +136,10 @@ def persist_event_v2_pg(
                 )
                 cur.execute(
                     """
-                    INSERT INTO events_v2 (id, type, source, timestamp, lat, lng, description, payload_json)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb)
+                    INSERT INTO events_v2 (id, type, source, timestamp, lat, lng, description, payload_json,
+                        time_precision, geo_precision, source_scale, civilian_targeting,
+                        acled_event_type, acled_sub_event_type)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (id) DO UPDATE SET
                         type = EXCLUDED.type,
                         source = EXCLUDED.source,
@@ -85,17 +147,29 @@ def persist_event_v2_pg(
                         lat = EXCLUDED.lat,
                         lng = EXCLUDED.lng,
                         description = EXCLUDED.description,
-                        payload_json = EXCLUDED.payload_json
+                        payload_json = EXCLUDED.payload_json,
+                        time_precision = EXCLUDED.time_precision,
+                        geo_precision = EXCLUDED.geo_precision,
+                        source_scale = EXCLUDED.source_scale,
+                        civilian_targeting = EXCLUDED.civilian_targeting,
+                        acled_event_type = EXCLUDED.acled_event_type,
+                        acled_sub_event_type = EXCLUDED.acled_sub_event_type
                     """,
                     (
                         str(event.get("id")),
                         str(event.get("type", "CLASH")),
-                        extract_source(event),
+                        src,
                         str(event.get("timestamp") or now_iso()),
                         float(event.get("lat", 0.0)),
                         float(event.get("lng", 0.0)),
                         str(event.get("desc", "")),
                         json.dumps(payload, ensure_ascii=False),
+                        acled["time_precision"],
+                        acled["geo_precision"],
+                        acled["source_scale"],
+                        acled["civilian_targeting"],
+                        acled["acled_event_type"],
+                        acled["acled_sub_event_type"],
                     ),
                 )
     except Exception:
