@@ -44,5 +44,14 @@ frontend/tsconfig.tsbuildinfo
 dist/
 build/
 coverage/
+
+# Claude / AI tooling docs (local only)
 Codex.md
 CLAUDE.md
+GEMINI.md
+AGENTS.md
+docs/RESEARCH_ANALYSIS.md
+docs/superpowers/
+OSINT_NEXUS_DOCUMENTATION.md
+.claire/
+.claude/
