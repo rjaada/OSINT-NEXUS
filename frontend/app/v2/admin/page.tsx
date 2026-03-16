@@ -45,6 +45,9 @@ export default function AdminUsersPage() {
   const [busyUser, setBusyUser] = useState("")
   const [passkeyEnabled, setPasskeyEnabled] = useState(false)
   const [passkeyCount, setPasskeyCount] = useState(0)
+  const [zones, setZones] = useState<Array<{ id: string; label: string; color: string; severity: string }>>([])
+  const [newZone, setNewZone] = useState({ label: "", color: "#ff4444", severity: "high", bbox: "" })
+  const [zoneMsg, setZoneMsg] = useState("")
 
   const loadUsers = async () => {
     setLoading(true)
@@ -67,7 +70,33 @@ export default function AdminUsersPage() {
   useEffect(() => {
     if (role !== "admin") return
     void loadUsers()
+    fetch(apiUrl("/api/v2/conflict-zones"), { credentials: "include" })
+      .then(r => r.ok ? r.json() : { zones: [] })
+      .then(d => setZones(d.zones || []))
+      .catch(() => {})
   }, [role])
+
+  const addZone = async () => {
+    setZoneMsg("")
+    const parts = newZone.bbox.split(",").map(s => parseFloat(s.trim()))
+    if (parts.length !== 4 || parts.some(isNaN)) { setZoneMsg("Bbox must be: minLng, minLat, maxLng, maxLat"); return }
+    const res = await fetch(apiUrl("/api/v2/conflict-zones"), {
+      method: "POST", credentials: "include",
+      headers: { ...csrfHeaders(), "Content-Type": "application/json" },
+      body: JSON.stringify({ label: newZone.label, color: newZone.color, severity: newZone.severity, coordinates: parts })
+    })
+    const d = await res.json().catch(() => ({}))
+    if (!res.ok) { setZoneMsg(d.detail || "Failed"); return }
+    setZoneMsg("Zone added")
+    setNewZone({ label: "", color: "#ff4444", severity: "high", bbox: "" })
+    const refreshed = await fetch(apiUrl("/api/v2/conflict-zones"), { credentials: "include" })
+    if (refreshed.ok) { const rd = await refreshed.json(); setZones(rd.zones || []) }
+  }
+
+  const deleteZone = async (id: string) => {
+    await fetch(apiUrl(`/api/v2/conflict-zones/${id}`), { method: "DELETE", credentials: "include", headers: csrfHeaders() })
+    setZones(prev => prev.filter(z => z.id !== id))
+  }
 
   const loadPasskeyStatus = async () => {
     try {
@@ -283,6 +312,91 @@ export default function AdminUsersPage() {
                   </article>
                 ))}
               </div>
+            </section>
+          )}
+
+          {role === "admin" && (
+            <section className="rounded-lg border border-white/10 bg-black/30 p-3 mt-4">
+              <h2 className="text-sm font-semibold mb-3 text-osint-blue">Conflict Zone Management</h2>
+
+              {zoneMsg ? <p className="text-xs text-osint-amber mb-2">{zoneMsg}</p> : null}
+
+              {/* Add zone form */}
+              <div className="rounded border border-white/10 p-3 mb-3 grid md:grid-cols-5 gap-2 items-end">
+                <div>
+                  <label className="text-[10px] text-muted-foreground block mb-1">Label</label>
+                  <input
+                    type="text"
+                    value={newZone.label}
+                    onChange={e => setNewZone(z => ({ ...z, label: e.target.value }))}
+                    placeholder="e.g. Gaza Strip"
+                    className="w-full bg-black/40 border border-white/20 rounded px-2 py-1 text-[11px] text-[#e0e0ef] placeholder:text-muted-foreground"
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] text-muted-foreground block mb-1">Color</label>
+                  <input
+                    type="color"
+                    value={newZone.color}
+                    onChange={e => setNewZone(z => ({ ...z, color: e.target.value }))}
+                    className="w-full h-[26px] rounded border border-white/20 bg-black/40 cursor-pointer"
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] text-muted-foreground block mb-1">Severity</label>
+                  <select
+                    value={newZone.severity}
+                    onChange={e => setNewZone(z => ({ ...z, severity: e.target.value }))}
+                    className="w-full bg-black/40 border border-white/20 rounded px-2 py-1 text-[11px] text-[#e0e0ef]"
+                  >
+                    <option value="critical">critical</option>
+                    <option value="high">high</option>
+                    <option value="medium">medium</option>
+                    <option value="low">low</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="text-[10px] text-muted-foreground block mb-1">BBox (minLng,minLat,maxLng,maxLat)</label>
+                  <input
+                    type="text"
+                    value={newZone.bbox}
+                    onChange={e => setNewZone(z => ({ ...z, bbox: e.target.value }))}
+                    placeholder="34.2,31.2,34.6,31.6"
+                    className="w-full bg-black/40 border border-white/20 rounded px-2 py-1 text-[11px] text-[#e0e0ef] placeholder:text-muted-foreground"
+                  />
+                </div>
+                <button
+                  onClick={() => void addZone()}
+                  disabled={!newZone.label || !newZone.bbox}
+                  className="text-[10px] px-3 py-1 rounded border border-osint-green/40 text-osint-green disabled:opacity-40"
+                >
+                  Add Zone
+                </button>
+              </div>
+
+              {/* Zone list */}
+              {zones.length === 0 ? (
+                <p className="text-[11px] text-muted-foreground">No custom zones defined.</p>
+              ) : (
+                <div className="grid gap-1">
+                  {zones.map(z => (
+                    <div key={z.id} className="flex items-center gap-3 rounded border border-white/10 px-3 py-2">
+                      <span
+                        className="w-3 h-3 rounded-full flex-shrink-0"
+                        style={{ background: z.color }}
+                      />
+                      <span className="text-[12px] text-[#e0e0ef] flex-1">{z.label}</span>
+                      <span className="text-[10px] text-muted-foreground">{z.severity}</span>
+                      <button
+                        onClick={() => void deleteZone(z.id)}
+                        className="text-[10px] px-2 py-0.5 rounded border border-osint-red/40 text-osint-red bg-osint-red/10"
+                      >
+                        delete
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
             </section>
           )}
         </div>

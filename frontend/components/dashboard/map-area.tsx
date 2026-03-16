@@ -212,11 +212,37 @@ export function MapArea({
   const overlayIdsRef   = useRef<string[]>([])
   const [isSatellite, setIsSatellite] = useState(false)
   const [mapError, setMapError] = useState<string | null>(null)
+  const activeZonesRef = useRef(CONFLICT_ZONES)
+
+  // Fetch dynamic zones from DB — merge on top of hardcoded fallback
+  useEffect(() => {
+    fetch(`${API_BASE}/api/v2/conflict-zones`, { credentials: "include", cache: "no-store" })
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        if (data?.zones?.length) {
+          // DB zones override/extend the hardcoded list
+          const dbIds = new Set(data.zones.map((z: { id: string }) => z.id))
+          const merged = [...CONFLICT_ZONES.filter(z => !dbIds.has(z.id)), ...data.zones]
+          activeZonesRef.current = merged
+          // Re-draw if map is already loaded
+          const map = mapRef.current
+          if (map && mapReadyRef.current) {
+            if (map.getSource("conflict-zones")) {
+              (map.getSource("conflict-zones") as maplibregl.GeoJSONSource).setData({
+                type: "FeatureCollection",
+                features: merged.map(z => ({ type: "Feature" as const, properties: { id: z.id, color: z.color, label: z.label }, geometry: { type: "Polygon" as const, coordinates: [z.coordinates] } }))
+              })
+            }
+          }
+        }
+      })
+      .catch(() => {})
+  }, [])
 
   const addCustomLayers = (map: maplibregl.Map) => {
     // ── Conflict zone fills ──────────────────────────────────────────────────
     if (!map.getSource("conflict-zones")) {
-      const features = CONFLICT_ZONES.map((z) => ({
+      const features = activeZonesRef.current.map((z) => ({
         type: "Feature" as const,
         properties: { id: z.id, color: z.color, label: z.label },
         geometry: { type: "Polygon" as const, coordinates: [z.coordinates] },
@@ -319,7 +345,7 @@ export function MapArea({
     // ── Zone label markers ───────────────────────────────────────────────────
     zoneLabelsRef.current.forEach((m) => m.remove())
     zoneLabelsRef.current = []
-    CONFLICT_ZONES.forEach((zone) => {
+    activeZonesRef.current.forEach((zone) => {
       // Centroid of polygon
       const coords = zone.coordinates
       const cx = coords.reduce((s, c) => s + c[0], 0) / coords.length

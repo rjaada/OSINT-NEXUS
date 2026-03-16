@@ -754,6 +754,25 @@ export function Dashboard() {
                       </div>
                     </div>
                   )}
+                  {/* Analyst Review */}
+                  <div className="border-t border-white/10 pt-3">
+                    <p className="text-[9px] uppercase tracking-[0.16em] text-muted-foreground mb-2">Rate this intelligence</p>
+                    <div className="flex items-center gap-2">
+                      {[1,2,3,4,5].map(n => (
+                        <button key={n}
+                          className="w-6 h-6 rounded border border-white/15 text-[10px] text-muted-foreground hover:border-osint-amber/50 hover:text-osint-amber transition-colors"
+                          onClick={async () => {
+                            await fetch(`${API_BASE}/api/v2/events/${traceEventId}/review`, {
+                              method: "POST", credentials: "include",
+                              headers: { "Content-Type": "application/json" },
+                              body: JSON.stringify({ rating: n })
+                            })
+                          }}
+                        >{n}</button>
+                      ))}
+                      <span className="text-[8px] text-muted-foreground/50 ml-1">1=false · 5=confirmed</span>
+                    </div>
+                  </div>
                 </>
               )
             })()}
