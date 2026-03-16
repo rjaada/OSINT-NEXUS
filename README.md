@@ -1,371 +1,316 @@
-# OSINT NEXUS
+# OSINT Nexus
 
-OSINT NEXUS is a real-time OSINT monitoring platform for conflict-driven situational awareness. It ingests open sources, geolocates events, computes confidence, and serves versioned operational dashboards.
+**Autonomous all-source intelligence platform for real-time conflict monitoring.**
 
-## What This Project Is
+OSINT Nexus ingests live data from news feeds, Telegram channels, flight tracking, maritime AIS, and civil defense alerts — fuses them through a Neo4j temporal knowledge graph — and runs LLM-powered reasoning to produce structured intelligence products: SITREPs, causal chains, contradiction detection, and ranked priority actions.
 
-OSINT NEXUS is an operational intelligence workspace that combines:
+> Built as a production system, not a demo. Running live data. 2,300+ events ingested.
 
-- live OSINT ingestion (Telegram, RSS, flight feed, red-alert feed),
-- map-centric incident monitoring,
-- analyst review workflows,
-- role-based access control,
-- local AI-assisted verification/report generation via Ollama.
+---
 
-It is designed for decision support, not for authoritative command-and-control.
+## What It Does
 
-## Current Product State
+Most dashboards show you data. OSINT Nexus **reasons** about it.
 
-- `v2` is now the primary workspace (`/` redirects to `/v2`).
-- `v1` remains in the codebase but is hidden from the main navigation.
+| Layer | Capability | Status |
+|-------|-----------|--------|
+| **Ingestion** | RSS/news, Telegram channels, ADSB flights, AIS maritime, Red Alert civil defense | Live |
+| **Fusion** | Neo4j temporal knowledge graph — actors, events, locations, corroboration edges | Live |
+| **Reasoning** | LLM causal chain analysis, contradiction detection, SITREP generation | Live |
+| **Verification** | Multi-source corroboration scoring, disinformation signature detection | Live |
+| **Action** | Priority Action Panel, Telegram digest, ETA-scored alerts | Live |
 
-Current engineering focus (feature freeze):
+---
 
-- reliability and auth/session stability,
-- role/access correctness,
-- persistence behavior across restarts,
-- test coverage for critical paths.
+## Intelligence Products
 
-## 10-Minute Local Onboarding
+### Priority Action Panel
+Always-visible top-3 ranked events scored by `confidence × corroboration × freshness × type_weight`. Zero clicks. One-click suppress. Every card shows: "Ranked #1 because: X." Designed to **NATO Meaningful Human Control (MHC)** standards — the system explains its ranking, the analyst decides.
 
-```bash
-make up-p2
-make up-ai MODEL=deepseek-r1:8b
-make pull-model MODEL=phi4-mini
-make health
+### Intel Trace
+Click any event → full causal chain from Neo4j + LLM analysis. Preceded by, followed by, actors involved, contradiction flags, confidence calibration. Powered by DeepSeek-R1 via Groq (Ollama local fallback on rate limit).
+
+### SITREP
+Auto-generated situation reports every 60 minutes: what happened, why it happened, what to watch next (3 specific watch items with timeframes), confidence level with reasoning. Stored in PostgreSQL, queryable via API.
+
+### Disinformation Detector
+Sliding 45-minute window across all sources. Flags when the same claim appears on 3+ channels simultaneously — the coordinated emergence signature documented in Flashpoint's Ukraine OSINT deployment.
+
+### Press Brief Analyzer
+Paste any press conference transcript → structured intelligence extraction: headline, key claims, threats and warnings, military signals, observed facts vs. inference, follow-up recommendations.
+
+---
+
+## Architecture
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│                        Data Sources                          │
+│   RSS/News · Telegram · ADSB flights · AIS · Red Alert       │
+└─────────────────────────┬────────────────────────────────────┘
+                          │  async pollers
+┌─────────────────────────▼────────────────────────────────────┐
+│                   Backend  (FastAPI)                          │
+│  geocoding · classification · confidence scoring · ACLED     │
+│  taxonomy · MGRS coords · source reliability weights         │
+└──────┬──────────────────┬──────────────────┬─────────────────┘
+       │                  │                  │
+┌──────▼──────┐   ┌───────▼──────┐   ┌───────▼──────┐
+│ PostgreSQL  │   │    Neo4j     │   │    Redis     │
+│ events_v2   │   │ Temporal KG  │   │  WebSocket   │
+│ ACLED cols  │   │ 760+ nodes   │   │  pub/sub     │
+│ AI reports  │   │ causal graph │   │  live feed   │
+└─────────────┘   └──────────────┘   └─────────────┘
+                          │
+┌─────────────────────────▼────────────────────────────────────┐
+│                   Reasoning Engine                            │
+│   Groq LLM (primary) → Ollama local (auto-fallback on 429)  │
+│   SITREP · Intel Trace · Contradiction detection             │
+│   Disinformation clustering · Causal chain analysis          │
+└─────────────────────────┬────────────────────────────────────┘
+                          │  REST + WebSocket
+┌─────────────────────────▼────────────────────────────────────┐
+│                  Frontend  (Next.js 15)                       │
+│  Intel Feed · Live Map · Alerts · SITREP · Graph Explorer    │
+│  Priority Panel · Press Brief · Admin · AR/RTL interface     │
+└──────────────────────────────────────────────────────────────┘
 ```
 
-Open:
+---
 
-- Frontend: `http://localhost:3000`
-- Backend: `http://localhost:8000`
-- Login: `http://localhost:3000/login`
+## Tech Stack
 
-Run critical auth/admin tests:
+**Backend**
+- Python 3.11 · FastAPI · psycopg3
+- Neo4j — temporal knowledge graph (760+ nodes, 6 relationship types)
+- PostgreSQL + PostGIS
+- Redis — WebSocket pub/sub
+- Groq API (LLaMA 3 / DeepSeek-R1) with Ollama local LLM fallback
+
+**Frontend**
+- Next.js 15 App Router · TypeScript · Tailwind CSS
+- MapLibre GL — conflict zone overlays, event markers, MGRS grid
+- Radix UI · WebSocket real-time feed
+
+**Infrastructure**
+- Docker Compose (9 services)
+- Caddy — reverse proxy + automatic HTTPS
+- WebAuthn / Passkey authentication
+- Role-based access control: viewer / analyst / admin
+- CI/CD via GitHub Actions
+
+---
+
+## Getting Started
+
+### Prerequisites
+- Docker + Docker Compose
+- Groq API key ([free tier](https://console.groq.com))
+
+### Setup
 
 ```bash
-make test-auth
+git clone https://github.com/rjaada/OSINT-NEXUS.git
+cd OSINT-NEXUS
+cp .env.example .env
+# Add your GROQ_API_KEY and credentials to .env
+docker compose up -d
 ```
 
-UI entry points:
+App available at `http://localhost:3000`.
 
-- Root (V2): `http://localhost:3000/`
-- V2 hub: `http://localhost:3000/v2`
-- V2 operations: `http://localhost:3000/v2/operations`
-- V2 alerts: `http://localhost:3000/v2/alerts`
-- V2 sources: `http://localhost:3000/v2/sources`
-- V2 health: `http://localhost:3000/v2/health`
-- V2 admin (admin only): `http://localhost:3000/v2/admin`
+### Key Environment Variables
 
-Arabic routes mirror v2 under `/v2/ar/...`.
+```env
+# Required
+GROQ_API_KEY=your_key
+AUTH_SECRET=your_secret_key
+AUTH_DEFAULT_ADMIN_USER=admin
+AUTH_DEFAULT_ADMIN_PASSWORD=your_password
 
-## Ingestion and Data Sources
+# Optional — live flight / maritime / alert ingestion
+ENABLE_ADSBLOL=1
+ENABLE_AISSTREAM=1
+AISSTREAM_API_KEY=your_key
+ENABLE_FIRMS=1
+FIRMS_MAP_KEY=your_key
 
-- Telegram channels:
-  - `AJ Mubasher (TG)`
-  - `Roaa War Studies (TG)`
-- RSS feeds (Reuters, Al Jazeera, BBC, CBS, The Guardian, Times of Israel)
-- FlightRadar24 military-relevant flight feed
-- Red Alert feed (when reachable)
+# Optional — Telegram digest (sends SITREP daily at 06:00 UTC)
+TG_DIGEST_TOKEN=your_bot_token
+TG_DIGEST_CHAT_ID=your_chat_id
 
-## Backend Capabilities
-
-- FastAPI ingestion engine with WebSocket broadcast
-- SQLite local persistence (default) and Postgres v2 events persistence support
-- Incident deduplication and event threading
-- Confidence scoring with explainable rationale and corroboration tracking
-- Media job queue and Telegram media linkage
-- Watchdog + ops metrics + rule alerts
-- MGRS conversion for v2 events/alerts
-- Real METOC pull via Open-Meteo endpoint
-- Geo overlay loading from local GeoJSON files (`OVERLAY_DIR`)
-
-## Key Features
-
-- V2 operations map with event hover/click detail cards
-- V2 alerts board with confidence/ETA and analyst review actions
-- V2 source desk for reliability/throughput and pipeline status
-- V2 health dashboard for watchdog/queues/system status
-- Admin role-management page (list users, promote/demote, delete with safeguards)
-- Real-time updates via WebSocket stream
-- MGRS conversion and METOC weather integration
-- GeoJSON tactical overlays support
-- AI-assisted verification + report workflows (Ollama)
-
-## AI in V2 (current policy)
-
-V2 currently uses task models through Ollama:
-
-- `verify` model: default `phi4-mini`
-- `report` model: default `deepseek-r1:8b`
-
-Runtime scheduler behavior:
-
-- single active model at a time
-- serialized execution
-- forced model switching when task changes
-- runtime model discovery from Ollama `/api/tags`
-- unavailable models are dropped from runtime chain to reduce repeated 404 noise
-
-## Authentication and Access Control
-
-- Account creation and login are available on `/login`
-- Passwords are stored with salted PBKDF2 hash
-- Signed auth cookie (`osint_auth`) is used for session verification
-- Role model:
-  - `viewer`
-  - `analyst`
-  - `admin`
-
-Route policy:
-
-- v1: any authenticated role
-- v2: any authenticated role (`viewer`, `analyst`, `admin`)
-- v2 admin pages: `admin` only
-
-Admin tooling:
-
-- `GET /api/admin/users` (admin only)
-- `PATCH /api/admin/users/{username}/role` (admin only)
-- `DELETE /api/admin/users/{username}` (admin only)
-- Last-admin safety: cannot demote the final admin account
-- Last-admin/self-delete safety: cannot delete final admin or current admin account
-
-## V2 Page Summary
-
-Operations (`/v2/operations`):
-
-- Live map + markers
-- Hover and click event details on map
-- METOC widget + weather overlay toggle
-- BFT/ISR widgets
-- AI crisis analyst panel
-- **No chat panel**
-- **No alert-card feed in operations sidebar**
-
-Alerts (`/v2/alerts`):
-
-- Confidence and ETA board
-- Analyst/admin review actions
-- SITREP/INTSUM export
-- Multi-model ops brief integration (`verify` + `report`)
-
-Sources (`/v2/sources`):
-
-- Source reliability and throughput metrics
-- Queue and model status
-- AI report panel
-
-Health (`/v2/health`):
-
-- Ops health, watchdog warnings, queue state, and postgres status
-
-Admin (`/v2/admin`):
-
-- List users
-- Promote/demote roles
-- Delete users with safety checks
-
-## Main API Endpoints
-
-Core:
-
-- `GET /api/health`
-- `GET /api/ops/health`
-- `GET /api/stats`
-- `GET /api/events`
-- `GET /api/alerts/assessment`
-- `GET /api/sources/recent`
-- `GET /api/analyst`
-- `WS /ws/live`
-
-V2:
-
-- `GET /api/v2/events`
-- `GET /api/v2/alerts`
-- `GET /api/v2/sources`
-- `GET /api/v2/system`
-- `GET /api/v2/ops/alerts`
-- `GET /api/v2/metoc`
-- `GET /api/v2/overlays`
-- `GET /api/v2/ai/policy`
-- `GET /api/v2/ai/report`
-- `POST /api/v2/ai/verify`
-- `POST /api/v2/ai/ops-brief`
-
-Auth/Admin:
-
-- `POST /api/auth/register`
-- `POST /api/auth/login`
-- `POST /api/auth/logout`
-- `GET /api/auth/session`
-- `GET /api/admin/users`
-- `PATCH /api/admin/users/{username}/role`
-- `DELETE /api/admin/users/{username}`
-
-## Prerequisites
-
-- Docker Engine
-- Docker Compose
-- Node.js 20+ (optional direct frontend run)
-- Python 3.11+ (optional direct backend run)
-- Minikube + kubectl (for Kubernetes mode)
-- Optional NVIDIA GPU + NVIDIA container toolkit (for local Ollama acceleration)
-
-## Environment Variables (Backend)
-
-Important variables:
-
-- `OSINT_DB_PATH` (default: `/tmp/osint_nexus.db`; compose uses `/data/osint_nexus.db` for persistence)
-- `MEDIA_DIR` (default: `/tmp/osint_nexus_media`)
-- `OVERLAY_DIR` (default: `/tmp/osint_overlays`)
-- `DATABASE_URL` (Postgres enablement)
-- `OLLAMA_URL` (default: `http://ollama:11434/api/generate`)
-- `OLLAMA_MODEL`
-- `OLLAMA_FALLBACK_MODEL`
-- `V2_MODEL_VERIFY`
-- `V2_MODEL_REPORT`
-- `V2_MODEL_DEFAULT`
-- `AUTH_SECRET`
-- `AUTH_DEFAULT_ADMIN_USER`
-- `AUTH_DEFAULT_ADMIN_PASSWORD`
-- `AUTH_COOKIE_SECURE` (`1/true` in HTTPS deployments)
-- `ALLOW_INSECURE_DEFAULTS` (optional, local-only bypass; do **not** use in production)
-- `AUTH_ENABLE_TOTP` (`1/0`, default enabled)
-- `AUTH_TOTP_REQUIRED_ROLES` (default: `analyst,admin`)
-- `AUTH_ADMIN_REQUIRE_PASSKEY` (`1/0`, default enabled)
-- `AUTH_BREAK_GLASS_CODE` (optional one-time emergency code for admin password login)
-- `PASSKEY_RP_ID` (default `localhost`)
-- `PASSKEY_RP_NAME` (default `OSINT Nexus`)
-- `PASSKEY_ORIGINS` (comma-separated allowed origins)
-- `PASSKEY_CHALLENGE_TTL_SEC`
-- `CORS_ORIGINS` (comma-separated)
-
-Telegram/media tuning:
-
-- `DOWNLOAD_TELEGRAM_MEDIA`
-- `TELEGRAM_LOOKBACK_POSTS`
-- `TELEGRAM_MAX_NEW_PER_POLL`
-- `TELEGRAM_MAX_MEDIA_MB` (drops oversized downloaded media files)
-- `WHISPER_HOOK_URL` (optional external transcription hook)
-- `DEEPFAKE_HOOK_URL` (optional external authenticity hook)
-- `MEDIA_HOOK_TIMEOUT_SEC`
-- `MEDIA_JOB_STATE_TTL_SEC` (default `21600`; prunes completed media job state)
-- `MEDIA_JOB_STATE_MAX` (default `3000`; caps tracked media jobs in memory)
-- `FAILED_LOGIN_MAX_TRACKED` (default `20000`; caps brute-force lockout state keys)
-- `WHISPER_MODEL` (for local `media-hooks` service, default `small`)
-- `WHISPER_DEVICE` (`cuda` or `cpu`)
-- `WHISPER_COMPUTE_TYPE` (default `int8_float16`)
-
-Additional OSINT source layers (all optional, feature-flagged):
-
-- `ENABLE_ADSBLOL`, `ADSBLOL_API_URL`, `ADSBLOL_POLL_INTERVAL_SEC`
-- `ENABLE_AISSTREAM`, `AISSTREAM_WS_URL`, `AISSTREAM_API_KEY`, `AISSTREAM_BBOX`
-- `ENABLE_FIRMS`, `FIRMS_MAP_KEY`, `FIRMS_SOURCE`, `FIRMS_BBOX`, `FIRMS_DAYS`, `FIRMS_POLL_INTERVAL_SEC`
-
-Secret hygiene:
-
-- Do not store real keys in `docker-compose.yml` defaults.
-- Use local `.env` (gitignored) and start from `.env.example`.
-- Example bootstrap:
-  - `cp .env.example .env`
-  - fill `AISSTREAM_API_KEY`, `FIRMS_MAP_KEY`, and other secrets in `.env`
-
-Security startup checks:
-
-- Backend now validates auth security configuration at startup.
-- It will fail startup if:
-  - `AUTH_SECRET` is missing/weak/default
-  - `AUTH_DEFAULT_ADMIN_PASSWORD` fails policy
-  - `AUTH_COOKIE_SECURE` is disabled outside localhost-only dev mode
-- Local-only override exists via `ALLOW_INSECURE_DEFAULTS=1` for temporary development.
-
-Local hook services (Whisper + Deepfake baseline):
-
-- Compose includes a `media-hooks` service on `:8090`.
-- Backend defaults:
-  - `WHISPER_HOOK_URL=http://media-hooks:8090/hooks/whisper`
-  - `DEEPFAKE_HOOK_URL=http://media-hooks:8090/hooks/deepfake`
-- Whisper is real Faster-Whisper transcription.
-- Deepfake hook is a local baseline heuristic (not forensic-grade); use it as advisory signal only.
-
-TOTP endpoints:
-
-- `GET /api/auth/mfa/totp/status`
-- `POST /api/auth/mfa/totp/setup`
-- `POST /api/auth/mfa/totp/enable`
-- `POST /api/auth/mfa/totp/disable`
-
-Passkey endpoints:
-
-- `GET /api/auth/passkey/status`
-- `POST /api/auth/passkey/register/options`
-- `POST /api/auth/passkey/register/verify`
-- `POST /api/auth/passkey/login/options`
-- `POST /api/auth/passkey/login/verify`
-
-Graph endpoint:
-
-- `GET /api/v2/graph?limit=350` (returns `nodes`/`edges` relationship graph for recent events)
-
-## Local Run (Docker Compose)
-
-Build and start:
-
-```bash
-make up-p2
-make up-ai MODEL=deepseek-r1:8b
-make pull-model MODEL=phi4-mini
-make pull-model MODEL=qwen2.5:7b
+# Database (auto-configured in Docker)
+DATABASE_URL=postgresql://osint:osint@postgres:5432/osint
+NEO4J_URI=bolt://neo4j:7687
+REDIS_URL=redis://redis:6379
 ```
 
-Or direct compose:
+Full variable reference: see `.env.example`.
 
-```bash
-docker compose up -d --build postgres redis backend frontend ollama
+---
+
+## Pages
+
+| Route | What It Is |
+|-------|-----------|
+| `/v2` | Intel Feed — live events, Priority Action Panel, corroboration badges |
+| `/v2/alerts` | Confidence & ETA board — scored alerts with chain status |
+| `/v2/sitrep` | AI situation reports — causal chain, contradictions, watch items, prediction accuracy |
+| `/v2/briefs` | Operational intelligence briefs with MGRS coordinates and threat assessment |
+| `/v2/sources` | Source reliability desk — lag, quality scores, per-source OPS metrics |
+| `/v2/health` | System health — PostgreSQL, Redis, watchdog, queue stats |
+| `/v2/admin` | User management + dynamic conflict zone editor |
+| `/v2/graph` | Neo4j knowledge graph explorer — filter by relationship type and time range |
+| `/v2/card` | Operator credential card |
+| `/v2/ar/...` | Full Arabic RTL interface mirroring all v2 pages |
+
+---
+
+## Security
+
+- **WebAuthn / Passkey** — hardware key enrollment for admin accounts
+- **CSRF protection** on all state-changing endpoints
+- `httponly` + `SameSite=Strict` session cookies
+- **Role-based route protection** — 34 API endpoints gated
+- **Audit log** on all admin actions
+- SHA-256 event IDs
+- Startup validation — backend refuses to start with weak `AUTH_SECRET` or default admin password
+- TOTP (time-based OTP) support for analyst and admin roles
+
+---
+
+## Data Sources
+
+| Source | Type | Reliability Weight |
+|--------|------|--------------------|
+| BBC News · Reuters · AFP · Al Jazeera | RSS | 90–95 |
+| Jerusalem Post · Haaretz · Times of Israel | RSS | 75–85 |
+| AJ Mubasher · Roaa War Studies (TG) | Telegram | 55–70 |
+| ADSB.lol | Flight tracking (sensor) | 95 |
+| AISStream | Maritime AIS (sensor) | 95 |
+| Red Alert (Tzeva Adom) | Civil defense (official) | 95 |
+| NASA FIRMS | Active fire (sensor) | 90 |
+
+Source weights are dynamic — analyst ratings on Intel Trace feed back into per-source reliability scores automatically.
+
+---
+
+## Event Schema (ACLED-compatible)
+
+Every event in `events_v2` carries:
+
+| Field | Values | Purpose |
+|-------|--------|---------|
+| `time_precision` | 1–3 | 1=exact timestamp, 2=day, 3=estimated |
+| `geo_precision` | 1–3 | 1=exact coords, 2=city-level, 3=region |
+| `source_scale` | local / national / international / subnational | Source classification |
+| `civilian_targeting` | boolean | Hospital, school, market, aid worker keywords |
+| `acled_event_type` | Battles / Explosions / Strategic developments / ... | ACLED taxonomy |
+| `acled_sub_event_type` | Armed clash / Air strike / Shelling / ... | ACLED sub-taxonomy |
+
+Dataset is directly comparable to [ACLED's](https://acleddata.com) published conflict data.
+
+---
+
+## Key API Endpoints
+
+```
+# Events & Intelligence
+GET  /api/v2/events
+GET  /api/v2/alerts
+GET  /api/v2/sitrep/latest
+GET  /api/v2/sitrep/history?limit=10
+GET  /api/v2/sitrep/accuracy
+POST /api/v2/intel-trace/{event_id}
+GET  /api/v2/disinfo/scan
+GET  /api/v2/source-reliability
+POST /api/v2/events/{event_id}/review
+
+# System
+GET  /api/v2/system
+GET  /api/v2/health
+GET  /api/v2/graph?limit=350
+GET  /api/v2/metoc
+
+# Conflict Zones (admin)
+GET    /api/v2/conflict-zones
+POST   /api/v2/conflict-zones
+DELETE /api/v2/conflict-zones/{id}
+
+# Auth
+POST /api/auth/login
+POST /api/auth/register
+GET  /api/auth/session
+POST /api/auth/passkey/register/options
+POST /api/auth/passkey/register/verify
+
+# Admin
+GET    /api/admin/users
+PATCH  /api/admin/users/{username}/role
+DELETE /api/admin/users/{username}
+
+# WebSocket
+WS /ws/live
 ```
 
-Access:
+---
 
-- Frontend: `http://localhost:3000`
-- Backend: `http://localhost:8000`
+## Research Basis
 
-Persistence note:
+OSINT Nexus implements techniques documented in 20+ academic and practitioner sources:
 
-- Docker Compose mounts backend auth/local DB storage at `/data` (`backend_data` volume).
-- This keeps user accounts and local SQLite state across container restarts.
+- **ACLED** — event taxonomy, three-tier review methodology, geo/time precision standards
+- **NATO HFM-377** — Meaningful Human Control design for AI-assisted decisions
+- **DARPA EMHAT** — explainability requirements for machine-generated threat assessments
+- **Endsley (1995)** — Situation Awareness: perception → comprehension → projection
+- **Flashpoint Ukraine** — disinformation detection via simultaneous emergence signatures
+- **Recorded Future** — corroboration-first display, alert fatigue reduction
+- **Bellingcat** — open-source verification methodology for user-generated content
 
-Useful commands:
+Full literature review available on request.
 
-```bash
-make ps
-make logs
-make logs-backend
-make health
-make test-auth
-make down
-```
-
-## Kubernetes
-
-See [README_K8s.md](README_K8s.md) for Minikube deployment details.
-
-## Security and Usage Notes
-
-- This is an OSINT decision-support platform, not an authoritative command system.
-- Model output is advisory and can be wrong.
-- Validate critical claims through trusted official channels.
-- Do not commit secrets or private credentials.
+---
 
 ## Repository Layout
 
-```text
+```
 .
 ├── backend/
+│   ├── main.py              # FastAPI app, routes, WebSocket
+│   ├── pollers.py           # RSS, Telegram, ADSB, Red Alert, SITREP pollers
+│   ├── reasoning_engine.py  # SITREP generation, causal chain, contradiction detection
+│   ├── disinfo_detector.py  # Coordinated info-op signature detection
+│   ├── graph_store.py       # Neo4j temporal knowledge graph
+│   ├── v2_store.py          # PostgreSQL persistence + ACLED field mapping
+│   ├── db_ops.py            # Core DB operations
+│   ├── groq_client.py       # Groq + Ollama LLM client with fallback
+│   ├── prediction_tracker.py # Layer 4: scores SITREP predictions vs reality
+│   ├── market_poller.py     # Gold, WTI, Brent, DXY, S&P500 via Yahoo Finance
+│   └── telegram_digest.py   # Daily SITREP → Telegram (EN + AR)
 ├── frontend/
-├── k8s/
+│   └── app/v2/              # Next.js App Router pages
 ├── docker-compose.yml
 ├── Makefile
-├── README.md
 └── README_K8s.md
 ```
+
+---
+
+## Status
+
+Active development. Running live data.
+
+- **2,359+ events** in PostgreSQL
+- **760+ nodes** in Neo4j knowledge graph
+- **11 active source connectors**
+- Independent QA audit completed March 2026
+
+---
+
+## License
+
+MIT — see [LICENSE](LICENSE)
+
+---
+
+*Built by [Rachid Jaada](https://github.com/rjaada)*
