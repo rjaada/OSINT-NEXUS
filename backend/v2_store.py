@@ -21,7 +21,8 @@ def postgres_status(database_url: str, psycopg_mod) -> dict:
                         lat DOUBLE PRECISION,
                         lng DOUBLE PRECISION,
                         description TEXT,
-                        payload_json JSONB
+                        payload_json JSONB,
+                        notes TEXT
                     )
                     """
                 )
@@ -130,7 +131,8 @@ def persist_event_v2_pg(
                         lat DOUBLE PRECISION,
                         lng DOUBLE PRECISION,
                         description TEXT,
-                        payload_json JSONB
+                        payload_json JSONB,
+                        notes TEXT
                     )
                     """
                 )
@@ -138,8 +140,8 @@ def persist_event_v2_pg(
                     """
                     INSERT INTO events_v2 (id, type, source, timestamp, lat, lng, description, payload_json,
                         time_precision, geo_precision, source_scale, civilian_targeting,
-                        acled_event_type, acled_sub_event_type)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s)
+                        acled_event_type, acled_sub_event_type, notes)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (id) DO UPDATE SET
                         type = EXCLUDED.type,
                         source = EXCLUDED.source,
@@ -153,7 +155,8 @@ def persist_event_v2_pg(
                         source_scale = EXCLUDED.source_scale,
                         civilian_targeting = EXCLUDED.civilian_targeting,
                         acled_event_type = EXCLUDED.acled_event_type,
-                        acled_sub_event_type = EXCLUDED.acled_sub_event_type
+                        acled_sub_event_type = EXCLUDED.acled_sub_event_type,
+                        notes = EXCLUDED.notes
                     """,
                     (
                         str(event.get("id")),
@@ -170,6 +173,7 @@ def persist_event_v2_pg(
                         acled["civilian_targeting"],
                         acled["acled_event_type"],
                         acled["acled_sub_event_type"],
+                        event.get("notes", ""),
                     ),
                 )
     except Exception:
@@ -206,6 +210,7 @@ def _decode_pg_event(row: Any, now_iso: Callable[[], str]) -> dict:
         "video_assessment": payload.get("video_assessment"),
         "video_confidence": payload.get("video_confidence"),
         "video_clues": payload.get("video_clues", []),
+        "notes": row[8] or "",
     }
 
 
@@ -332,7 +337,7 @@ def fetch_recent_v2_events_pg(
         with psycopg_mod.connect(database_url, connect_timeout=3) as conn:
             with conn.cursor() as cur:
                 query = [
-                    "SELECT id, type, source, timestamp, lat, lng, description, payload_json",
+                    "SELECT id, type, source, timestamp, lat, lng, description, payload_json, notes",
                     "FROM events_v2",
                     "WHERE 1=1",
                 ]

@@ -21,6 +21,23 @@ logger = logging.getLogger("osint.reasoning")
 
 
 # ---------------------------------------------------------------------------
+# ICD 203 confidence mapping (US Intelligence Community standard)
+# ---------------------------------------------------------------------------
+
+_ICD203_MAP = {
+    "HIGH":     {"level": "HIGH",     "phrase": "Almost certainly"},
+    "MODERATE": {"level": "MODERATE", "phrase": "Very likely"},
+    "MEDIUM":   {"level": "MODERATE", "phrase": "Very likely"},
+    "LOW":      {"level": "LOW",      "phrase": "Likely"},
+    "VERY LOW": {"level": "VERY LOW", "phrase": "Unlikely"},
+}
+
+
+def _icd203(confidence: str) -> Dict[str, str]:
+    return _ICD203_MAP.get(str(confidence).upper().strip(), {"level": "LOW", "phrase": "Likely"})
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
@@ -180,6 +197,7 @@ def detect_contradictions(events: List[dict]) -> List[Dict[str, Any]]:
                     "event_b": {"id": ej.get("id"), "desc": ej.get("desc"), "source": ej.get("source"), "type": ej.get("type")},
                     "conflict_type": "type_mismatch",
                     "location": {"lat": (lat_i + lat_j) / 2, "lng": (lng_i + lng_j) / 2},
+                    "notes": f"{ei.get('source')} reports {ei.get('type')} vs {ej.get('source')} reports {ej.get('type')} at same location; conservative estimate used per ACLED methodology",
                 })
 
     return contradictions[:5]  # cap at 5
@@ -250,7 +268,7 @@ Produce a structured JSON SITREP with these exact keys:
     {"item": "...", "timeframe": "...", "why": "..."},
     {"item": "...", "timeframe": "...", "why": "..."}
   ],
-  "confidence": "HIGH|MEDIUM|LOW",
+  "confidence": "HIGH|MODERATE|LOW|VERY LOW",
   "confidence_reason": "One sentence explaining confidence level",
   "dominant_actors": ["actor1", "actor2"],
   "key_locations": ["location1", "location2"]
@@ -334,7 +352,12 @@ def _call_groq_sitrep(
         return None
 
     try:
-        return _extract_json(raw)
+        result = _extract_json(raw)
+        if isinstance(result, dict):
+            icd = _icd203(str(result.get("confidence", "LOW")))
+            result["icd203_level"] = icd["level"]
+            result["icd203_phrase"] = icd["phrase"]
+        return result
     except Exception:
         logger.warning("[SITREP] JSON parse failed, raw[:200]: %s", raw[:200])
         return {"headline": "SITREP parse error", "raw": raw[:500]}
