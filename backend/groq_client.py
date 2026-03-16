@@ -108,7 +108,7 @@ Produce a concise structured analysis in JSON with these exact keys:
   "involved_actors": ["actor names"],
   "weapon_types": ["weapon/system names"],
   "key_locations": ["location names"],
-  "confidence": "HIGH|MEDIUM|LOW",
+  "confidence": "HIGH|MODERATE|LOW|VERY LOW",
   "confidence_reason": "one sentence explaining confidence level",
   "contradictions": ["any contradictory reporting if present, else empty array"],
   "sources_used": ["source names from context"]
@@ -173,6 +173,13 @@ def trace_event(
         return None
 
     # Robust extraction: strip <think> blocks, markdown fences, find outermost {}
+    _ICD203_TRACE = {
+        "HIGH": ("HIGH", "Almost certainly"),
+        "MODERATE": ("MODERATE", "Very likely"),
+        "MEDIUM": ("MODERATE", "Very likely"),
+        "LOW": ("LOW", "Likely"),
+        "VERY LOW": ("VERY LOW", "Unlikely"),
+    }
     try:
         text = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
         if "```" in text:
@@ -181,6 +188,12 @@ def trace_event(
         end = text.rfind("}")
         if start != -1 and end != -1 and end > start:
             text = text[start:end + 1]
-        return json.loads(text)
+        result = json.loads(text)
+        if isinstance(result, dict):
+            conf_key = str(result.get("confidence", "LOW")).upper().strip()
+            icd_level, icd_phrase = _ICD203_TRACE.get(conf_key, ("LOW", "Likely"))
+            result["icd203_level"] = icd_level
+            result["icd203_phrase"] = icd_phrase
+        return result
     except Exception:
         return None

@@ -81,6 +81,34 @@ function isOperationalEventSource(src?: string): boolean {
   return isTelegramSource(src) || isFirmsSource(src) || isRssSource(src)
 }
 
+function sourceTier(src?: string): { label: string; color: string; borderColor: string; bg: string } {
+  const s = (src || "").trim()
+  if (isTelegramSource(s)) return { label: "TG", color: "#ffa630", borderColor: "#ffa63040", bg: "#ffa63010" }
+  if (isFirmsSource(s)) return { label: "SENSOR", color: "#4fc3f7", borderColor: "#4fc3f740", bg: "#4fc3f710" }
+  const WIRE_SOURCES = new Set(["BBC News", "Reuters", "AFP", "Al Jazeera", "DW News", "France 24", "AP", "Sky News", "NPR", "The Guardian", "CNN", "France24"])
+  const NATL_SOURCES = new Set(["Jerusalem Post", "Haaretz", "Times of Israel", "Axios", "Politico", "Washington Post", "CBS News"])
+  if (WIRE_SOURCES.has(s)) return { label: "WIRE", color: "#00ff88", borderColor: "#00ff8840", bg: "#00ff8810" }
+  if (NATL_SOURCES.has(s)) return { label: "NATL", color: "#4fc3f7", borderColor: "#4fc3f740", bg: "#4fc3f710" }
+  return { label: "SRC", color: "#9ca3af", borderColor: "#9ca3af30", bg: "transparent" }
+}
+
+function icd203Label(conf: string | undefined, score?: number): { level: string; phrase: string } {
+  if (typeof score === "number") {
+    if (score >= 90) return { level: "HIGH", phrase: "Almost certainly" }
+    if (score >= 70) return { level: "MODERATE", phrase: "Very likely" }
+    if (score >= 50) return { level: "LOW", phrase: "Likely" }
+    return { level: "VERY LOW", phrase: "Unlikely" }
+  }
+  const map: Record<string, { level: string; phrase: string }> = {
+    HIGH: { level: "HIGH", phrase: "Almost certainly" },
+    MODERATE: { level: "MODERATE", phrase: "Very likely" },
+    MEDIUM: { level: "MODERATE", phrase: "Very likely" },
+    LOW: { level: "LOW", phrase: "Likely" },
+    "VERY LOW": { level: "VERY LOW", phrase: "Unlikely" },
+  }
+  return map[String(conf || "").toUpperCase()] ?? { level: "LOW", phrase: "Likely" }
+}
+
 function playAlertBeep(type: "CRITICAL" | "STRIKE") {
   try {
     const ctx = new (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)()
@@ -479,7 +507,7 @@ export function Dashboard() {
                         <span className="mt-0.5 text-[9px] font-bold text-muted-foreground w-3 shrink-0">#{rank + 1}</span>
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-1.5 mb-1 flex-wrap">
-                            <span className="px-1 py-px rounded border text-[8px] font-bold tracking-wide" style={{ color: evt.type === "STRIKE" || evt.type === "ALERT" || evt.type === "CRITICAL" ? "#ff4444" : evt.type === "CLASH" || evt.type === "ACTIVITY" ? "#ffa630" : "#4fc3f7", borderColor: evt.type === "STRIKE" || evt.type === "ALERT" || evt.type === "CRITICAL" ? "#ff444440" : evt.type === "CLASH" || evt.type === "ACTIVITY" ? "#ffa63040" : "#4fc3f740", background: evt.type === "STRIKE" || evt.type === "ALERT" || evt.type === "CRITICAL" ? "#ff444410" : evt.type === "CLASH" || evt.type === "ACTIVITY" ? "#ffa63010" : "#4fc3f710" }}>{evt.type}</span>
+                            <span className="px-1 py-px rounded border text-[8px] font-bold tracking-wide" style={{ color: (evt.type as string) === "STRIKE" || (evt.type as string) === "ALERT" || (evt.type as string) === "CRITICAL" ? "#ff4444" : (evt.type as string) === "CLASH" || (evt.type as string) === "ACTIVITY" ? "#ffa630" : "#4fc3f7", borderColor: (evt.type as string) === "STRIKE" || (evt.type as string) === "ALERT" || (evt.type as string) === "CRITICAL" ? "#ff444440" : (evt.type as string) === "CLASH" || (evt.type as string) === "ACTIVITY" ? "#ffa63040" : "#4fc3f740", background: (evt.type as string) === "STRIKE" || (evt.type as string) === "ALERT" || (evt.type as string) === "CRITICAL" ? "#ff444410" : (evt.type as string) === "CLASH" || (evt.type as string) === "ACTIVITY" ? "#ffa63010" : "#4fc3f710" }}>{evt.type}</span>
                             <span className={`px-1 py-px rounded border text-[8px] font-bold ${costColor}`}>{cost}</span>
                             {uncertain && <span className="px-1 py-px rounded border border-yellow-500/40 bg-yellow-500/10 text-yellow-400 text-[8px]">UNCERTAIN</span>}
                             {(evt.corroborating_sources?.length ?? 0) > 0 && (
@@ -606,12 +634,13 @@ export function Dashboard() {
                     <span className="text-[9px] px-1.5 py-px rounded border border-white/15 text-muted-foreground uppercase tracking-wider">{evt.type}</span>
                     {evt.confidence && (
                       <span className="text-[9px] px-1.5 py-px rounded" style={{ color: confColor, border: `1px solid ${confColor}40`, background: `${confColor}10` }}>
-                        {evt.confidence}{typeof evt.confidence_score === "number" ? ` ${evt.confidence_score}` : ""}
+                        {icd203Label(evt.confidence, evt.confidence_score).level}{typeof evt.confidence_score === "number" ? ` ${evt.confidence_score}` : ""}
                       </span>
                     )}
                     {(evt.corroborating_sources?.length ?? 0) > 0 && (
                       <span className="px-1 py-px rounded border border-osint-green/40 bg-osint-green/10 text-osint-green text-[8px]">{evt.corroborating_sources!.length + 1} src</span>
                     )}
+                    {(() => { const t = sourceTier(evt.source); return <span className="text-[8px] px-1 py-px rounded border" style={{ color: t.color, borderColor: t.borderColor, background: t.bg }}>{t.label}</span> })()}
                     <span className="ml-auto text-[9px] text-muted-foreground truncate max-w-[80px]">{evt.source}</span>
                   </div>
                   <p className="text-[11px] text-[#d4dbe8] leading-snug line-clamp-2">{evt.desc}</p>
@@ -649,7 +678,15 @@ export function Dashboard() {
             )}
 
             {traceError && (
-              <p className="text-osint-red text-[11px]">{traceError}</p>
+              <div className="space-y-2">
+                <p className="text-osint-red text-[11px]">{traceError}</p>
+                <button
+                  onClick={() => traceEventId && void runTrace(traceEventId)}
+                  className="text-[10px] px-3 py-1 rounded border border-osint-purple/40 text-osint-purple hover:bg-osint-purple/10 transition-colors"
+                >
+                  Retry Trace
+                </button>
+              </div>
             )}
 
             {traceData && (() => {
@@ -663,11 +700,20 @@ export function Dashboard() {
                   <div className="flex gap-2 text-[9px]">
                     <span className={`px-1.5 py-px rounded border ${neo4jOk ? "border-osint-green/40 text-osint-green" : "border-white/15 text-muted-foreground"}`}>Neo4j {neo4jOk ? "●" : "○"}</span>
                     <span className={`px-1.5 py-px rounded border ${groqOk ? "border-osint-purple/40 text-osint-purple" : "border-white/15 text-muted-foreground"}`}>Groq {groqOk ? "●" : "○"}</span>
-                    {(() => { const conf = String(trace.confidence || ""); return conf ? (
-                      <span className={`px-1.5 py-px rounded border ${conf === "HIGH" ? "border-osint-green/40 text-osint-green" : conf === "MEDIUM" ? "border-osint-amber/40 text-osint-amber" : "border-osint-red/40 text-osint-red"}`}>
-                        {conf}
+                    {(() => {
+                    const rawConf = String(trace.confidence || "")
+                    const icd = icd203Label(rawConf)
+                    const icdPhrase = String(trace.icd203_phrase || icd.phrase)
+                    const color = icd.level === "HIGH" ? "border-osint-green/40 text-osint-green"
+                      : icd.level === "MODERATE" ? "border-osint-amber/40 text-osint-amber"
+                      : icd.level === "VERY LOW" ? "border-osint-red/40 text-osint-red/70"
+                      : "border-osint-red/40 text-osint-red"
+                    return rawConf ? (
+                      <span className={`px-1.5 py-px rounded border ${color}`} title={`ICD 203: ${icdPhrase}`}>
+                        {icd.level} <span className="opacity-60 text-[8px]">— {icdPhrase}</span>
                       </span>
-                    ) : null })()}
+                    ) : null
+                  })()}
                   </div>
 
                   {trace.summary && (
@@ -746,7 +792,7 @@ export function Dashboard() {
                             onClick={e => { const span = e.currentTarget.querySelector("span.body") as HTMLElement; if (span) span.style.webkitLineClamp = span.style.webkitLineClamp === "unset" ? "2" : "unset" }}>
                             <div className="flex items-center gap-1 mb-0.5">
                               <span className="text-[9px] text-osint-blue">{String(re.rel_type || "")}</span>
-                              {re.source && <span className="text-[8px] text-muted-foreground/60 ml-auto">[{String(re.source)}]</span>}
+                              {re.source != null && <span className="text-[8px] text-muted-foreground/60 ml-auto">[{String(re.source)}]</span>}
                             </div>
                             <span className="body text-[10px] text-muted-foreground" style={{ display: "-webkit-box", WebkitBoxOrient: "vertical", overflow: "hidden", WebkitLineClamp: "2" }}>{String(re.description || re.type || re.id || "")}</span>
                           </div>
