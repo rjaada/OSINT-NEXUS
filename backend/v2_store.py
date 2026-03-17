@@ -356,3 +356,42 @@ def fetch_recent_v2_events_pg(
                 return [_decode_pg_event(r, now_iso=now_iso) for r in rows]
     except Exception:
         return []
+
+
+def get_bayesian_source_weights(
+    database_url: str,
+    psycopg_mod,
+    base_weights: dict,
+    prior_weight: int = 5,
+) -> dict:
+    """
+    Bayesian update of source reliability weights from analyst reviews.
+
+    Combines static SOURCE_RELIABILITY config (prior) with live analyst ratings
+    (1-5 stars from source_reviews table). Sources with no reviews keep their prior.
+
+    Formula: posterior = (prior_weight * prior + n * rating_scaled) / (prior_weight + n)
+    where rating_scaled maps 1-5 stars → 0-100.
+    """
+    if not database_url.startswith("postgres") or psycopg_mod is None:
+        return dict(base_weights)
+    try:
+        with psycopg_mod.connect(database_url, connect_timeout=3) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT source, AVG(rating) AS avg_rating, COUNT(*) AS n "
+                    "FROM source_reviews GROUP BY source"
+                )
+                rows = cur.fetchall()
+        updated = dict(base_weights)
+        for row in rows:
+            source, avg_rating, n = row[0], float(row[1] or 0), int(row[2] or 0)
+            if not source or n == 0:
+                continue
+            prior = float(base_weights.get(source, 50))
+            rating_scaled = (avg_rating - 1) / 4 * 100  # 1-5 stars → 0-100
+            posterior = (prior_weight * prior + n * rating_scaled) / (prior_weight + n)
+            updated[source] = round(min(100, max(0, posterior)), 1)
+        return updated
+    except Exception:
+        return dict(base_weights)

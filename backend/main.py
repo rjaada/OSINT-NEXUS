@@ -1586,8 +1586,27 @@ async def ingest_event(event: dict):
     )
 
 
+_bayesian_weights_cache: dict = {}
+_bayesian_weights_refreshed_at: float = 0.0
+_BAYESIAN_CACHE_TTL_SEC = 300  # refresh every 5 min
+
+
+def _get_source_weights() -> dict:
+    """Return Bayesian-updated source reliability weights, cached for 5 min."""
+    global _bayesian_weights_cache, _bayesian_weights_refreshed_at
+    now = time.time()
+    if not _bayesian_weights_cache or (now - _bayesian_weights_refreshed_at) > _BAYESIAN_CACHE_TTL_SEC:
+        _bayesian_weights_cache = v2_store.get_bayesian_source_weights(
+            database_url=DATABASE_URL,
+            psycopg_mod=psycopg,
+            base_weights=SOURCE_RELIABILITY,
+        )
+        _bayesian_weights_refreshed_at = now
+    return _bayesian_weights_cache
+
+
 def assess_confidence(event: dict, nearby: list, age_min: float) -> Tuple[int, str, List[str]]:
-    return iutils.assess_confidence(event, nearby, age_min, SOURCE_RELIABILITY)
+    return iutils.assess_confidence(event, nearby, age_min, _get_source_weights())
 
 
 def eta_band(event: dict) -> str:
