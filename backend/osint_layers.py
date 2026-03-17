@@ -74,9 +74,10 @@ async def poll_adsblol(
                             "military": _is_military(callsign, military_prefixes),
                         }
                     )
+                # Mark healthy on every successful 200 response, not just when aircraft present
+                metrics["last_success"]["adsblol"] = now_iso()
                 if parsed:
                     last_aircraft[:] = parsed[:150]
-                    metrics["last_success"]["adsblol"] = now_iso()
                     await broadcast({"type": "AIRCRAFT_UPDATE", "data": last_aircraft, "ts": asyncio.get_event_loop().time()})
             except Exception as e:
                 metrics["adsblol_errors"] = int(metrics.get("adsblol_errors", 0)) + 1
@@ -124,12 +125,15 @@ async def poll_aisstream(
                     sub["APIKey"] = api_key
                 await ws.send(json.dumps(sub))
                 print(f"[AIS] Connected and subscribed to {ws_url} with bbox={bounds}")
+                # Mark healthy on successful connection
+                metrics["last_success"]["ais"] = now_iso()
                 while True:
                     metrics["ais_polls"] = int(metrics.get("ais_polls", 0)) + 1
                     try:
                         raw = await asyncio.wait_for(ws.recv(), timeout=60)
                     except asyncio.TimeoutError:
-                        # No message in window — connection is alive, keep waiting.
+                        # No message in window — connection alive, still healthy
+                        metrics["last_success"]["ais"] = now_iso()
                         continue
                     payload = json.loads(raw)
                     if isinstance(payload, dict) and payload.get("error"):
@@ -194,6 +198,8 @@ async def poll_firms(
                     print(f"[FIRMS] Empty/non-200 response status={r.status_code}")
                     await asyncio.sleep(max(60, interval_sec))
                     continue
+                # Mark healthy on every successful 200 response
+                metrics["last_success"]["firms"] = now_iso()
                 reader = csv.DictReader(io.StringIO(r.text))
                 for row in reader:
                     try:
@@ -223,7 +229,6 @@ async def poll_firms(
                         await ingest_event(event)
                     except Exception:
                         continue
-                metrics["last_success"]["firms"] = now_iso()
                 if len(_seen_firms_ids) > 50000:
                     _seen_firms_ids.clear()
             except Exception as e:
