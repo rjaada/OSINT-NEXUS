@@ -33,6 +33,22 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  landing:
+    build:
+      context: ./landing
+      dockerfile: Dockerfile
+    ports:
+      - "4000:4000"
+    environment:
+      - NODE_ENV=production
+      - PORT=4000
+      - BACKEND_URL=http://backend:8000
+    depends_on:
+      backend:
+        condition: service_healthy
+    mem_limit: 256m
+    restart: unless-stopped
+
   frontend:
     build:
       context: ./frontend
