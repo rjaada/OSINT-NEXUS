@@ -48,18 +48,46 @@ def _parse_ts(ts_str: str) -> datetime:
         return datetime.now(timezone.utc)
 
 
-# Sensor sources with fast poll rates — bucket to 5-min windows to avoid
-# false corroboration inflation (20 OREF pings in 1 min ≠ 20 separate events)
-_SENSOR_SOURCES = {"NASA FIRMS", "ADSB.lol", "AISStream", "FR24-MIL", "Red Alert"}
-_SENSOR_BUCKET_SEC = 300  # 5-minute bucket for sensor timestamp normalization
+# JDL Level 1 temporal fusion — per-pair tolerance windows (Castanedo 2013, cited 1,419×).
+# A universal bucket constant is architecturally wrong: each source pair has a different
+# clock resolution and polling latency. Bucketing also introduces artificial synchrony.
+
+_SOURCE_TYPE_LABELS: Dict[str, str] = {
+    "Red Alert": "oref",
+    "NASA FIRMS": "firms",
+    "ADSB.lol": "adsb",
+    "AISStream": "ais",
+    "FR24-MIL": "adsb",
+}
 
 
-def _bucket_ts(ts: datetime, source: str) -> datetime:
-    """Round sensor event timestamps to nearest 5-min bucket."""
-    if source in _SENSOR_SOURCES:
-        bucket = (ts.timestamp() // _SENSOR_BUCKET_SEC) * _SENSOR_BUCKET_SEC
-        return datetime.fromtimestamp(bucket, tz=timezone.utc)
-    return ts
+def _source_type(source: str) -> str:
+    label = _SOURCE_TYPE_LABELS.get(source)
+    if label:
+        return label
+    if "(TG)" in source or "telegram" in source.lower():
+        return "telegram"
+    return "rss"
+
+
+# Per-pair tolerance in seconds (symmetric). frozenset key = {type_a, type_b}.
+_PAIR_TOLERANCE_SEC: Dict[frozenset, int] = {
+    frozenset({"oref", "firms"}): 180,    # OREF 3s poll vs FIRMS 3-min scan
+    frozenset({"oref", "adsb"}): 60,      # OREF vs ADS-B: both near-realtime
+    frozenset({"telegram", "rss"}): 300,  # Telegram vs RSS: publication lag
+    frozenset({"telegram", "firms"}): 180,
+    frozenset({"ais", "adsb"}): 120,      # Maritime vs air: similar poll rates
+}
+_DEFAULT_PAIR_TOLERANCE_SEC = 300  # fallback for unlisted pairs
+
+
+def _pair_tolerance(src_i: str, src_j: str) -> int:
+    """Return per-pair temporal tolerance in seconds (Castanedo 2013)."""
+    ti = _source_type(src_i)
+    tj = _source_type(src_j)
+    if ti == tj:
+        return 0  # same source type: no tolerance needed
+    return _PAIR_TOLERANCE_SEC.get(frozenset({ti, tj}), _DEFAULT_PAIR_TOLERANCE_SEC)
 
 
 def _haversine_deg(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
@@ -131,11 +159,13 @@ def correlate_events(
             ej = sorted_evts[j]
             tj = _parse_ts(str(ej.get("timestamp", "")))
 
-            # Time window check — use bucketed timestamps for sensor sources
-            ti_eff = _bucket_ts(ti, str(ei.get("source", "")))
-            tj_eff = _bucket_ts(tj, str(ej.get("source", "")))
-            if abs((tj_eff - ti_eff).total_seconds()) > window_hours * 3600:
-                break  # events are sorted, no need to look further
+            # Per-pair temporal tolerance (Castanedo 2013 JDL Level 1)
+            src_i_name = str(ei.get("source", ""))
+            src_j_name = str(ej.get("source", ""))
+            tolerance = _pair_tolerance(src_i_name, src_j_name)
+            dt_sec = abs((tj - ti).total_seconds())
+            if dt_sec > window_hours * 3600 + tolerance:
+                break  # events are sorted; all further events are even further away
 
             lat_j = float(ej.get("lat") or 0.0)
             lng_j = float(ej.get("lng") or 0.0)

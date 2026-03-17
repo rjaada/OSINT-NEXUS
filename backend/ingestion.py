@@ -576,6 +576,13 @@ async def ingest_event(event: dict):
 
     persist_event(event)
     persist_event_v2_pg(event)
+    try:
+        import baseline_monitor
+        baseline_monitor.record_event_baseline(
+            _extract_source(event), _m.DATABASE_URL, _m.psycopg
+        )
+    except Exception:
+        pass
     asyncio.create_task(_sync_event_to_graph_async(event))
     if event.get("video_url"):
         event_id = str(event.get("id", ""))
