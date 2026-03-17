@@ -50,8 +50,9 @@ export default function V2HealthPage() {
   ].map((layer) => {
     const lastSuccess = String(((data?.metrics as Record<string, any>)?.last_success || {})[layer.key] || "")
     const errors = Number((data?.metrics as Record<string, any>)?.[`${layer.key}_errors`] || 0)
+    const disabled = !lastSuccess && errors === 0
     const healthy = Boolean(lastSuccess) && errors < 25
-    return { ...layer, lastSuccess, errors, healthy }
+    return { ...layer, lastSuccess, errors, healthy, disabled }
   })
 
   return (
@@ -107,11 +108,12 @@ export default function V2HealthPage() {
             {layerStatus.map((layer) => (
               <article key={layer.key} className="rounded-lg border border-white/10 bg-black/30 p-3">
                 <p className="text-[10px] uppercase tracking-[0.14em] text-osint-blue mb-2">{layer.label}</p>
-                <p className={layer.healthy ? "text-osint-green text-sm" : "text-osint-amber text-sm"}>
-                  {layer.healthy ? "healthy" : "degraded"}
+                <p className={layer.disabled ? "text-muted-foreground text-sm" : layer.healthy ? "text-osint-green text-sm" : "text-osint-amber text-sm"}>
+                  {layer.disabled ? "not configured" : layer.healthy ? "healthy" : "degraded"}
                 </p>
-                <p className="text-[11px] text-muted-foreground mt-1">last success: {layer.lastSuccess || "never"}</p>
-                <p className="text-[11px] text-muted-foreground">errors: {layer.errors}</p>
+                {!layer.disabled && <p className="text-[11px] text-muted-foreground mt-1">last success: {layer.lastSuccess || "never"}</p>}
+                {!layer.disabled && <p className="text-[11px] text-muted-foreground">errors: {layer.errors}</p>}
+                {layer.disabled && <p className="text-[11px] text-muted-foreground mt-1">set ENABLE_{layer.key.toUpperCase()}=1 to activate</p>}
               </article>
             ))}
           </section>
