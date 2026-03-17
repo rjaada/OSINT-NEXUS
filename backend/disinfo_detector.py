@@ -29,8 +29,12 @@ MIN_SOURCES = 3
 # Time window in minutes — events within this window are "simultaneous"
 WINDOW_MINUTES = 45
 
-# Minimum shared tokens for two events to be "same claim"
-MIN_TOKEN_OVERLAP = 3
+# Cosine similarity threshold for same-claim detection.
+# Research (Stanford IO, EU DisinfoLab) uses >0.85 for full documents.
+# Conflict event descriptions are short (10-40 tokens), so binary cosine
+# produces lower values — 0.40 is roughly equivalent to 3-token overlap
+# on a 6-token set but normalizes for event length.
+COSINE_THRESHOLD = 0.40
 
 # Source channel types — used to check cross-channel diversity
 _CHANNEL_TYPES = {
@@ -73,12 +77,20 @@ def _event_tokens(event: dict) -> set:
     return tokens
 
 
+def _cosine_sim(toks_a: set, toks_b: set) -> float:
+    """Binary cosine similarity between two token sets (no sklearn dependency)."""
+    if not toks_a or not toks_b:
+        return 0.0
+    intersection = len(toks_a & toks_b)
+    return intersection / math.sqrt(len(toks_a) * len(toks_b))
+
+
 def _events_are_same_claim(ei: dict, ej: dict) -> bool:
-    """True if two events are plausibly the same claim."""
+    """True if two events are plausibly the same claim (cosine similarity >= threshold).
+    Normalizes for event length — short events aren't penalized vs long ones."""
     toks_i = _event_tokens(ei)
     toks_j = _event_tokens(ej)
-    overlap = len(toks_i & toks_j)
-    return overlap >= MIN_TOKEN_OVERLAP
+    return _cosine_sim(toks_i, toks_j) >= COSINE_THRESHOLD
 
 
 def detect_coordinated_clusters(

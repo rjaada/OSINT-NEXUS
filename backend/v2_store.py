@@ -51,7 +51,50 @@ _ACLED_TYPE_MAP = {
 _INTL_SOURCES = {"BBC News", "Reuters", "AFP", "AP", "France24", "Al Jazeera", "DW News", "CNN", "Guardian", "NYT"}
 _NATIONAL_SOURCES = {"Jerusalem Post", "Haaretz", "Times of Israel", "Axios", "Politico", "Washington Post"}
 
-_CIVILIAN_KEYWORDS = {"civilian", "hospital", "school", "market", "residential", "kindergarten", "mosque", "church", "aid worker"}
+# ACLED civilian targeting: Actor 2 structural rule (ACLED General User Guide §4.3).
+# civilian_targeting=True ONLY when Actor 2 is explicitly a civilian actor type.
+# Keyword matching on description violates ACLED methodology — a clash "near a hospital"
+# is NOT civilian targeting unless the hospital population is Actor 2.
+# NASA FIRMS fire events → collateral notes field, never civilian_targeting flag.
+_ACTOR2_CIVILIAN_TERMS = {
+    "civilian", "civilians", "protester", "protesters", "demonstrator", "demonstrators",
+    "aid worker", "aid workers", "journalist", "journalists", "medical", "medic", "medics",
+    "un worker", "ngo", "refugee", "displaced", "humanitarian", "population",
+}
+
+# Vague fatality estimate lookup (ACLED sourced minimum rule + UNOCHA standard).
+# Always use the minimum of the range, never the midpoint.
+VAGUE_ESTIMATE_LOOKUP = {
+    "a few": 2, "few": 2,
+    "several": 3,
+    "dozen": 12, "dozens": 12,
+    "score": 20, "scores": 20,
+    "hundred": 100, "hundreds": 100,
+    "thousand": 1000, "thousands": 1000,
+}
+
+
+def _is_civilian_targeted(event: dict, source: str) -> bool:
+    """ACLED Actor 2 structural rule: True only when target is explicitly a civilian actor."""
+    # FIRMS fire events are environmental/collateral — never civilian targeting
+    if source == "NASA FIRMS" or event.get("type") == "FIRE":
+        return False
+    # Check model_inference for Actor 2 civilian terms (structured field, not free text)
+    for inf in event.get("model_inference") or []:
+        if any(term in str(inf).lower() for term in _ACTOR2_CIVILIAN_TERMS):
+            return True
+    # Fall back: check observed_facts
+    for fact in event.get("observed_facts") or []:
+        if any(term in str(fact).lower() for term in _ACTOR2_CIVILIAN_TERMS):
+            return True
+    return False
+
+
+def _firms_collateral_note(event: dict, source: str) -> str:
+    """Return a notes annotation for FIRMS fire events (collateral, not civilian targeting)."""
+    if source == "NASA FIRMS" or event.get("type") == "FIRE":
+        return "NASA FIRMS fire detection: collateral fire event per ACLED methodology — not coded as civilian targeting"
+    return ""
 
 
 def _compute_acled_fields(event: dict, source: str) -> dict:
@@ -68,9 +111,8 @@ def _compute_acled_fields(event: dict, source: str) -> dict:
     else:
         source_scale = "local"
 
-    # Civilian targeting
-    desc_lower = str(event.get("desc") or "").lower()
-    civilian_targeting = any(kw in desc_lower for kw in _CIVILIAN_KEYWORDS)
+    # Civilian targeting — Actor 2 structural rule, not keyword matching
+    civilian_targeting = _is_civilian_targeted(event, source)
 
     # Time precision: 1=exact (has seconds), 2=day, 3=estimated
     ts = str(event.get("timestamp") or "")
