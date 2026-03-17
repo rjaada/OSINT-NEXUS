@@ -2,6 +2,16 @@
     email {$ACME_EMAIL}
 }
 
+landing.{$DOMAIN} {
+    reverse_proxy landing:4000
+
+    handle /api/* {
+        reverse_proxy backend:8000
+    }
+
+    encode gzip
+}
+
 {$DOMAIN} {
     # Frontend
     reverse_proxy frontend:3000

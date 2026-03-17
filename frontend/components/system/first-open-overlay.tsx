@@ -431,7 +431,7 @@ export function FirstOpenOverlay() {
   const [bootData, setBootData] = useState<BootData | null>(null)
 
   useEffect(() => {
-    if ((pathname || "").startsWith("/v2/briefs/print")) {
+    if ((pathname || "").startsWith("/v2/briefs/print") || (pathname || "").startsWith("/landing")) {
       setVisible(false)
       return
     }
