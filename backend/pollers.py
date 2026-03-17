@@ -270,11 +270,17 @@ async def poll_red_alert():
                 if resp.status_code != 200:
                     _m.metrics["red_alert_errors"] += 1
                     if resp.status_code == 403:
+                        # Geo-blocking: server reachable, IP not Israeli.
+                        # Mark as healthy poll so watchdog doesn't false-alarm.
+                        _m.metrics["last_success"]["red_alert"] = _m.utc_now_iso()
                         _now = asyncio.get_event_loop().time()
                         if _now - _red_alert_403_last_logged > 600:
                             logger.warning("[RED ALERT] 403 Forbidden — OREF geo-blocking this IP (logged once per 10m)")
                             _red_alert_403_last_logged = _now
                     continue
+                # Healthy poll — mark success regardless of whether an alert is active.
+                # Empty/null response = no active sirens = still working correctly.
+                _m.metrics["last_success"]["red_alert"] = _m.utc_now_iso()
                 if not resp.text.strip():
                     continue
                 try:
@@ -308,7 +314,6 @@ async def poll_red_alert():
                         "model_inference": [],
                     }
                     await _m.ingest_event(event)
-                _m.metrics["last_success"]["red_alert"] = _m.utc_now_iso()
             except Exception as e:
                 _m.metrics["red_alert_errors"] += 1
                 logger.warning(f"[RED ALERT] Error: {e}")
