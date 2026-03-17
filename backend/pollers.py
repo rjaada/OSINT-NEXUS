@@ -151,6 +151,7 @@ async def poll_telegram():
                     resp = await client.get(url)
                     if resp.status_code != 200:
                         continue
+                    _m.metrics["last_success"]["telegram"] = _m.utc_now_iso()
                     posts = _m.parse_telegram_posts(resp.text, cfg["slug"])
                     if not posts:
                         continue
