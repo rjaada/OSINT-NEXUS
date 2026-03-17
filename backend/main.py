@@ -149,6 +149,20 @@ from pollers import (  # noqa: E402
     _red_alert_403_last_logged,
 )
 
+# ── Ingestion helpers (extracted to ingestion.py) ─────────────────────────────
+from ingestion import (  # noqa: E402
+    utc_now_iso, mgrs_from_latlng, _parse_iso, _haversine_km,
+    normalize_desc, article_id, classify_event, extract_place_candidates,
+    geocode_place, _decode_ollama_json_response, call_ollama_json,
+    geolocate_with_ai, geolocate_event, parse_telegram_posts,
+    download_telegram_video, download_video_direct, infer_video_metadata,
+    is_playable_video_url, is_relevant, build_incident_id,
+    should_merge_with_existing, push_event_buffer, ingest_event,
+    assess_confidence, eta_band, geolocate_alert,
+    _extract_source, _is_telegram_source, _graph_source_id,
+    _sync_event_to_graph_async, persist_event_v2_pg,
+)
+
 app = FastAPI(title="OSINT Nexus Engine v3")
 
 try:
@@ -323,8 +337,7 @@ _defcon_state: Dict[str, Any] = {
 geocode_cache: Dict[str, Tuple[float, float]] = {}
 
 
-def utc_now_iso() -> str:
-    return authsec.utc_now_iso()
+# utc_now_iso — moved to ingestion.py
 
 
 def hash_password(password: str, salt: Optional[bytes] = None, iterations: int = 240_000) -> str:
@@ -335,14 +348,7 @@ def verify_password(password: str, encoded: str) -> bool:
     return authsec.verify_password(password, encoded)
 
 
-def mgrs_from_latlng(lat: float, lng: float) -> Optional[str]:
-    if mgrs is None:
-        return None
-    try:
-        converter = mgrs.MGRS()
-        return str(converter.toMGRS(lat, lng))
-    except Exception:
-        return None
+# mgrs_from_latlng — moved to ingestion.py
 
 
 def parse_overlay_file(path: Path) -> Optional[dict]:
@@ -484,50 +490,7 @@ def resolve_write_identity(
     raise HTTPException(status_code=401, detail="Authentication required")
 
 
-def _graph_source_id(source: str) -> str:
-    normalized = re.sub(r"[^a-z0-9]+", "_", source.lower()).strip("_")
-    if not normalized:
-        normalized = "unknown"
-    return f"source:{normalized}"
-
-
-async def _sync_event_to_graph_async(event: dict) -> None:
-    if _graph_store is None or not _graph_store.status().get("connected"):
-        return
-    try:
-        payload = dict(event)
-        payload["source_name"] = _extract_source(event)
-        payload["source"] = payload["source_name"]
-        await asyncio.to_thread(_graph_store.upsert_event_node, payload)
-
-        # Entity extraction via Groq — Telegram + high-trust RSS sources (trust >= 0.80)
-        # High-trust RSS: BBC News, DW News, France 24, NPR
-        _HIGH_TRUST_RSS = {"BBC News", "DW News", "France 24", "NPR"}
-        src_name = payload["source_name"]
-        _run_extraction = _is_telegram_source(event) or src_name in _HIGH_TRUST_RSS
-        if groq_client.groq_available() and _run_extraction:
-            desc = str(event.get("description") or event.get("desc") or event.get("title") or "")
-            if desc:
-                event_id = str(event.get("id") or "")
-                entities = await asyncio.to_thread(groq_client.extract_entities, desc)
-                if entities.get("actors"):
-                    await asyncio.to_thread(_graph_store.link_event_actors, event_id, entities["actors"])
-                if entities.get("weapons"):
-                    await asyncio.to_thread(_graph_store.link_event_weapons, event_id, entities["weapons"])
-
-        # Temporal enrichment — predecessor linking + anomaly scoring
-        import temporal_kg
-        event_id = str(event.get("id") or "")
-        ts = str(event.get("timestamp") or "")
-        lat = event.get("lat")
-        lng = event.get("lng")
-        if event_id and ts and lat is not None and lng is not None:
-            await asyncio.to_thread(
-                temporal_kg.enrich_event_with_temporal_context,
-                _graph_store, event_id, ts, float(lat), float(lng),
-            )
-    except Exception as exc:
-        graph_logger.warning("[GRAPH] failed to sync event %s: %s", str(event.get("id", "")), exc)
+# _graph_source_id, _sync_event_to_graph_async — moved to ingestion.py
 
 
 # init_db, load_recent_events → moved to db_ops.py
@@ -1096,24 +1059,7 @@ def extract_place_candidates(text: str) -> List[str]:
     return iutils.extract_place_candidates(text, PLACE_COORDS)
 
 
-async def geocode_place(place: str) -> Optional[Tuple[float, float]]:
-    if place in geocode_cache:
-        return geocode_cache[place]
-    try:
-        params = {"q": place, "format": "json", "limit": 1}
-        client = _get_geocode_client()
-        r = await client.get(GEOCODE_URL, params=params)
-        if r.status_code != 200:
-            return None
-        data = r.json()
-        if not data:
-            return None
-        lat = float(data[0]["lat"])
-        lng = float(data[0]["lon"])
-        geocode_cache[place] = (lat, lng)
-        return lat, lng
-    except Exception:
-        return None
+# geocode_place — moved to ingestion.py
 
 
 async def fetch_metoc(lat: float, lng: float) -> dict:
@@ -1164,16 +1110,7 @@ async def fetch_metoc(lat: float, lng: float) -> dict:
         }
 
 
-def _decode_ollama_json_response(raw: str) -> Optional[dict]:
-    raw_text = str(raw or "{}").strip()
-    if raw_text.startswith("```"):
-        raw_text = raw_text.strip("`")
-        raw_text = raw_text.replace("json", "", 1).strip()
-    try:
-        parsed = json.loads(raw_text)
-        return parsed if isinstance(parsed, dict) else None
-    except Exception:
-        return None
+# _decode_ollama_json_response — moved to ingestion.py
 
 
 class V2AiScheduler:
@@ -1323,88 +1260,7 @@ class V2AiScheduler:
 _v2_ai_scheduler = V2AiScheduler()
 
 
-async def call_ollama_json(prompt: str, retries: int = 2) -> Optional[dict]:
-    model_chain = [OLLAMA_MODEL]
-    if OLLAMA_FALLBACK_MODEL and OLLAMA_FALLBACK_MODEL not in model_chain:
-        model_chain.append(OLLAMA_FALLBACK_MODEL)
-    if _ollama_available_models:
-        model_chain = [m for m in model_chain if m in _ollama_available_models]
-    if not model_chain:
-        return None
-    for model_name in model_chain:
-        for attempt in range(retries + 1):
-            try:
-                client = _get_ollama_client()
-                resp = await client.post(
-                    OLLAMA_URL,
-                    json={
-                        "model": model_name,
-                        "prompt": prompt,
-                        "stream": False,
-                        "format": "json",
-                        "options": {"temperature": 0.1},
-                    },
-                    timeout=45,
-                )
-                resp.raise_for_status()
-                raw = str(resp.json().get("response", "{}")).strip()
-                if raw.startswith("```"):
-                    raw = raw.strip("`")
-                    raw = raw.replace("json", "", 1).strip()
-                data = json.loads(raw)
-                if isinstance(data, dict):
-                    return data
-            except httpx.HTTPStatusError as e:
-                # 404 usually means missing model; stop retrying that model to reduce log spam.
-                if getattr(e.response, "status_code", None) == 404:
-                    _ollama_available_models.discard(model_name)
-                    logger.warning(f"[OLLAMA] Missing model '{model_name}', removed from runtime chain")
-                    break
-                if attempt == retries:
-                    logger.warning(f"[OLLAMA] JSON call failed ({model_name}): {e}")
-                await asyncio.sleep(0.35 * (attempt + 1))
-            except Exception as e:
-                if attempt == retries:
-                    logger.warning(f"[OLLAMA] JSON call failed ({model_name}): {e}")
-                await asyncio.sleep(0.35 * (attempt + 1))
-    return None
-
-
-async def geolocate_with_ai(title: str, summary: str) -> Optional[dict]:
-    prompt = f"""You are a geolocation extraction engine.
-Return ONLY strict JSON with keys:
-lat (number), lng (number), severity_1_to_10 (integer), event_type (STRIKE|MOVEMENT|CLASH|NOTAM|CRITICAL),
-insufficient_evidence (boolean), observed_facts (array of short strings), model_inference (array of short strings).
-
-Title: {title}
-Summary: {summary}
-"""
-    result = await call_ollama_json(prompt, retries=2)
-    if not result:
-        return None
-    try:
-        lat = float(result.get("lat", 0.0))
-        lng = float(result.get("lng", 0.0))
-        severity = int(result.get("severity_1_to_10", 3))
-        event_type = str(result.get("event_type", "CLASH")).upper()
-        insufficient = bool(result.get("insufficient_evidence", False))
-        observed = result.get("observed_facts") if isinstance(result.get("observed_facts"), list) else []
-        inferred = result.get("model_inference") if isinstance(result.get("model_inference"), list) else []
-        if event_type not in {"STRIKE", "MOVEMENT", "CLASH", "NOTAM", "CRITICAL"}:
-            event_type = "CLASH"
-        if abs(lat) > 90 or abs(lng) > 180:
-            return None
-        return {
-            "lat": lat,
-            "lng": lng,
-            "severity": max(1, min(10, severity)),
-            "type": event_type,
-            "insufficient_evidence": insufficient,
-            "observed_facts": [str(x)[:120] for x in observed[:4]],
-            "model_inference": [str(x)[:120] for x in inferred[:4]],
-        }
-    except Exception:
-        return None
+# call_ollama_json, geolocate_with_ai — moved to ingestion.py
 
 
 async def geolocate_event(title: str, summary: str, fallback_seed: str, allow_ai: bool = True, use_geocoder: bool = True) -> dict:
