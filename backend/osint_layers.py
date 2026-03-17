@@ -216,7 +216,7 @@ async def poll_firms(
                         desc = f"[NASA FIRMS] Thermal anomaly at {lat:.4f},{lng:.4f} (brightness={bright}, confidence={confidence})"
                         event = {
                             "id": firms_id,
-                            "type": "STRIKE",
+                            "type": "FIRE",
                             "desc": desc,
                             "lat": lat,
                             "lng": lng,
