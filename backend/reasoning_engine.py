@@ -410,7 +410,7 @@ def _call_groq_sitrep(
         {"role": "user", "content": payload_str},
     ]
 
-    raw = groq_client.chat(messages, max_tokens=1200, temperature=0.15)
+    raw = groq_client.chat(messages, max_tokens=1200, temperature=0.15, json_mode=True)
     if not raw:
         return None
 

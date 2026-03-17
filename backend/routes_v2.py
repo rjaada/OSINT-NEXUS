@@ -1224,6 +1224,31 @@ async def v2_sitrep_latest(request: Request):
     return result.get("report") or {}
 
 
+@router.post("/api/v2/sitrep/force-refresh")
+async def v2_sitrep_force_refresh(request: Request):
+    """Force immediate SITREP regeneration (analyst+ only). Runs inline — may take 30-90s."""
+    import main as _m
+    _m.require_analyst_or_admin(request)
+    try:
+        recent = _m.v2_store.fetch_recent_v2_events_pg(
+            database_url=_m.DATABASE_URL,
+            psycopg_mod=_m.psycopg,
+            now_iso=_m.utc_now_iso,
+            limit=300,
+        )
+        if not recent:
+            recent = list(reversed(_m.events_history[-300:]))
+        result = await asyncio.to_thread(
+            _m._reasoning_engine.generate_sitrep,
+            _m._graph_store, _m.groq_client, recent,
+        )
+        if result.get("sitrep"):
+            _m.persist_ai_report("sitrep", result, event_fp="")
+        return result.get("sitrep") or {"error": "SITREP generation returned no data"}
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
 @router.get("/api/v2/sitrep/history")
 async def v2_sitrep_history(request: Request, limit: int = 10):
     import main as _m

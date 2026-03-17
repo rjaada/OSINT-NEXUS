@@ -33,18 +33,25 @@ def _ollama_chat(
     temperature: float = 0.2,
     max_tokens: int = 1024,
     timeout: int = 120,
+    json_mode: bool = False,
 ) -> Optional[str]:
     """Fallback: send chat request to local Ollama. Returns text or None."""
     try:
+        # For json_mode, inject an assistant prefill starting with '{' to force JSON continuation
+        msgs = messages
+        if json_mode:
+            msgs = list(messages) + [{"role": "assistant", "content": "{"}]
         payload = {
             "model": OLLAMA_MODEL,
-            "messages": messages,
+            "messages": msgs,
             "stream": False,
             "options": {"temperature": temperature, "num_predict": max_tokens},
         }
         resp = httpx.post(_OLLAMA_CHAT_URL, json=payload, timeout=timeout)
         resp.raise_for_status()
-        return resp.json()["message"]["content"]
+        content = resp.json()["message"]["content"]
+        # Restore the prefill prefix that Ollama won't include in response
+        return ("{" + content) if json_mode and not content.strip().startswith("{") else content
     except Exception as exc:
         logger.error("[OLLAMA_FALLBACK] Error: %s", exc)
         return None
@@ -56,8 +63,14 @@ def chat(
     temperature: float = 0.2,
     max_tokens: int = 1024,
     timeout: Optional[int] = None,
+    json_mode: bool = False,
 ) -> Optional[str]:
-    """Send a chat request to Groq, falling back to local Ollama on 429 or failure."""
+    """Send a chat request to Groq, falling back to local Ollama on 429 or failure.
+
+    json_mode=True enforces structured JSON output:
+      - Groq: response_format={"type": "json_object"}
+      - Ollama: assistant prefill message starting with '{' to force JSON continuation
+    """
     t = timeout if timeout is not None else GROQ_TRACE_TIMEOUT_SEC
 
     if GROQ_API_KEY:
@@ -67,22 +80,24 @@ def chat(
             "temperature": temperature,
             "max_tokens": max_tokens,
         }
+        if json_mode:
+            payload["response_format"] = {"type": "json_object"}
         try:
             resp = httpx.post(_GROQ_CHAT_URL, headers=_headers(), json=payload, timeout=t)
             if resp.status_code == 429:
                 logger.warning("[GROQ] Rate limit hit — falling back to local Ollama")
-                return _ollama_chat(messages, temperature, max_tokens)
+                return _ollama_chat(messages, temperature, max_tokens, json_mode=json_mode)
             resp.raise_for_status()
             return resp.json()["choices"][0]["message"]["content"]
         except httpx.HTTPStatusError as exc:
             logger.error("[GROQ] HTTP %s — falling back to Ollama: %s", exc.response.status_code, exc.response.text[:200])
-            return _ollama_chat(messages, temperature, max_tokens)
+            return _ollama_chat(messages, temperature, max_tokens, json_mode=json_mode)
         except Exception as exc:
             logger.error("[GROQ] Error — falling back to Ollama: %s", exc)
-            return _ollama_chat(messages, temperature, max_tokens)
+            return _ollama_chat(messages, temperature, max_tokens, json_mode=json_mode)
     else:
         logger.warning("[GROQ] No API key — using local Ollama directly")
-        return _ollama_chat(messages, temperature, max_tokens)
+        return _ollama_chat(messages, temperature, max_tokens, json_mode=json_mode)
 
 
 # ---------------------------------------------------------------------------
