@@ -2058,10 +2058,10 @@ async def root():
 
 
 def _v2_events_for_ai(limit: int = 160) -> List[dict]:
-    rows = fetch_recent_v2_events_pg(limit=limit, source_whitelist=sorted(TELEGRAM_SOURCE_SET))
+    rows = fetch_recent_v2_events_pg(limit=limit)
     if rows:
         return rows
-    return [e for e in events_history[-limit:] if _is_telegram_source(e)]
+    return list(events_history[-limit:])
 
 
 def _normalize_threat_level(level: str) -> str:
