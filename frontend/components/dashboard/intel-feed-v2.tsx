@@ -109,6 +109,29 @@ function icd203Label(conf: string | undefined, score?: number): { level: string;
   return map[String(conf || "").toUpperCase()] ?? { level: "LOW", phrase: "Likely" }
 }
 
+// NATO Admiralty 2×6 matrix — source reliability (A-F) + claim credibility (1-6)
+// Source reliability based on known editorial standards of each source tier
+function nato2x6Reliability(src?: string): { grade: string; label: string; color: string } {
+  const s = (src || "").trim()
+  const tier = sourceTier(s).label
+  if (tier === "WIRE") return { grade: "A", label: "Reliable", color: "#00ff88" }
+  if (tier === "NATL") return { grade: "B", label: "Usually reliable", color: "#4fc3f7" }
+  if (tier === "TG")   return { grade: "C", label: "Fairly reliable", color: "#ffa630" }
+  if (tier === "SENSOR") return { grade: "B", label: "Usually reliable", color: "#4fc3f7" }
+  return { grade: "D", label: "Not usually reliable", color: "#9ca3af" }
+}
+
+// Claim credibility based on confidence score
+function nato2x6Credibility(score?: number): { grade: string; label: string; color: string } {
+  if (!score && score !== 0) return { grade: "6", label: "Truth undetermined", color: "#6b7280" }
+  if (score >= 85) return { grade: "1", label: "Confirmed", color: "#00ff88" }
+  if (score >= 70) return { grade: "2", label: "Probably true", color: "#4fc3f7" }
+  if (score >= 55) return { grade: "3", label: "Possibly true", color: "#ffa630" }
+  if (score >= 40) return { grade: "4", label: "Doubtful", color: "#f97316" }
+  if (score >= 20) return { grade: "5", label: "Improbable", color: "#ef4444" }
+  return { grade: "6", label: "Truth undetermined", color: "#6b7280" }
+}
+
 function playAlertBeep(type: "CRITICAL" | "STRIKE") {
   try {
     const ctx = new (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)()
@@ -637,6 +660,21 @@ export function Dashboard() {
                         {icd203Label(evt.confidence, evt.confidence_score).level}{typeof evt.confidence_score === "number" ? ` ${evt.confidence_score}` : ""}
                       </span>
                     )}
+                    {(() => {
+                      const rel = nato2x6Reliability(evt.source)
+                      const cred = nato2x6Credibility(evt.confidence_score)
+                      return (
+                        <span
+                          className="text-[8px] px-1 py-px rounded border font-mono tabular-nums"
+                          style={{ color: "#9ca3af", borderColor: "#ffffff20", background: "transparent" }}
+                          title={`NATO 2×6 — Source: ${rel.grade} (${rel.label}) | Claim: ${cred.grade} (${cred.label})`}
+                        >
+                          <span style={{ color: rel.color }}>{rel.grade}</span>
+                          <span className="opacity-40">/</span>
+                          <span style={{ color: cred.color }}>{cred.grade}</span>
+                        </span>
+                      )
+                    })()}
                     {(evt.corroborating_sources?.length ?? 0) > 0 && (
                       <span className="px-1 py-px rounded border border-osint-green/40 bg-osint-green/10 text-osint-green text-[8px]">{evt.corroborating_sources!.length + 1} src</span>
                     )}

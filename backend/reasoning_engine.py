@@ -48,9 +48,33 @@ def _parse_ts(ts_str: str) -> datetime:
         return datetime.now(timezone.utc)
 
 
+# Sensor sources with fast poll rates — bucket to 5-min windows to avoid
+# false corroboration inflation (20 OREF pings in 1 min ≠ 20 separate events)
+_SENSOR_SOURCES = {"NASA FIRMS", "ADSB.lol", "AISStream", "FR24-MIL", "Red Alert"}
+_SENSOR_BUCKET_SEC = 300  # 5-minute bucket for sensor timestamp normalization
+
+
+def _bucket_ts(ts: datetime, source: str) -> datetime:
+    """Round sensor event timestamps to nearest 5-min bucket."""
+    if source in _SENSOR_SOURCES:
+        bucket = (ts.timestamp() // _SENSOR_BUCKET_SEC) * _SENSOR_BUCKET_SEC
+        return datetime.fromtimestamp(bucket, tz=timezone.utc)
+    return ts
+
+
 def _haversine_deg(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
     """Approximate distance in degrees (cheap, good enough for clustering)."""
     return math.sqrt((lat1 - lat2) ** 2 + (lng1 - lng2) ** 2)
+
+
+def _select_top_events(cluster: List[dict], max_events: int = 30) -> List[dict]:
+    """Select most representative events from a large cluster.
+    Sorts by confidence_score desc then recency — avoids sending arbitrary first-N."""
+    return sorted(
+        cluster,
+        key=lambda e: (int(e.get("confidence_score") or 0), str(e.get("timestamp", ""))),
+        reverse=True,
+    )[:max_events]
 
 
 def _event_tokens(event: dict) -> set:
@@ -107,8 +131,10 @@ def correlate_events(
             ej = sorted_evts[j]
             tj = _parse_ts(str(ej.get("timestamp", "")))
 
-            # Time window check
-            if abs((tj - ti).total_seconds()) > window_hours * 3600:
+            # Time window check — use bucketed timestamps for sensor sources
+            ti_eff = _bucket_ts(ti, str(ei.get("source", "")))
+            tj_eff = _bucket_ts(tj, str(ej.get("source", "")))
+            if abs((tj_eff - ti_eff).total_seconds()) > window_hours * 3600:
                 break  # events are sorted, no need to look further
 
             lat_j = float(ej.get("lat") or 0.0)
@@ -271,7 +297,12 @@ Produce a structured JSON SITREP with these exact keys:
   "confidence": "HIGH|MODERATE|LOW|VERY LOW",
   "confidence_reason": "One sentence explaining confidence level",
   "dominant_actors": ["actor1", "actor2"],
-  "key_locations": ["location1", "location2"]
+  "key_locations": ["location1", "location2"],
+  "forecast": {
+    "next_24h": "Most likely development in next 24 hours based on current trajectory",
+    "next_72h": "Likely situation within 72 hours if current trend continues",
+    "next_7d": "Strategic outlook for the next 7 days"
+  }
 }
 Base EVERYTHING on the provided events. Do not invent facts.
 IMPORTANT: "dominant_actors" must be real political/military actors (countries, factions, militaries) — NOT data sources like "NASA FIRMS", "BBC News", "AISStream".
@@ -310,10 +341,12 @@ def _call_groq_sitrep(
     if groq_client is None:
         return None
 
-    # Build compact event summaries — cap desc length so payload stays within
-    # llama3:latest 8K context window (system ~500t + payload ~900t + output 1200t ≈ 2600t)
+    # Build compact event summaries — select top 30 by confidence+recency so the
+    # most important events reach Groq, not just the first-N chronologically.
+    # 30 events × ~80 chars desc ≈ ~700 tokens; well within Groq's context.
+    top_events = _select_top_events(cluster, max_events=30)
     event_summaries = []
-    for e in cluster[:15]:  # 15 events × ~120 chars desc ≈ safe payload size
+    for e in top_events:
         event_summaries.append({
             "id": e.get("id"),
             "type": e.get("type"),

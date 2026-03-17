@@ -1,4 +1,5 @@
 import logging
+import math
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -12,6 +13,59 @@ logger = logging.getLogger("osint.graph")
 
 def _utc_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _decay_weight(since_iso: str, half_life_days: float = 30.0) -> float:
+    """Exponential decay: weight = 0.5^(age_days / half_life_days).
+    A 30-day-old edge has weight 0.5; a 90-day-old edge has weight 0.125."""
+    try:
+        since = datetime.fromisoformat(since_iso.replace("Z", "+00:00"))
+        age_days = (datetime.now(timezone.utc) - since).total_seconds() / 86400
+        return round(max(0.05, math.pow(0.5, age_days / half_life_days)), 4)
+    except Exception:
+        return 0.5
+
+
+# ---------------------------------------------------------------------------
+# Entity disambiguation — canonical name mapping
+# ---------------------------------------------------------------------------
+_ENTITY_ALIASES: Dict[str, str] = {
+    # Israeli military
+    "idf": "Israel Defense Forces",
+    "israeli forces": "Israel Defense Forces",
+    "israeli army": "Israel Defense Forces",
+    "israeli military": "Israel Defense Forces",
+    "צבא הגנה לישראל": "Israel Defense Forces",
+    # Iranian
+    "irgc": "Islamic Revolutionary Guard Corps",
+    "iran revolutionary guard": "Islamic Revolutionary Guard Corps",
+    "pasdaran": "Islamic Revolutionary Guard Corps",
+    # Palestinian
+    "hamas": "Hamas",
+    "al-qassam": "Hamas",
+    "qassam brigades": "Hamas",
+    "izz ad-din al-qassam": "Hamas",
+    "pij": "Palestinian Islamic Jihad",
+    "islamic jihad": "Palestinian Islamic Jihad",
+    # Lebanese
+    "hezbollah": "Hezbollah",
+    "hizballah": "Hezbollah",
+    "hizbullah": "Hezbollah",
+    # Yemeni
+    "houthis": "Houthi Movement",
+    "ansar allah": "Houthi Movement",
+    "ansarallah": "Houthi Movement",
+    # US/Allied
+    "centcom": "US CENTCOM",
+    "us forces": "US Military",
+    "american forces": "US Military",
+}
+
+
+def _normalize_entity(name: str) -> str:
+    """Return canonical entity name, collapsing known aliases."""
+    key = name.strip().lower()
+    return _ENTITY_ALIASES.get(key, name.strip())
 
 
 def _safe_float(value: Any) -> Optional[float]:
@@ -129,6 +183,7 @@ class GraphStore:
             return
 
         source = str(event.get("source") or event.get("source_name") or "Unknown").strip() or "Unknown"
+        source = _normalize_entity(source)
         source_id = f"source:{source.lower().replace(' ', '_')}"
         lat = _safe_float(event.get("lat"))
         lng = _safe_float(event.get("lng"))
@@ -230,7 +285,8 @@ class GraphStore:
             return
         merged = dict(props or {})
         merged["since"] = since
-        merged["weight"] = weight
+        # Apply temporal decay — older edges carry less analytical weight
+        weight = _decay_weight(since)
         query = f"""
         MATCH (a:{from_label} {{id: $from_id}})
         MATCH (b:{to_label} {{id: $to_id}})
