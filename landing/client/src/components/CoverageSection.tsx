@@ -36,33 +36,33 @@ const FALLBACK_ZONES: Zone[] = [
   },
   {
     num: "02",
-    name: "UKRAINE",
-    region: "Eastern Europe",
+    name: "ISRAEL",
+    region: "Middle East",
     status: "ACTIVE",
     description:
-      "RUSSIAN-UKRAINIAN CONFLICT. MULTI-SOURCE FUSION: OSINT TELEGRAM, FLIGHT TRACKING, ACLED EVENTS. FRONTLINE MOVEMENTS TRACKED IN NEAR-REAL-TIME.",
-    coords: "[48.3794 · 31.1656]",
-    mapConfig: ZONE_MAP_CONFIGS["UKRAINE"],
+      "DIRECT MILITARY EXCHANGES WITH IRAN. MULTI-FRONT MONITORING: NORTHERN BORDER, WEST BANK, RED SEA. STRIKE EVENTS CORRELATED ACROSS TELEGRAM AND FLIGHT FEEDS.",
+    coords: "[31.0461 · 34.8516]",
+    mapConfig: ZONE_MAP_CONFIGS["ISRAEL"],
   },
   {
     num: "03",
-    name: "SUDAN",
-    region: "North Africa",
-    status: "MONITORING",
+    name: "IRAN",
+    region: "Middle East",
+    status: "ACTIVE",
     description:
-      "SAF VS. RSF ARMED CONFLICT. KHARTOUM AND DARFUR PRIORITY ZONES. CROSS-REFERENCED WITH ACLED TAXONOMY AND HUMANITARIAN SOURCE REPORTING.",
-    coords: "[12.8628 · 30.2176]",
-    mapConfig: ZONE_MAP_CONFIGS["SUDAN"],
+      "BALLISTIC MISSILE AND DRONE LAUNCH MONITORING. CROSS-REFERENCED WITH US CENTCOM ACTIVITY, STRAIT OF HORMUZ VESSEL TRACKING AND GOLD MARKET INDICATORS.",
+    coords: "[32.4279 · 53.6880]",
+    mapConfig: ZONE_MAP_CONFIGS["IRAN"],
   },
   {
     num: "04",
-    name: "YEMEN",
-    region: "Arabian Peninsula",
-    status: "ACTIVE",
+    name: "LEBANON",
+    region: "Middle East",
+    status: "MONITORING",
     description:
-      "HOUTHI OPERATIONS AND RED SEA MARITIME THREAT MONITORING. VESSEL TRACKING INTEGRATED WITH STRIKE EVENT CORRELATION.",
-    coords: "[15.5527 · 48.5164]",
-    mapConfig: ZONE_MAP_CONFIGS["YEMEN"],
+      "HEZBOLLAH POSTURE MONITORING POST-CEASEFIRE. SOUTHERN LEBANON BUFFER ZONE ACTIVITY. CROSS-REFERENCED WITH IDF MOVEMENT AND DIPLOMATIC SIGNAL FEEDS.",
+    coords: "[33.8547 · 35.8623]",
+    mapConfig: ZONE_MAP_CONFIGS["LEBANON"],
   },
 ];
 
@@ -101,7 +101,9 @@ export function CoverageSection() {
 
         let backendZones: BackendZone[] = [];
         if (zonesRes.status === "fulfilled" && zonesRes.value.ok) {
-          backendZones = await zonesRes.value.json();
+          const raw = await zonesRes.value.json();
+          // Backend returns either [] or { zones: [] }
+          backendZones = Array.isArray(raw) ? raw : Array.isArray(raw?.zones) ? raw.zones : [];
         }
 
         // Count recent events per zone keyword for "live" activity signal
@@ -113,7 +115,7 @@ export function CoverageSection() {
             Array.isArray(eventsData?.events) ? eventsData.events : [];
           for (const evt of events) {
             const text = `${evt.title ?? ""} ${evt.description ?? ""}`.toUpperCase();
-            for (const key of ["UKRAINE", "GAZA", "SUDAN", "YEMEN", "SYRIA", "IRAQ", "MYANMAR"]) {
+            for (const key of ["ISRAEL", "IRAN", "LEBANON", "GAZA", "UKRAINE", "SUDAN", "SYRIA", "IRAQ"]) {
               if (text.includes(key)) eventCounts[key] = (eventCounts[key] ?? 0) + 1;
             }
           }
