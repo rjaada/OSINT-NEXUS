@@ -138,11 +138,11 @@ services:
       - aisstream_api_key
       - firms_map_key
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
-      interval: 15s
-      timeout: 5s
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v2/ping')"]
+      interval: 20s
+      timeout: 10s
       retries: 5
-      start_period: 30s
+      start_period: 40s
     mem_limit: 1g
     restart: unless-stopped
 

@@ -97,11 +97,28 @@ class GraphStore:
             self._driver = GraphDatabase.driver(self.uri, auth=(self.user, self.password))
             with self._driver.session() as session:
                 session.run("RETURN 1").single()
+            self._ensure_indexes()
         except Exception as exc:
             self._last_error = str(exc)
             self._enabled = False
             self._driver = None
             logger.warning("[GRAPH] Neo4j init failed: %s", exc)
+
+    def _ensure_indexes(self) -> None:
+        """Create indexes and constraints if they don't exist. Safe to run repeatedly."""
+        stmts = [
+            "CREATE INDEX event_timestamp IF NOT EXISTS FOR (e:Event) ON (e.timestamp)",
+            "CREATE INDEX event_zone IF NOT EXISTS FOR (e:Event) ON (e.zone)",
+            "CREATE INDEX event_source IF NOT EXISTS FOR (e:Event) ON (e.source_tier)",
+            "CREATE INDEX event_type_idx IF NOT EXISTS FOR (e:Event) ON (e.type)",
+            "CREATE CONSTRAINT event_id IF NOT EXISTS FOR (e:Event) REQUIRE e.id IS UNIQUE",
+        ]
+        with self._driver.session() as session:
+            for stmt in stmts:
+                try:
+                    session.run(stmt)
+                except Exception as exc:
+                    logger.debug("[GRAPH] Index/constraint skipped: %s", exc)
 
     def close(self) -> None:
         if self._driver is not None:
