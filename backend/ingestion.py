@@ -220,7 +220,22 @@ async def call_ollama_json(prompt: str, retries: int = 2) -> Optional[dict]:
     return None
 
 
+# Cache for AI geolocation — keyed on normalized title prefix to avoid repeated LLM calls
+# for the same location (e.g. 10 Telegram posts all mentioning "Gaza City")
+_ai_geo_cache: dict = {}
+_AI_GEO_CACHE_MAX = 500
+
+
+def _geo_cache_key(title: str, summary: str) -> str:
+    """Stable key from the first 80 chars of title + first 40 of summary."""
+    return (title[:80] + "|" + summary[:40]).lower().strip()
+
+
 async def geolocate_with_ai(title: str, summary: str) -> Optional[dict]:
+    cache_key = _geo_cache_key(title, summary)
+    if cache_key in _ai_geo_cache:
+        return _ai_geo_cache[cache_key]
+
     prompt = f"""You are a geolocation extraction engine.
 Return ONLY strict JSON with keys:
 lat (number), lng (number), severity_1_to_10 (integer), event_type (STRIKE|MOVEMENT|CLASH|NOTAM|CRITICAL),
@@ -244,7 +259,7 @@ Summary: {summary}
             event_type = "CLASH"
         if abs(lat) > 90 or abs(lng) > 180:
             return None
-        return {
+        geo_result = {
             "lat": lat,
             "lng": lng,
             "severity": max(1, min(10, severity)),
@@ -253,6 +268,13 @@ Summary: {summary}
             "observed_facts": [str(x)[:120] for x in observed[:4]],
             "model_inference": [str(x)[:120] for x in inferred[:4]],
         }
+        # Cache hit — evict oldest half when full
+        if len(_ai_geo_cache) >= _AI_GEO_CACHE_MAX:
+            keys = list(_ai_geo_cache.keys())
+            for k in keys[: _AI_GEO_CACHE_MAX // 2]:
+                del _ai_geo_cache[k]
+        _ai_geo_cache[cache_key] = geo_result
+        return geo_result
     except Exception:
         return None
 

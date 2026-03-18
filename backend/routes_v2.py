@@ -128,6 +128,12 @@ def _require_analyst_or_admin(request: Request) -> dict:
     import main as _m
     return _m.require_analyst_or_admin(request)
 
+@router.get("/api/v2/ping")
+async def v2_ping():
+    """Lightweight liveness probe — no DB queries, instant response."""
+    return {"ok": True}
+
+
 @router.get("/api/v2/ai/policy")
 async def v2_ai_policy(request: Request):
     import main as _m
