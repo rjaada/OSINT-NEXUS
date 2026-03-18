@@ -605,7 +605,10 @@ async def ingest_event(event: dict):
         )
     except Exception:
         pass
-    asyncio.create_task(_sync_event_to_graph_async(event))
+    import state as _st
+    _gt = asyncio.create_task(_sync_event_to_graph_async(event))
+    _st._graph_tasks.add(_gt)
+    _gt.add_done_callback(_st._graph_tasks.discard)
     if event.get("video_url"):
         event_id = str(event.get("id", ""))
         if event_id and event_id not in _m._media_job_state:

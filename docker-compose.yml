@@ -165,6 +165,13 @@ services:
 
   redis:
     image: redis:alpine
+    command: >
+      redis-server
+      --maxmemory 200mb
+      --maxmemory-policy allkeys-lfu
+      --maxmemory-samples 10
+      --lfu-log-factor 10
+      --lfu-decay-time 1
     ports:
       - "6379:6379"
     healthcheck:

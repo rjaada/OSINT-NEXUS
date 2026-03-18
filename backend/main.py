@@ -1562,7 +1562,9 @@ async def ingest_event(event: dict):
 
     persist_event(event)
     persist_event_v2_pg(event)
-    asyncio.create_task(_sync_event_to_graph_async(event))
+    _gt = asyncio.create_task(_sync_event_to_graph_async(event))
+    _graph_tasks.add(_gt)
+    _gt.add_done_callback(_graph_tasks.discard)
     if event.get("video_url"):
         event_id = str(event.get("id", ""))
         if event_id and event_id not in _media_job_state:

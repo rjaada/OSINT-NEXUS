@@ -118,6 +118,9 @@ _red_alert_403_last_logged: float = 0.0
 # ── V2 AI scheduler placeholder (set by main.py after class definition) ────────
 _v2_ai_scheduler: Any = None
 
+# ── Graph sync task set (prevents create_task leak) ───────────────────────────
+_graph_tasks: set = set()
+
 # ── Process start time ─────────────────────────────────────────────────────────
 _start_time: float = time.time()
 
