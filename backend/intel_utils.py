@@ -237,11 +237,19 @@ def assess_confidence(
     is_fallback_location = geo_method == "fallback" or event.get("insufficient_evidence", False)
 
     if is_fallback_location:
-        score = max(0, score - 20)   # hard penalty for fake coordinates
+        score = max(0, score - 10)   # reduced from -20: was bottoming out valid events
     if is_rss and is_fallback_location:
-        score = int(score / 2.0)     # T=2.0: RSS + no real location = severely miscalibrated
+        score = int(score / 1.6)     # T=1.6 (was 2.0): less aggressive, floor was hitting 0-2
     elif is_rss:
-        score = int(score / 1.4)     # T=1.4: RSS with real location still overconfident
+        score = int(score / 1.3)     # T=1.3 (was 1.4): slight reduction
+
+    # Floor: credible sources never below 15 even with no location
+    # Eval run 3 showed Al Jazeera STRIKE at 1/100 — that's not calibrated, that's wrong
+    _CREDIBLE_SOURCES = {"BBC News", "Al Jazeera", "Reuters", "AP", "DW News", "NPR",
+                         "The Guardian", "Jerusalem Post", "Sky News", "France 24"}
+    src_name = extract_source(event)
+    if src_name in _CREDIBLE_SOURCES:
+        score = max(15, score)
 
     score = max(0, min(100, score))
     reasons = [f"source reliability {base}/100"]
