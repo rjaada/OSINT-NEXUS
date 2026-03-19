@@ -192,6 +192,10 @@ app.add_middleware(
 
 app.mount("/media", StaticFiles(directory=str(MEDIA_DIR)), name="media")
 
+_eval_dir = Path(__file__).parent / "eval"
+if _eval_dir.exists():
+    app.mount("/eval", StaticFiles(directory=str(_eval_dir)), name="eval")
+
 
 @app.middleware("http")
 async def security_headers_middleware(request: Request, call_next):
@@ -2313,6 +2317,24 @@ async def disinfo_scan(request: Request):
     recent = fetch_recent_v2_events_pg(limit=500) if DATABASE_URL.startswith("postgres") else list(events_history[-500:])
     result = await asyncio.to_thread(disinfo_detector.scan_for_disinfo, recent)
     return result
+
+
+@app.get("/api/v2/baseline")
+async def source_baseline(request: Request):
+    """
+    Returns per-source behavioral anomaly scores (EWMA z-score).
+    NORMAL / EARLY_WARNING / CRITICAL / INSUFFICIENT_BASELINE
+    """
+    user = auth_user_from_request(request)
+    if user.get("role") not in ("analyst", "admin"):
+        from fastapi import HTTPException
+        raise HTTPException(status_code=403, detail="Analyst or admin required")
+
+    import baseline_monitor
+    result = await asyncio.to_thread(
+        baseline_monitor.get_all_source_anomalies, DATABASE_URL, psycopg
+    )
+    return {"sources": result, "count": len(result)}
 
 
 # ---------------------------------------------------------------------------
