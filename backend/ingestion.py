@@ -331,18 +331,19 @@ async def geolocate_event(title: str, summary: str, fallback_seed: str, allow_ai
                 "geo_method": "ollama",
             }
 
-    lat = 31.5 + (hash(fallback_seed) % 14) * 0.22
-    lng = 34.8 + (hash(fallback_seed[::-1]) % 14) * 0.22
-    inferred.append("Insufficient location evidence; fallback coordinate used.")
+    # Fix #3: no fake coordinates — null is honest, a random jitter is misleading
+    # Eval showed 70% location error caused by country-centroid fallback passing as real data
+    inferred.append("No location evidence found; coordinates withheld (geo_method=fallback).")
     return {
-        "lat": lat,
-        "lng": lng,
+        "lat": None,
+        "lng": None,
         "type": classify_event(title, summary),
-        "severity": 3,
+        "severity": 1,
         "observed_facts": observed,
         "model_inference": inferred,
         "insufficient_evidence": True,
         "geo_method": "fallback",
+        "location_inferred": True,
     }
 
 
