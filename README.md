@@ -1,20 +1,34 @@
+<div align="center">
+
+<img src="opening.gif" alt="OSINT Nexus" width="100%" />
+
 # OSINT Nexus
 
-**Autonomous all-source intelligence platform for real-time conflict monitoring.**
+**Autonomous all-source intelligence analyst. Never sleeps.**
 
-OSINT Nexus ingests live data from news feeds, Telegram channels, flight tracking, maritime AIS, and civil defense alerts — fuses them through a Neo4j temporal knowledge graph — and runs LLM-powered reasoning to produce structured intelligence products: SITREPs, causal chains, contradiction detection, and ranked priority actions.
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
+[![Docker](https://img.shields.io/badge/Docker-9_services-2496ED?logo=docker)](docker-compose.yml)
+[![Python](https://img.shields.io/badge/Python-3.11-3776AB?logo=python)](backend/)
+[![Next.js](https://img.shields.io/badge/Next.js-15-black?logo=next.js)](frontend/)
+[![Research](https://img.shields.io/badge/Preprint-Zenodo-blue)](https://doi.org/10.5281/zenodo.19169143)
 
-> Built as a production system, not a demo. Running live data. 2,300+ events ingested.
+</div>
+
+---
+
+Most dashboards show you data. OSINT Nexus **reasons** about it.
+
+It ingests live news, Telegram channels, flight tracking, maritime AIS, and civil defense alerts — fuses them through a Neo4j temporal knowledge graph — and runs LLM reasoning to produce structured intelligence products: SITREPs, causal chains, contradiction detection, and ranked priority actions.
+
+> Running live data. 2,300+ events ingested. Built as a production system, not a demo.
 
 ---
 
 ## What It Does
 
-Most dashboards show you data. OSINT Nexus **reasons** about it.
-
 | Layer | Capability | Status |
 |-------|-----------|--------|
-| **Ingestion** | RSS/news, Telegram channels, ADSB flights, AIS maritime, Red Alert civil defense | Live |
+| **Ingestion** | RSS/news, Telegram, ADSB flights, AIS maritime, Red Alert civil defense | Live |
 | **Fusion** | Neo4j temporal knowledge graph — actors, events, locations, corroboration edges | Live |
 | **Reasoning** | LLM causal chain analysis, contradiction detection, SITREP generation | Live |
 | **Verification** | Multi-source corroboration scoring, disinformation signature detection | Live |
@@ -25,19 +39,19 @@ Most dashboards show you data. OSINT Nexus **reasons** about it.
 ## Intelligence Products
 
 ### Priority Action Panel
-Always-visible top-3 ranked events scored by `confidence × corroboration × freshness × type_weight`. Zero clicks. One-click suppress. Every card shows: "Ranked #1 because: X." Designed to **NATO Meaningful Human Control (MHC)** standards — the system explains its ranking, the analyst decides.
+Always-visible top-3 ranked events scored by `confidence × corroboration × freshness × type_weight`. Zero clicks to reach. Every card explains itself: *"Ranked #1 because: X."* Designed to **NATO Meaningful Human Control (MHC)** standards — the system explains, the analyst decides.
 
 ### Intel Trace
-Click any event → full causal chain from Neo4j + LLM analysis. Preceded by, followed by, actors involved, contradiction flags, confidence calibration. Powered by DeepSeek-R1 via Groq (Ollama local fallback on rate limit).
+Click any event → full causal chain from Neo4j + LLM analysis. What came before, what followed, actors involved, contradiction flags, ICD 203 confidence level. Powered by DeepSeek-R1 via Groq with Ollama local fallback.
 
 ### SITREP
-Auto-generated situation reports every 60 minutes: what happened, why it happened, what to watch next (3 specific watch items with timeframes), confidence level with reasoning. Stored in PostgreSQL, queryable via API.
+Auto-generated situation reports every 60 minutes: what happened, why it happened, what to watch next (3 specific watch items with timeframes), forward projection (24h / 72h / 7d), confidence with reasoning. Stored in PostgreSQL, queryable via API.
 
 ### Disinformation Detector
-Sliding 45-minute window across all sources. Flags when the same claim appears on 3+ channels simultaneously — the coordinated emergence signature documented in Flashpoint's Ukraine OSINT deployment.
+Sliding 45-minute window across all sources. Flags coordinated information operations when the same claim appears on 3+ channels simultaneously — cosine similarity clustering, not keyword matching.
 
 ### Press Brief Analyzer
-Paste any press conference transcript → structured intelligence extraction: headline, key claims, threats and warnings, military signals, observed facts vs. inference, follow-up recommendations.
+Paste any press conference transcript → structured extraction: headline, key claims, threats, military signals, observed facts vs. inference, follow-up recommendations.
 
 ---
 
@@ -52,7 +66,7 @@ Paste any press conference transcript → structured intelligence extraction: he
 ┌─────────────────────────▼────────────────────────────────────┐
 │                   Backend  (FastAPI)                          │
 │  geocoding · classification · confidence scoring · ACLED     │
-│  taxonomy · MGRS coords · source reliability weights         │
+│  taxonomy · MGRS coords · Bayesian source reliability        │
 └──────┬──────────────────┬──────────────────┬─────────────────┘
        │                  │                  │
 ┌──────▼──────┐   ┌───────▼──────┐   ┌───────▼──────┐
@@ -82,10 +96,10 @@ Paste any press conference transcript → structured intelligence extraction: he
 
 **Backend**
 - Python 3.11 · FastAPI · psycopg3
-- Neo4j — temporal knowledge graph (760+ nodes, 6 relationship types)
+- Neo4j — temporal knowledge graph (760+ nodes, 6 relationship types, 30-day edge decay)
 - PostgreSQL + PostGIS
 - Redis — WebSocket pub/sub
-- Groq API (LLaMA 3 / DeepSeek-R1) with Ollama local LLM fallback
+- Groq API (DeepSeek-R1 / LLaMA 3) with Ollama local LLM fallback
 
 **Frontend**
 - Next.js 15 App Router · TypeScript · Tailwind CSS
@@ -138,11 +152,6 @@ FIRMS_MAP_KEY=your_key
 # Optional — Telegram digest (sends SITREP daily at 06:00 UTC)
 TG_DIGEST_TOKEN=your_bot_token
 TG_DIGEST_CHAT_ID=your_chat_id
-
-# Database (auto-configured in Docker)
-DATABASE_URL=postgresql://osint:osint@postgres:5432/osint
-NEO4J_URI=bolt://neo4j:7687
-REDIS_URL=redis://redis:6379
 ```
 
 Full variable reference: see `.env.example`.
@@ -161,7 +170,6 @@ Full variable reference: see `.env.example`.
 | `/v2/health` | System health — PostgreSQL, Redis, watchdog, queue stats |
 | `/v2/admin` | User management + dynamic conflict zone editor |
 | `/v2/graph` | Neo4j knowledge graph explorer — filter by relationship type and time range |
-| `/v2/card` | Operator credential card |
 | `/v2/ar/...` | Full Arabic RTL interface mirroring all v2 pages |
 
 ---
@@ -174,8 +182,9 @@ Full variable reference: see `.env.example`.
 - **Role-based route protection** — 34 API endpoints gated
 - **Audit log** on all admin actions
 - SHA-256 event IDs
-- Startup validation — backend refuses to start with weak `AUTH_SECRET` or default admin password
-- TOTP (time-based OTP) support for analyst and admin roles
+- Startup validation — backend refuses to start with weak `AUTH_SECRET` or default credentials
+- TOTP (time-based OTP) for analyst and admin roles
+- Content-Security-Policy headers
 
 ---
 
@@ -191,83 +200,29 @@ Full variable reference: see `.env.example`.
 | Red Alert (Tzeva Adom) | Civil defense (official) | 95 |
 | NASA FIRMS | Active fire (sensor) | 90 |
 
-Source weights are dynamic — analyst ratings on Intel Trace feed back into per-source reliability scores automatically.
+Source weights are dynamic — analyst ratings on Intel Trace feed back into per-source reliability scores via Bayesian update.
 
 ---
 
-## Event Schema (ACLED-compatible)
+## Analytic Standards
 
-Every event in `events_v2` carries:
-
-| Field | Values | Purpose |
-|-------|--------|---------|
-| `time_precision` | 1–3 | 1=exact timestamp, 2=day, 3=estimated |
-| `geo_precision` | 1–3 | 1=exact coords, 2=city-level, 3=region |
-| `source_scale` | local / national / international / subnational | Source classification |
-| `civilian_targeting` | boolean | Hospital, school, market, aid worker keywords |
-| `acled_event_type` | Battles / Explosions / Strategic developments / ... | ACLED taxonomy |
-| `acled_sub_event_type` | Armed clash / Air strike / Shelling / ... | ACLED sub-taxonomy |
-
-Dataset is directly comparable to [ACLED's](https://acleddata.com) published conflict data.
+| Standard | Implementation |
+|----------|---------------|
+| **ICD 203** | 4-level confidence scale (HIGH / MODERATE / LOW / VERY LOW) on all AI products |
+| **NATO 2×6** | Source reliability (A–F) + claim credibility (1–6) badge on every event card |
+| **ACLED taxonomy** | Full event schema compatibility — `acled_event_type`, `acled_sub_event_type`, `civilian_targeting`, `geo_precision`, `time_precision` |
+| **NATO MHC** | Every ranked recommendation shows its reasoning. Analyst suppresses, not the system. |
 
 ---
 
-## Key API Endpoints
+## Research
 
-```
-# Events & Intelligence
-GET  /api/v2/events
-GET  /api/v2/alerts
-GET  /api/v2/sitrep/latest
-GET  /api/v2/sitrep/history?limit=10
-GET  /api/v2/sitrep/accuracy
-POST /api/v2/intel-trace/{event_id}
-GET  /api/v2/disinfo/scan
-GET  /api/v2/source-reliability
-POST /api/v2/events/{event_id}/review
+Built on techniques from 20+ academic and practitioner sources. Peer-reviewed preprint available on Zenodo:
 
-# System
-GET  /api/v2/system
-GET  /api/v2/health
-GET  /api/v2/graph?limit=350
-GET  /api/v2/metoc
+> **OSINT Nexus: A Production-Deployed Multi-Source Intelligence Fusion System with LLM Reasoning and Adaptive Confidence Calibration**
+> Rachid Jaada, 2026 — [https://doi.org/10.5281/zenodo.19169143](https://doi.org/10.5281/zenodo.19169143)
 
-# Conflict Zones (admin)
-GET    /api/v2/conflict-zones
-POST   /api/v2/conflict-zones
-DELETE /api/v2/conflict-zones/{id}
-
-# Auth
-POST /api/auth/login
-POST /api/auth/register
-GET  /api/auth/session
-POST /api/auth/passkey/register/options
-POST /api/auth/passkey/register/verify
-
-# Admin
-GET    /api/admin/users
-PATCH  /api/admin/users/{username}/role
-DELETE /api/admin/users/{username}
-
-# WebSocket
-WS /ws/live
-```
-
----
-
-## Research Basis
-
-OSINT Nexus implements techniques documented in 20+ academic and practitioner sources:
-
-- **ACLED** — event taxonomy, three-tier review methodology, geo/time precision standards
-- **NATO HFM-377** — Meaningful Human Control design for AI-assisted decisions
-- **DARPA EMHAT** — explainability requirements for machine-generated threat assessments
-- **Endsley (1995)** — Situation Awareness: perception → comprehension → projection
-- **Flashpoint Ukraine** — disinformation detection via simultaneous emergence signatures
-- **Recorded Future** — corroboration-first display, alert fatigue reduction
-- **Bellingcat** — open-source verification methodology for user-generated content
-
-Full literature review available on request.
+Key references: ACLED methodology · NATO HFM-377 · DARPA EMHAT · Endsley (1995) · Flashpoint Ukraine · Recorded Future · Bellingcat
 
 ---
 
@@ -276,19 +231,20 @@ Full literature review available on request.
 ```
 .
 ├── backend/
-│   ├── main.py              # FastAPI app, routes, WebSocket
-│   ├── pollers.py           # RSS, Telegram, ADSB, Red Alert, SITREP pollers
-│   ├── reasoning_engine.py  # SITREP generation, causal chain, contradiction detection
-│   ├── disinfo_detector.py  # Coordinated info-op signature detection
-│   ├── graph_store.py       # Neo4j temporal knowledge graph
-│   ├── v2_store.py          # PostgreSQL persistence + ACLED field mapping
-│   ├── db_ops.py            # Core DB operations
-│   ├── groq_client.py       # Groq + Ollama LLM client with fallback
-│   ├── prediction_tracker.py # Layer 4: scores SITREP predictions vs reality
-│   ├── market_poller.py     # Gold, WTI, Brent, DXY, S&P500 via Yahoo Finance
-│   └── telegram_digest.py   # Daily SITREP → Telegram (EN + AR)
+│   ├── main.py               # FastAPI app, routes, WebSocket
+│   ├── ingestion.py          # Geocoding, classification, event normalization
+│   ├── pollers.py            # RSS, Telegram, ADSB, Red Alert, SITREP pollers
+│   ├── reasoning_engine.py   # SITREP, causal chain, contradiction detection
+│   ├── disinfo_detector.py   # Coordinated info-op signature detection
+│   ├── graph_store.py        # Neo4j temporal knowledge graph
+│   ├── v2_store.py           # PostgreSQL persistence + ACLED field mapping
+│   ├── groq_client.py        # Groq + Ollama LLM client with fallback
+│   ├── baseline_monitor.py   # EWMA behavioral anomaly detection per source
+│   ├── prediction_tracker.py # Scores SITREP predictions vs reality
+│   └── market_poller.py      # Gold, WTI, Brent, DXY, S&P500
 ├── frontend/
-│   └── app/v2/              # Next.js App Router pages
+│   └── app/v2/               # Next.js App Router pages
+├── k8s/                      # Kubernetes manifests
 ├── docker-compose.yml
 ├── Makefile
 └── README_K8s.md
@@ -303,14 +259,18 @@ Active development. Running live data.
 - **2,359+ events** in PostgreSQL
 - **760+ nodes** in Neo4j knowledge graph
 - **11 active source connectors**
-- Independent QA audit completed March 2026
+- Research preprint published March 2026
 
 ---
 
 ## License
 
-MIT — see [LICENSE](LICENSE)
+[AGPL v3](LICENSE) — free for open use. Commercial deployments require a separate license.
 
 ---
 
-*Built by [Rachid Jaada](https://github.com/rjaada)*
+<div align="center">
+
+Built by [Rachid Jaada](https://github.com/rjaada)
+
+</div>
