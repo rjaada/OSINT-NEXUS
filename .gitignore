@@ -60,6 +60,13 @@ OSINT_NEXUS_DOCUMENTATION.md
 frontend/app/v3/
 frontend/components/v3/
 frontend/public/logo.svg
+frontend/components/dashboard/command-nav.tsx
+landing/client/public/label_tool.html
+
+# Evaluation tooling (local only)
+eval/
+backend/eval/
+backend/static/
 
 # Git config (local only)
 .gitignore
