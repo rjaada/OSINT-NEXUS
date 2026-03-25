@@ -64,7 +64,7 @@ Paste any press conference transcript → structured extraction: headline, key c
 └─────────────────────────┬────────────────────────────────────┘
                           │  async pollers
 ┌─────────────────────────▼────────────────────────────────────┐
-│                   Backend  (FastAPI)                          │
+│                   Backend  (FastAPI)                         │
 │  geocoding · classification · confidence scoring · ACLED     │
 │  taxonomy · MGRS coords · Bayesian source reliability        │
 └──────┬──────────────────┬──────────────────┬─────────────────┘
@@ -74,17 +74,17 @@ Paste any press conference transcript → structured extraction: headline, key c
 │ events_v2   │   │ Temporal KG  │   │  WebSocket   │
 │ ACLED cols  │   │ 760+ nodes   │   │  pub/sub     │
 │ AI reports  │   │ causal graph │   │  live feed   │
-└─────────────┘   └──────────────┘   └─────────────┘
+└─────────────┘   └──────────────┘   └──────────────┘
                           │
 ┌─────────────────────────▼────────────────────────────────────┐
-│                   Reasoning Engine                            │
-│   Groq LLM (primary) → Ollama local (auto-fallback on 429)  │
+│                   Reasoning Engine                           │
+│   Groq LLM (primary) → Ollama local (auto-fallback on 429)   │
 │   SITREP · Intel Trace · Contradiction detection             │
 │   Disinformation clustering · Causal chain analysis          │
 └─────────────────────────┬────────────────────────────────────┘
                           │  REST + WebSocket
 ┌─────────────────────────▼────────────────────────────────────┐
-│                  Frontend  (Next.js 15)                       │
+│                  Frontend  (Next.js 15)                      │
 │  Intel Feed · Live Map · Alerts · SITREP · Graph Explorer    │
 │  Priority Panel · Press Brief · Admin · AR/RTL interface     │
 └──────────────────────────────────────────────────────────────┘
