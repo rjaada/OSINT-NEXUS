@@ -70,3 +70,13 @@ backend/static/
 
 # Git config (local only)
 .gitignore
+
+# Design / AI tooling (local only)
+SKILL.md
+landing_page.pen
+landing/ideas.md
+landing/Shader-botton/
+landing/client/public/__manus__/
+backend/hooks_local/
+texput.log
+.vscode/
