@@ -55,3 +55,11 @@ docs/superpowers/
 OSINT_NEXUS_DOCUMENTATION.md
 .claire/
 .claude/
+
+# V3 frontend (local only)
+frontend/app/v3/
+frontend/components/v3/
+frontend/public/logo.svg
+
+# Git config (local only)
+.gitignore
