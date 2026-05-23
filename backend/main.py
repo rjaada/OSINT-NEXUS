@@ -895,6 +895,7 @@ def fetch_recent_v2_events_pg(
     limit: int = 200,
     source_whitelist: Optional[Sequence[str]] = None,
     type_whitelist: Optional[Sequence[str]] = None,
+    before_iso: Optional[str] = None,
 ) -> List[dict]:
     return v2_store.fetch_recent_v2_events_pg(
         database_url=DATABASE_URL,
@@ -903,6 +904,7 @@ def fetch_recent_v2_events_pg(
         limit=limit,
         source_whitelist=source_whitelist,
         type_whitelist=type_whitelist,
+        before_iso=before_iso,
     )
 
 

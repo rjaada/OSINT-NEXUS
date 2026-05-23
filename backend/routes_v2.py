@@ -581,14 +581,28 @@ Context:
     }
 
 
+@router.get("/api/v2/replay/bounds")
+async def v2_replay_bounds(request: Request):
+    import main as _m
+    _m.require_analyst_or_admin(request)
+    try:
+        with _m.psycopg.connect(_m.DATABASE_URL, connect_timeout=3) as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT MIN(timestamp), MAX(timestamp) FROM events_v2")
+                row = cur.fetchone()
+                return {"earliest": row[0].isoformat() if row[0] else None, "latest": row[1].isoformat() if row[1] else None}
+    except Exception:
+        return {"earliest": None, "latest": None}
+
+
 @router.get("/api/v2/events")
-async def v2_events(request: Request, limit: int = 120, clustered: bool = False):
+async def v2_events(request: Request, limit: int = 120, clustered: bool = False, replay_at: Optional[str] = None):
     import main as _m
     _m.require_analyst_or_admin(request)
     limit = min(max(limit, 1), 400)
     # No source whitelist — return all sources (Telegram + RSS + FIRMS).
     # Frontend applies its own trust/confidence gate per source type.
-    rows = fetch_recent_v2_events_pg(limit=limit)
+    rows = fetch_recent_v2_events_pg(limit=limit, before_iso=replay_at)
     if not rows:
         rows = list(reversed(events_history[-1200:]))[:limit]
     now = datetime.now(timezone.utc)
@@ -623,14 +637,15 @@ async def v2_events(request: Request, limit: int = 120, clustered: bool = False)
 
 
 @router.get("/api/v2/alerts")
-async def v2_alerts(request: Request, limit: int = 60):
+async def v2_alerts(request: Request, limit: int = 60, replay_at: Optional[str] = None):
     import main as _m
     _m.require_analyst_or_admin(request)
     limit = min(max(limit, 1), 120)
-    now = datetime.now(timezone.utc)
+    now = datetime.now(timezone.utc) if not replay_at else datetime.fromisoformat(replay_at.replace("Z", "+00:00"))
     recent = fetch_recent_v2_events_pg(
         limit=700,
         type_whitelist=["STRIKE", "CRITICAL", "CLASH"],
+        before_iso=replay_at,
     )
     if not recent:
         recent = [e for e in events_history[-1000:] if e.get("type") in {"STRIKE", "CRITICAL", "CLASH"}]
@@ -762,11 +777,11 @@ TEXT TO ANALYZE:
 
 
 @router.get("/api/v2/sources")
-async def v2_sources(request: Request, limit: int = 200):
+async def v2_sources(request: Request, limit: int = 200, replay_at: Optional[str] = None):
     import main as _m
     _m.require_analyst_or_admin(request)
     limit = min(max(limit, 1), 400)
-    rows = fetch_recent_v2_events_pg(limit=limit)
+    rows = fetch_recent_v2_events_pg(limit=limit, before_iso=replay_at)
     if not rows:
         rows = list(reversed(events_history[-1200:]))[:limit]
     grouped = defaultdict(int)

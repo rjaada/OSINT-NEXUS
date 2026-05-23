@@ -372,6 +372,7 @@ def fetch_recent_v2_events_pg(
     limit: int = 200,
     source_whitelist: Optional[Sequence[str]] = None,
     type_whitelist: Optional[Sequence[str]] = None,
+    before_iso: Optional[str] = None,
 ) -> List[dict]:
     if not database_url.startswith("postgres") or psycopg_mod is None:
         return []
@@ -390,6 +391,9 @@ def fetch_recent_v2_events_pg(
                 if type_whitelist:
                     query.append("AND type = ANY(%s)")
                     params.append(list(type_whitelist))
+                if before_iso:
+                    query.append("AND timestamp <= %s")
+                    params.append(before_iso)
                 query.append("ORDER BY timestamp DESC")
                 query.append("LIMIT %s")
                 params.append(limit)

@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback, useRef, useMemo } from "react"
 import { MapArea } from "./map-area"
 import { AiAnalyst } from "./ai-analyst-v2"
+import { ReplayBar } from "./replay-bar"
 import { csrfHeaders } from "@/lib/security"
 
 type EventType = "STRIKE" | "MOVEMENT" | "NOTAM" | "CLASH" | "CRITICAL"
@@ -179,6 +180,8 @@ export function Dashboard() {
   const [traceError, setTraceError] = useState("")
   const [disinfoData, setDisinfoData] = useState<{ clusters_detected: number; high_suspicion: number; medium_suspicion: number; clusters: Array<{ cluster_id: string; suspicion_level: string; sources: string[]; time_spread_minutes: number; common_tokens: string[]; flag_reason: string; event_count: number; analyst_note: string }> } | null>(null)
   const [suppressedIds, setSuppressedIds] = useState<Set<string>>(new Set())
+  const [replayTime, setReplayTime] = useState<string | null>(null)
+  const [replayBounds, setReplayBounds] = useState<{ earliest: string | null; latest: string | null }>({ earliest: null, latest: null })
   const seenIdsRef = useRef<Set<string>>(new Set())
   const hasInteractedRef = useRef(false)
   const eventsRef = useRef<IntelEvent[]>([])
@@ -338,20 +341,29 @@ export function Dashboard() {
   }, [crisisMode])
 
   useEffect(() => {
+    fetch(`${API_BASE}/api/v2/replay/bounds`, { credentials: "include" })
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { if (d) setReplayBounds(d) })
+      .catch(() => {})
+  }, [])
+
+  useEffect(() => {
     const backfill = async () => {
       try {
-        const res = await fetch(`${API_BASE}/api/v2/events?limit=${crisisMode ? 160 : 110}`)
+        const replayParam = replayTime ? `&replay_at=${encodeURIComponent(replayTime)}` : ""
+        const res = await fetch(`${API_BASE}/api/v2/events?limit=${crisisMode ? 160 : 110}${replayParam}`, { credentials: "include" })
         if (res.ok) {
           const data: IntelEvent[] = await res.json()
           seenIdsRef.current.clear()
           setEvents([])
           data.filter((evt) => isOperationalEventSource(evt.source)).forEach((evt) => addEvent(evt, true))
-          setWsStatus("live")
+          if (!replayTime) setWsStatus("live")
+          else setWsStatus("offline")
         }
       } catch (_) {}
     }
     backfill()
-  }, [addEvent, crisisMode])
+  }, [addEvent, crisisMode, replayTime])
 
   useEffect(() => {
     if (!selectedMapEvent) return
@@ -384,6 +396,7 @@ export function Dashboard() {
         ws.onerror = () => ws.close()
         ws.onmessage = (e) => {
           try {
+            if (replayTime) return
             const payload = JSON.parse(e.data)
             if (payload.type === "NEW_EVENT") {
               const evt = payload.data as IntelEvent
@@ -427,6 +440,7 @@ export function Dashboard() {
   return (
     <>
       <div className="flex-1 min-w-0 flex flex-col">
+        <ReplayBar replayTime={replayTime} bounds={replayBounds} onReplayChange={setReplayTime} />
         <div className="flex-1 min-h-0 p-2 flex flex-col relative">
           <MapArea
             events={events}
