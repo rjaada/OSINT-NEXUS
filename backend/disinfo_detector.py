@@ -15,6 +15,7 @@ The analyst must verify. Flags are surfaced, never acted on automatically.
 """
 
 import logging
+import hashlib
 import math
 import re
 from collections import defaultdict
@@ -186,7 +187,8 @@ def detect_coordinated_clusters(
         # Sensor sources corroborating = less suspicious (real events leave sensor signatures)
         sensor_count = sum(1 for e in cluster_events if _channel_type(e.get("source") or "") == "sensor")
         if sensor_count > 0:
-            score -= 25
+            sensor_penalty = min(25, int(25 * sensor_count / max(len(cluster_events), 1)))
+            score -= sensor_penalty
 
         suspicion_level = "HIGH" if score >= 50 else "MEDIUM" if score >= 25 else "LOW"
 
@@ -201,7 +203,7 @@ def detect_coordinated_clusters(
             reasons.append("no sensor corroboration")
 
         clusters.append({
-            "cluster_id": f"disinfo_{int(datetime.now(timezone.utc).timestamp())}_{i}",
+            "cluster_id": "disinfo_" + hashlib.sha256(",".join(sorted(str(e.get("id", "")) for e in cluster_events)).encode()).hexdigest()[:12],
             "detected_at": datetime.now(timezone.utc).isoformat(),
             "suspicion_level": suspicion_level,
             "event_count": len(cluster_events),

@@ -223,6 +223,7 @@ EVIDENCE:
 async def v2_ai_verify(payload: Dict[str, Any], _user: dict = Depends(_require_analyst_or_admin)):
     title = str(payload.get("title", "")).strip()
     body = str(payload.get("body", "")).strip()
+    body = body[:8000]
     source = str(payload.get("source", "")).strip()
     published_at = str(payload.get("published_at", "")).strip()
     if not (title or body):
@@ -953,10 +954,18 @@ async def v2_watchlists(request: Request, owner: str = "anon", x_api_key: Option
     out = []
     for r in rows:
         query = str(r["query"])
-        matched = [
-            e for e in events_history[-300:]
-            if query.lower() in str(e.get("desc", "")).lower() or query.lower() in str(_extract_source(e)).lower()
-        ]
+        hits = 0
+        if _db is not None:
+            try:
+                with _db.cursor() as _hcur:
+                    _hcur.execute(
+                        "SELECT COUNT(*) AS cnt FROM events_v2 WHERE description ILIKE %s OR source ILIKE %s",
+                        (f"%{query}%", f"%{query}%"),
+                    )
+                    hit_row = _hcur.fetchone()
+                    hits = int(hit_row["cnt"]) if hit_row else 0
+            except Exception:
+                hits = 0
         out.append(
             {
                 "id": r["id"],
@@ -964,7 +973,7 @@ async def v2_watchlists(request: Request, owner: str = "anon", x_api_key: Option
                 "owner": r["owner"],
                 "query": query,
                 "tags": json.loads(r["tags_json"] or "[]"),
-                "hits": len(matched),
+                "hits": hits,
                 "created_at": r["created_at"],
             }
         )

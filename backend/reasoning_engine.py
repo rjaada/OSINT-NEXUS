@@ -144,20 +144,24 @@ def correlate_events(
     # Sort by timestamp
     sorted_evts = sorted(events, key=lambda e: _parse_ts(str(e.get("timestamp", ""))))
 
-    # Build adjacency: two events are "related" if any criterion matches
+    # Pre-compute timestamps and token sets to avoid O(n²) redundant calls
     n = len(sorted_evts)
+    timestamps = [_parse_ts(str(e.get("timestamp", ""))) for e in sorted_evts]
+    token_sets = [_event_tokens(e) for e in sorted_evts]
+
+    # Build adjacency: two events are "related" if any criterion matches
     related: Dict[int, set] = defaultdict(set)
 
     for i in range(n):
         ei = sorted_evts[i]
-        ti = _parse_ts(str(ei.get("timestamp", "")))
-        toks_i = _event_tokens(ei)
+        ti = timestamps[i]
+        toks_i = token_sets[i]
         lat_i = float(ei.get("lat") or 0.0)
         lng_i = float(ei.get("lng") or 0.0)
 
         for j in range(i + 1, n):
             ej = sorted_evts[j]
-            tj = _parse_ts(str(ej.get("timestamp", "")))
+            tj = timestamps[j]
 
             # Per-pair temporal tolerance (Castanedo 2013 JDL Level 1)
             src_i_name = str(ei.get("source", ""))
@@ -169,7 +173,7 @@ def correlate_events(
 
             lat_j = float(ej.get("lat") or 0.0)
             lng_j = float(ej.get("lng") or 0.0)
-            toks_j = _event_tokens(ej)
+            toks_j = token_sets[j]
 
             spatial = _haversine_deg(lat_i, lng_i, lat_j, lng_j) <= proximity_deg
             same_type = ei.get("type") == ej.get("type") and ei.get("type") not in (None, "", "CLASH")
@@ -331,7 +335,7 @@ Produce a structured JSON SITREP with these exact keys:
   "forecast": {
     "next_24h": "Most likely development in next 24 hours based on current trajectory",
     "next_72h": "Likely situation within 72 hours if current trend continues",
-    "next_7d": "Strategic outlook for the next 7 days"
+    "next_7d": "Strategic outlook for the next 7 days. IMPORTANT: if event data spans less than 12 hours, you MUST write 'Insufficient data for 7-day projection — [state what collection gap exists]' instead of speculating."
   }
 }
 Base EVERYTHING on the provided events. Do not invent facts.

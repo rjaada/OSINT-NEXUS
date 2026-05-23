@@ -244,7 +244,7 @@ class ConnectionManager:
     async def broadcast(self, msg: dict):
         text = json.dumps(msg)
         dead = []
-        for ws in self.connections:
+        for ws in list(self.connections):
             try:
                 await ws.send_text(text)
             except Exception:
@@ -1335,212 +1335,6 @@ async def geolocate_event(title: str, summary: str, fallback_seed: str, allow_ai
     }
 
 
-def parse_telegram_posts(html_text: str, channel_slug: str) -> list:
-    soup = BeautifulSoup(html_text, "html.parser")
-    posts = []
-    for message in soup.select("div.tgme_widget_message"):
-        data_post = message.get("data-post", "")
-        if not data_post.startswith(f"{channel_slug}/"):
-            continue
-
-        post_id = data_post.split("/")[-1]
-        text_node = message.select_one("div.tgme_widget_message_text")
-        text = text_node.get_text(" ", strip=True) if text_node else ""
-        video_node = (
-            message.select_one("video.tgme_widget_message_video")
-            or message.select_one("video.js-message_video")
-            or message.select_one("video")
-        )
-        video_src = None
-        if video_node:
-            # Telegram lazy-loads via data-src; fall back to <source> children
-            video_src = (
-                video_node.get("src")
-                or video_node.get("data-src")
-                or (video_node.select_one("source") and video_node.select_one("source").get("src"))
-                or None
-            )
-            # Strip empty strings
-            if video_src and not video_src.strip():
-                video_src = None
-        has_video = bool(video_node or message.select_one(".tgme_widget_message_video_player") or message.select_one(".tgme_widget_message_video_wrap"))
-        if len(text) < 15 and not has_video:
-            continue
-
-        date_node = message.select_one("a.tgme_widget_message_date")
-        url = date_node.get("href", f"https://t.me/{data_post}") if date_node else f"https://t.me/{data_post}"
-        time_node = message.select_one("time")
-        ts = time_node.get("datetime") if time_node else utc_now_iso()
-
-        posts.append({
-            "post_id": post_id,
-            "text": text,
-            "url": url,
-            "timestamp": ts,
-            "has_video": has_video,
-            "video_src": video_src,
-        })
-
-    def post_sort_key(item: dict) -> int:
-        try:
-            return int(item["post_id"])
-        except Exception:
-            return 0
-
-    posts.sort(key=post_sort_key)
-    return posts
-
-
-def download_telegram_video(post_url: str, event_id: str) -> Optional[str]:
-    if not DOWNLOAD_TELEGRAM_MEDIA:
-        return None
-    try:
-        out_tpl = str(TELEGRAM_MEDIA_DIR / f"{event_id}.%(ext)s")
-        cmd = [
-            "yt-dlp",
-            "--no-playlist",
-            "--socket-timeout", "15",
-            "--retries", "2",
-            "--max-filesize", f"{TELEGRAM_MAX_MEDIA_MB}M",
-            "--restrict-filenames",
-            "-f", "mp4/best[ext=mp4]/best",
-            "-o", out_tpl,
-            post_url,
-        ]
-        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=90)
-        for ext in ("mp4", "webm", "mkv", "mov"):
-            candidate = TELEGRAM_MEDIA_DIR / f"{event_id}.{ext}"
-            if candidate.exists():
-                size_mb = candidate.stat().st_size / (1024 * 1024)
-                if size_mb > TELEGRAM_MAX_MEDIA_MB:
-                    candidate.unlink(missing_ok=True)
-                    return None
-                return f"/media/telegram/{candidate.name}"
-    except Exception:
-        return None
-    return None
-
-
-def download_video_direct(cdn_url: str, event_id: str) -> Optional[str]:
-    """Download a Telegram CDN video URL directly with httpx, bypassing yt-dlp."""
-    if not cdn_url or not DOWNLOAD_TELEGRAM_MEDIA:
-        return None
-    try:
-        import httpx as _httpx
-        headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://t.me/"}
-        max_bytes = TELEGRAM_MAX_MEDIA_MB * 1024 * 1024
-        with _httpx.stream("GET", cdn_url, headers=headers, follow_redirects=True, timeout=30) as r:
-            if r.status_code != 200:
-                return None
-            ct = r.headers.get("content-type", "")
-            if "video" not in ct and "octet" not in ct:
-                return None
-            ext = "mp4"
-            if "webm" in ct:
-                ext = "webm"
-            dest = TELEGRAM_MEDIA_DIR / f"{event_id}.{ext}"
-            downloaded = 0
-            with open(dest, "wb") as f:
-                for chunk in r.iter_bytes(chunk_size=65536):
-                    downloaded += len(chunk)
-                    if downloaded > max_bytes:
-                        dest.unlink(missing_ok=True)
-                        return None
-                    f.write(chunk)
-        return f"/media/telegram/{dest.name}"
-    except Exception:
-        return None
-
-
-def infer_video_metadata(desc: str, has_video: bool, geo_method: str) -> dict:
-    if not has_video:
-        return {}
-
-    clues = []
-    lower = (desc or "").lower()
-    for place in extract_place_candidates(lower):
-        clues.append(f"place_mention:{place}")
-
-    if geo_method in {"place-dict", "geocoder"} and clues:
-        tag = "LIKELY_RELATED"
-        confidence = "MEDIUM"
-    elif geo_method == "ollama" and clues:
-        tag = "LIKELY_RELATED"
-        confidence = "HIGH"
-    elif clues:
-        tag = "UNVERIFIED_VISUAL"
-        confidence = "LOW"
-    else:
-        tag = "MISMATCH"
-        confidence = "LOW"
-
-    return {
-        "video_assessment": tag,
-        "video_confidence": confidence,
-        "video_clues": clues[:4],
-    }
-
-
-def is_playable_video_url(url: str) -> bool:
-    if not url:
-        return False
-    if url.startswith("/media/telegram/"):
-        local_path = TELEGRAM_MEDIA_DIR / Path(url).name
-        return local_path.exists() and local_path.is_file()
-    lower = url.lower()
-    # Accept direct CDN URLs from Telegram even without file extension
-    if "cdn.telegram.org" in lower or "cdn1.telegram.org" in lower or "cdn2.telegram.org" in lower:
-        return True
-    return bool(re.search(r"\.(mp4|webm|mov|m4v)(\?|$)", lower))
-
-
-def is_relevant(entry) -> bool:
-    text = (
-        getattr(entry, "title", "") + " " +
-        getattr(entry, "summary", "") + " " +
-        getattr(entry, "description", "")
-    ).lower()
-    return any(kw in text for kw in CONFLICT_KEYWORDS)
-
-
-def build_incident_id(event: dict) -> str:
-    text = normalize_desc(event.get("desc", ""))
-    tokens = " ".join(text.split()[:10])
-    lat_b = round(float(event.get("lat", 0.0)), 1)
-    lng_b = round(float(event.get("lng", 0.0)), 1)
-    typ = str(event.get("type", "CLASH"))
-    key = f"{typ}|{lat_b}|{lng_b}|{tokens}"
-    return "inc_" + hashlib.sha256(key.encode()).hexdigest()[:14]
-
-
-def should_merge_with_existing(event: dict) -> Optional[str]:
-    now_ts = _parse_iso(str(event.get("timestamp", utc_now_iso())))
-    new_norm = normalize_desc(event.get("desc", ""))
-    for incident_id, existing in list(incident_index.items()):
-        if existing.get("type") != event.get("type"):
-            continue
-        old_ts = _parse_iso(str(existing.get("timestamp", utc_now_iso())))
-        if abs((now_ts - old_ts).total_seconds()) > 12 * 60:
-            continue
-        if _haversine_km(float(existing.get("lat", 0.0)), float(existing.get("lng", 0.0)), float(event.get("lat", 0.0)), float(event.get("lng", 0.0))) > 90:
-            continue
-        old_norm = normalize_desc(existing.get("desc", ""))
-        overlap = len(set(new_norm.split()) & set(old_norm.split()))
-        if overlap >= 4:
-            return incident_id
-    return None
-
-
-def push_event_buffer(event: dict):
-    events_buffer.append({
-        "type": event.get("type"),
-        "desc": event.get("desc"),
-        "source": _extract_source(event),
-    })
-    if len(events_buffer) > 80:
-        events_buffer[:] = events_buffer[-80:]
-
-
 async def ingest_event(event: dict):
     """Centralized ingest path: dedup, persistence, history, broadcast."""
     with incident_lock:
@@ -1773,10 +1567,12 @@ def calculate_defcon() -> Dict[str, Any]:
             "capped_from_1": False,
         }
 
-    recent = [e for e in events_history[-1800:] if _parse_iso(str(e.get("timestamp", utc_now_iso()))) >= now - timedelta(minutes=60)]
+    with incident_lock:
+        snapshot = list(events_history[-2400:])
+    recent = [e for e in snapshot[-1800:] if _parse_iso(str(e.get("timestamp", utc_now_iso()))) >= now - timedelta(minutes=60)]
     prev = [
         e
-        for e in events_history[-2400:]
+        for e in snapshot
         if now - timedelta(minutes=120) <= _parse_iso(str(e.get("timestamp", utc_now_iso()))) < now - timedelta(minutes=60)
     ]
     recent_count = len(recent)
@@ -1876,12 +1672,15 @@ async def runtime_housekeeping():
         await asyncio.sleep(60)
 
 
+_redis_client = None  # initialized in lifespan startup
+
+
 def _check_rate_limit(ip: str, limit: int, window_sec: int) -> bool:
     """Returns True if request is allowed, False if rate limited."""
     try:
-        import redis as redis_lib
-        from config import REDIS_URL
-        r = redis_lib.from_url(REDIS_URL, socket_timeout=0.5)
+        r = _redis_client
+        if r is None:
+            return True
         key = f"rl:{ip}:{window_sec}"
         count = r.incr(key)
         if count == 1:
@@ -1894,9 +1693,9 @@ def _check_rate_limit(ip: str, limit: int, window_sec: int) -> bool:
 
 def _track_failed_login(ip: str) -> int:
     try:
-        import redis as redis_lib
-        from config import REDIS_URL
-        r = redis_lib.from_url(REDIS_URL, socket_timeout=0.5)
+        r = _redis_client
+        if r is None:
+            return 0
         key = f"fl:{ip}"
         count = r.incr(key)
         if count == 1:
@@ -1908,9 +1707,9 @@ def _track_failed_login(ip: str) -> int:
 
 def _clear_failed_login(ip: str):
     try:
-        import redis as redis_lib
-        from config import REDIS_URL
-        r = redis_lib.from_url(REDIS_URL, socket_timeout=0.5)
+        r = _redis_client
+        if r is None:
+            return
         r.delete(f"fl:{ip}")
     except Exception:
         pass
@@ -1922,14 +1721,18 @@ async def prune_old_data():
         await asyncio.sleep(24 * 3600)  # run once per day
         try:
             from config import DATABASE_URL
-            import psycopg
+            import psycopg as _psycopg_prune
             cutoff = (datetime.now(timezone.utc) - timedelta(days=90)).isoformat()
-            with psycopg.connect(DATABASE_URL, connect_timeout=5) as conn:
-                result = conn.execute(
-                    "DELETE FROM events_v2 WHERE timestamp < %s", (cutoff,)
-                )
-                conn.commit()
-                deleted = result.rowcount
+
+            def _do_prune():
+                with _psycopg_prune.connect(DATABASE_URL, connect_timeout=5) as conn:
+                    result = conn.execute(
+                        "DELETE FROM events_v2 WHERE timestamp < %s", (cutoff,)
+                    )
+                    conn.commit()
+                    return result.rowcount
+
+            deleted = await asyncio.to_thread(_do_prune)
             logger.info(f"[PRUNE] Deleted {deleted} events older than 90 days")
 
             # Prune old media files older than 90 days
@@ -1961,8 +1764,15 @@ app.include_router(v2_router)
 
 @app.on_event("startup")
 async def startup_event():
-    global _start_time, _db, _ollama_http_client, _geocode_http_client, _graph_store
+    global _start_time, _db, _ollama_http_client, _geocode_http_client, _graph_store, _redis_client
     _start_time = time.time()
+    try:
+        import redis as _redis_lib
+        from config import REDIS_URL
+        _redis_client = _redis_lib.from_url(REDIS_URL, socket_timeout=0.5)
+        _redis_client.ping()
+    except Exception:
+        _redis_client = None
     validate_security_config()
     _db = db_postgres.get_pg_conn()
     db_postgres.init_pg_schema(_db)
