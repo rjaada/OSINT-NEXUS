@@ -280,5 +280,25 @@ def init_pg_schema(conn: psycopg.Connection) -> None:
         cur.execute(
             "CREATE INDEX IF NOT EXISTS idx_user_passkeys_username ON user_passkeys(username)"
         )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS hypotheses (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                statement TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'OPEN',
+                confidence INTEGER NOT NULL DEFAULT 50,
+                evidence_ids TEXT[] DEFAULT '{}',
+                analyst_notes TEXT DEFAULT '',
+                analyst TEXT DEFAULT 'AI-NEXUS-01',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                tags TEXT[] DEFAULT '{}'
+            )
+            """
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_hypotheses_status ON hypotheses(status)"
+        )
 
     conn.commit()

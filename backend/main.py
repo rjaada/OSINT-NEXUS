@@ -2400,6 +2400,103 @@ async def narrative_graph(request: Request):
     }
 
 
+# ---------------------------------------------------------------------------
+# Hypothesis Board — analyst workspace
+# ---------------------------------------------------------------------------
+
+@app.get("/api/v2/hypotheses")
+async def list_hypotheses(request: Request):
+    require_analyst_or_admin(request)
+    try:
+        with psycopg.connect(DATABASE_URL, connect_timeout=3) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id, title, statement, status, confidence, evidence_ids, "
+                    "analyst_notes, analyst, created_at, updated_at, tags "
+                    "FROM hypotheses ORDER BY updated_at DESC"
+                )
+                rows = cur.fetchall()
+        cols = ["id","title","statement","status","confidence","evidence_ids",
+                "analyst_notes","analyst","created_at","updated_at","tags"]
+        return [dict(zip(cols, r)) for r in rows]
+    except Exception as e:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/v2/hypotheses")
+async def create_hypothesis(request: Request):
+    require_analyst_or_admin(request)
+    body = await request.json()
+    import uuid
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    hyp_id = str(uuid.uuid4())
+    try:
+        with psycopg.connect(DATABASE_URL, connect_timeout=3) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO hypotheses (id, title, statement, status, confidence, "
+                    "evidence_ids, analyst_notes, analyst, created_at, updated_at, tags) "
+                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                    (
+                        hyp_id,
+                        str(body.get("title", "Untitled"))[:200],
+                        str(body.get("statement", ""))[:2000],
+                        "OPEN",
+                        int(body.get("confidence", 50)),
+                        body.get("evidence_ids", []),
+                        str(body.get("analyst_notes", "")),
+                        str(body.get("analyst", "AI-NEXUS-01"))[:80],
+                        now, now,
+                        body.get("tags", []),
+                    ),
+                )
+            conn.commit()
+        return {"id": hyp_id, "created_at": now}
+    except Exception as e:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.patch("/api/v2/hypotheses/{hyp_id}")
+async def update_hypothesis(hyp_id: str, request: Request):
+    require_analyst_or_admin(request)
+    body = await request.json()
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    allowed = {"title", "statement", "status", "confidence", "evidence_ids", "analyst_notes", "tags"}
+    updates = {k: v for k, v in body.items() if k in allowed}
+    if not updates:
+        return {"ok": True}
+    set_clause = ", ".join(f"{k} = %s" for k in updates)
+    values = list(updates.values()) + [now, hyp_id]
+    try:
+        with psycopg.connect(DATABASE_URL, connect_timeout=3) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"UPDATE hypotheses SET {set_clause}, updated_at = %s WHERE id = %s",
+                    values,
+                )
+            conn.commit()
+        return {"ok": True, "updated_at": now}
+    except Exception as e:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/api/v2/hypotheses/{hyp_id}")
+async def delete_hypothesis(hyp_id: str, request: Request):
+    require_analyst_or_admin(request)
+    try:
+        with psycopg.connect(DATABASE_URL, connect_timeout=3) as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM hypotheses WHERE id = %s", (hyp_id,))
+            conn.commit()
+        return {"ok": True}
+    except Exception as e:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/api/v2/source-network")
 async def source_network_graph(request: Request):
     """
