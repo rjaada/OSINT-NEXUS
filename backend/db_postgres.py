@@ -401,4 +401,17 @@ def init_pg_schema(conn: psycopg.Connection) -> None:
             "CREATE INDEX IF NOT EXISTS idx_jo_judgment ON judgment_outcomes(judgment_id)"
         )
 
+        # ── theater_states ────────────────────────────────────────────────────
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS theater_states (
+                theater    TEXT PRIMARY KEY,
+                state_id   INTEGER NOT NULL DEFAULT 0,
+                state_name TEXT NOT NULL DEFAULT 'LATENT',
+                confidence DOUBLE PRECISION,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """
+        )
+
     conn.commit()

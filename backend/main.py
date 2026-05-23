@@ -2403,6 +2403,21 @@ async def source_network_graph(request: Request):
     return result
 
 
+@app.get("/api/v2/synchrony")
+async def theater_synchrony_scan(request: Request):
+    """
+    Detect cross-theater activity synchrony using Fisher's exact test.
+    Flags (theater_pair, event_type) combinations with statistically
+    significant co-occurrence after Bonferroni correction.
+    """
+    require_analyst_or_admin(request)
+    import theater_synchrony
+    result = await asyncio.to_thread(
+        theater_synchrony.get_synchrony_summary, DATABASE_URL, psycopg
+    )
+    return result
+
+
 @app.get("/api/v2/sigact/recent")
 async def sigact_recent(request: Request, limit: int = 50):
     """
