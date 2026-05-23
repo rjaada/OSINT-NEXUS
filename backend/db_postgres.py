@@ -301,4 +301,61 @@ def init_pg_schema(conn: psycopg.Connection) -> None:
             "CREATE INDEX IF NOT EXISTS idx_hypotheses_status ON hypotheses(status)"
         )
 
+        # ── doctrine_profiles ─────────────────────────────────────────────────
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS doctrine_profiles (
+                actor TEXT NOT NULL,
+                theater TEXT NOT NULL DEFAULT 'global',
+                feature_name TEXT NOT NULL,
+                bucket_start TIMESTAMPTZ NOT NULL,
+                observation_value DOUBLE PRECISION NOT NULL,
+                ewma_mean DOUBLE PRECISION NOT NULL,
+                ewma_var DOUBLE PRECISION NOT NULL,
+                z_score DOUBLE PRECISION,
+                deviation_level TEXT NOT NULL DEFAULT 'NORMAL',
+                event_count INTEGER NOT NULL DEFAULT 1,
+                sample_n INTEGER NOT NULL DEFAULT 1,
+                excluded_spike BOOLEAN NOT NULL DEFAULT FALSE,
+                source_event_ids TEXT[] NOT NULL DEFAULT '{}',
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (actor, theater, feature_name, bucket_start)
+            )
+            """
+        )
+        cur.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_doctrine_profiles_actor_feature_time
+                ON doctrine_profiles(actor, feature_name, bucket_start DESC)
+            """
+        )
+
+        # ── doctrine_alerts ───────────────────────────────────────────────────
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS doctrine_alerts (
+                id BIGSERIAL PRIMARY KEY,
+                actor TEXT NOT NULL,
+                theater TEXT NOT NULL DEFAULT 'global',
+                event_id TEXT NOT NULL,
+                feature_name TEXT NOT NULL,
+                observed_value DOUBLE PRECISION NOT NULL,
+                expected_mean DOUBLE PRECISION NOT NULL,
+                expected_sd DOUBLE PRECISION NOT NULL,
+                z_score DOUBLE PRECISION NOT NULL,
+                deviation_level TEXT NOT NULL,
+                supporting_event_ids TEXT[] NOT NULL DEFAULT '{}',
+                payload_json JSONB NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """
+        )
+        cur.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_doctrine_alerts_actor_time
+                ON doctrine_alerts(actor, created_at DESC)
+            """
+        )
+
     conn.commit()

@@ -2358,6 +2358,43 @@ async def sigact_recent(request: Request, limit: int = 50):
     return {"count": len(sigacts), "events": sigacts[:limit]}
 
 
+@app.get("/api/v2/doctrine/alerts")
+async def doctrine_alerts(request: Request, limit: int = 50):
+    """
+    Returns recent doctrine deviation alerts ordered by created_at DESC.
+    Each item is the payload_json stored by doctrine_profiler.
+    Protected: analyst or admin only.
+    """
+    user = auth_user_from_request(request)
+    if user.get("role") not in ("analyst", "admin"):
+        from fastapi import HTTPException
+        raise HTTPException(status_code=403, detail="Analyst or admin required")
+
+    if not DATABASE_URL.startswith("postgres") or psycopg is None:
+        return {"alerts": [], "count": 0}
+
+    try:
+        def _fetch():
+            with psycopg.connect(DATABASE_URL, connect_timeout=3) as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT payload_json FROM doctrine_alerts
+                        ORDER BY created_at DESC
+                        LIMIT %s
+                        """,
+                        (max(1, min(limit, 200)),),
+                    )
+                    rows = cur.fetchall()
+            return [r[0] if isinstance(r[0], dict) else {} for r in rows]
+
+        items = await asyncio.to_thread(_fetch)
+        return {"alerts": items, "count": len(items)}
+    except Exception as exc:
+        logger.warning("[doctrine/alerts] query failed: %s", exc)
+        return {"alerts": [], "count": 0, "error": str(exc)}
+
+
 @app.get("/api/v2/baseline")
 async def source_baseline(request: Request):
     """

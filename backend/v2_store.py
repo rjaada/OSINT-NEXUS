@@ -221,6 +221,13 @@ def persist_event_v2_pg(
     except Exception:
         return
 
+    # Doctrine profiling — fire-and-forget, never breaks ingest
+    try:
+        from doctrine_profiler import update_doctrine_profile_for_event
+        update_doctrine_profile_for_event(event, database_url, psycopg_mod)
+    except Exception as _e:
+        pass  # never let doctrine profiling break ingest
+
 
 def _decode_pg_event(row: Any, now_iso: Callable[[], str]) -> dict:
     payload = row[7] if isinstance(row[7], dict) else {}
