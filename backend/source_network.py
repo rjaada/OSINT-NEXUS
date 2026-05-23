@@ -31,23 +31,8 @@ _CHANNEL_TYPES: Dict[str, Set[str]] = {
     "market": {"Market Data"},
 }
 
-_PRO_AFFILIATION: Dict[str, str] = {
-    "AJ Mubasher (TG)": "pro-Qatar/Hamas-aligned",
-    "Roaa War Studies (TG)": "pro-resistance-aligned",
-    "Al Jazeera": "Qatar-state",
-    "Jerusalem Post": "Israeli-aligned",
-    "Haaretz": "Israeli-liberal",
-    "Times of Israel": "Israeli-aligned",
-    "BBC News": "neutral-Western",
-    "Reuters": "neutral-wire",
-    "DW News": "neutral-Western",
-    "France24": "neutral-Western",
-    "NPR": "neutral-Western",
-    "NASA FIRMS": "sensor",
-    "ADSB.lol": "sensor",
-    "AISStream": "sensor",
-    "FR24-MIL": "sensor",
-}
+# Affiliation labels intentionally omitted from API output — editorial judgments
+# belong in analyst notes, not automated pipeline responses.
 
 
 def _channel_type(source: str) -> str:
@@ -141,14 +126,16 @@ def detect_communities(
         for (s1, s2), data in edges.items():
             if community.get(s1) == community.get(s2):
                 continue
-            # Modularity gain approximation: normalized edge weight
-            gain = data["weight"] / total_weight
+            # Modularity gain: weight between communities vs expected by degree product
+            ki = sum(e["weight"] for (a, b), e in edges.items() if a == s1 or b == s1)
+            kj = sum(e["weight"] for (a, b), e in edges.items() if a == s2 or b == s2)
+            gain = data["weight"] / total_weight - (ki * kj) / (2 * total_weight ** 2)
             if gain > best_gain:
                 best_gain = gain
                 best_pair = (s1, s2)
 
-        # Merge only if gain > threshold (prevents over-merging)
-        if best_pair and best_gain > 0.02:
+        # Merge only when Newman-Girvan gain is positive
+        if best_pair and best_gain > 0.0:
             s1, s2 = best_pair
             old_id = community[s2]
             new_id = community[s1]
@@ -223,7 +210,6 @@ def build_source_network(
             "event_count": source_counts[src],
             "community": community_map.get(src, 0),
             "centrality": round(degree.get(src, 0) / max_degree, 3),
-            "affiliation": _PRO_AFFILIATION.get(src, "unknown"),
         })
 
     # Build edges

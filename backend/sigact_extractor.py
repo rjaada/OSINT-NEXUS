@@ -17,8 +17,12 @@ from typing import Any, Dict, List, Optional
 # MGRS grid references (2-letter zone + 6 or 8 digit coordinate)
 _MGRS_RE = re.compile(r"\b[A-Z]{2}\s?\d{6,8}\b", re.IGNORECASE)
 
-# Raw 6/8-digit numeric grids (common in Russian/Iranian reporting)
-_NUMERIC_GRID_RE = re.compile(r"\b\d{8}\b|\b\d{6}\b")
+# Raw 6/8-digit numeric grids — require explicit grid/coord context word to avoid
+# matching dates (20240715), phone numbers, casualty figures, etc.
+_NUMERIC_GRID_RE = re.compile(
+    r"(?:GR|grid|coord(?:inate)?|pos(?:ition)?)[\s:]+(\d{6,8})(?!\d)",
+    re.IGNORECASE,
+)
 
 # Military unit call signs
 _CALLSIGN_RE = re.compile(
@@ -84,10 +88,10 @@ def extract_sigact(text: str) -> Dict[str, Any]:
     if grids:
         result["grid_refs"] = grids[:4]
 
-    # Call signs
-    callsign_matches = _CALLSIGN_RE.findall(text)
+    # Call signs — use full match (e.g. "Battalion-3"), not the capture group
+    callsign_matches = [m.group(0) for m in _CALLSIGN_RE.finditer(text)]
     if callsign_matches:
-        result["call_signs"] = list({cs[0].upper() for cs in callsign_matches})[:4]
+        result["call_signs"] = list({cs.upper() for cs in callsign_matches})[:4]
 
     # BDA
     bda_matches = _BDA_RE.findall(text)

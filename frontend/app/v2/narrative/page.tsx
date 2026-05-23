@@ -106,6 +106,7 @@ export default function NarrativePage() {
     const tick = () => {
       if (!alive) return
       const nodes = nodesRef.current
+      const nodeById = new Map(nodes.map(n => [n.id, n]))
       const n = nodes.length
 
       for (let i = 0; i < n; i++) {
@@ -125,7 +126,7 @@ export default function NarrativePage() {
         }
 
         for (const nbId of adjSet.get(ni.id) ?? []) {
-          const nj = nodes.find(x => x.id === nbId)
+          const nj = nodeById.get(nbId)
           if (!nj) continue
           const dx = nj.x - ni.x
           const dy = nj.y - ni.y

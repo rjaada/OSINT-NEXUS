@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState, useCallback } from "react"
+import { useEffect, useState, useCallback, useRef } from "react"
 import { TopBar } from "@/components/dashboard/top-bar"
 import { CommandNav } from "@/components/dashboard/command-nav"
 
@@ -66,6 +66,8 @@ export default function HypothesesPage() {
   const [selected, setSelected] = useState<string | null>(null)
   const [creating, setCreating] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [patchError, setPatchError] = useState<string | null>(null)
+  const eventsLoadedRef = useRef(false)
 
   // New hypothesis form
   const [newTitle, setNewTitle] = useState("")
@@ -77,13 +79,20 @@ export default function HypothesesPage() {
   const [editConfidence, setEditConfidence] = useState(50)
   const [attachSearch, setAttachSearch] = useState("")
 
+  const loadHypotheses = useCallback(async () => {
+    const res = await fetch(`${API_BASE}/api/v2/hypotheses`, { credentials: "include" })
+    if (res.ok) setHypotheses(await res.json())
+  }, [])
+
   const load = useCallback(async () => {
-    const [hypRes, evtRes] = await Promise.all([
-      fetch(`${API_BASE}/api/v2/hypotheses`, { credentials: "include" }),
-      fetch(`${API_BASE}/api/v2/events?limit=100`, { credentials: "include" }),
-    ])
-    if (hypRes.ok) setHypotheses(await hypRes.json())
-    if (evtRes.ok) setRecentEvents(await evtRes.json())
+    const hypRes = fetch(`${API_BASE}/api/v2/hypotheses`, { credentials: "include" })
+    // Events only loaded once — they don't change when hypotheses are updated
+    const evtPromise = eventsLoadedRef.current
+      ? Promise.resolve(null)
+      : fetch(`${API_BASE}/api/v2/events?limit=100`, { credentials: "include" })
+    const [hRes, eRes] = await Promise.all([hypRes, evtPromise])
+    if (hRes.ok) setHypotheses(await hRes.json())
+    if (eRes && eRes.ok) { setRecentEvents(await eRes.json()); eventsLoadedRef.current = true }
     setLoading(false)
   }, [])
 
@@ -100,36 +109,49 @@ export default function HypothesesPage() {
 
   const patch = useCallback(async (id: string, updates: Partial<Hypothesis>) => {
     setSaving(true)
-    await fetch(`${API_BASE}/api/v2/hypotheses/${id}`, {
-      method: "PATCH",
-      credentials: "include",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(updates),
-    })
-    await load()
-    setSaving(false)
-  }, [load])
+    setPatchError(null)
+    try {
+      const res = await fetch(`${API_BASE}/api/v2/hypotheses/${id}`, {
+        method: "PATCH",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(updates),
+      })
+      if (!res.ok) throw new Error(`Save failed (${res.status})`)
+      await loadHypotheses()
+    } catch (e) {
+      setPatchError(String(e))
+    } finally {
+      setSaving(false)
+    }
+  }, [loadHypotheses])
 
   const createHyp = useCallback(async () => {
     if (!newTitle.trim()) return
     setSaving(true)
-    await fetch(`${API_BASE}/api/v2/hypotheses`, {
-      method: "POST",
-      credentials: "include",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ title: newTitle, statement: newStatement, confidence: newConfidence }),
-    })
-    setNewTitle(""); setNewStatement(""); setNewConfidence(50)
-    setCreating(false)
-    await load()
-    setSaving(false)
-  }, [newTitle, newStatement, newConfidence, load])
+    try {
+      const res = await fetch(`${API_BASE}/api/v2/hypotheses`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: newTitle, statement: newStatement, confidence: newConfidence }),
+      })
+      if (!res.ok) throw new Error(`Create failed (${res.status})`)
+      setNewTitle(""); setNewStatement(""); setNewConfidence(50)
+      setCreating(false)
+      await loadHypotheses()
+    } catch (e) {
+      setPatchError(String(e))
+    } finally {
+      setSaving(false)
+    }
+  }, [newTitle, newStatement, newConfidence, loadHypotheses])
 
   const deleteHyp = useCallback(async (id: string) => {
     await fetch(`${API_BASE}/api/v2/hypotheses/${id}`, { method: "DELETE", credentials: "include" })
     setSelected(null)
-    await load()
-  }, [load])
+    await loadHypotheses()
+  }, [loadHypotheses])
 
   const attachEvent = useCallback(async (hyp: Hypothesis, evtId: string) => {
     const current = hyp.evidence_ids ?? []
@@ -310,6 +332,9 @@ export default function HypothesesPage() {
                 >
                   {saving ? "SAVING..." : "SAVE"}
                 </button>
+                {patchError && (
+                  <div className="mt-1 text-[7px] text-red-400">{patchError}</div>
+                )}
               </div>
 
               {/* Evidence attached */}

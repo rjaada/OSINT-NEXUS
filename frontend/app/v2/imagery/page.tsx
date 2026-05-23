@@ -61,11 +61,12 @@ function ImageryContent() {
   const [error, setError] = useState<string | null>(null)
   const [recentFirms, setRecentFirms] = useState<Array<{ id: string; lat: number; lng: number; timestamp: string; desc: string }>>([])
 
-  // Auto-run if URL params are set
+  // Auto-run if URL params are set — validate before use
   useEffect(() => {
-    if (params.get("lat") && params.get("lng")) void run(
-      params.get("lat")!, params.get("lng")!, params.get("ts") ?? new Date().toISOString(), "3"
-    )
+    const rawLat = parseFloat(params.get("lat") ?? "")
+    const rawLng = parseFloat(params.get("lng") ?? "")
+    if (isNaN(rawLat) || isNaN(rawLng) || rawLat < -90 || rawLat > 90 || rawLng < -180 || rawLng > 180) return
+    void run(String(rawLat), String(rawLng), params.get("ts") ?? new Date().toISOString(), "3")
   }, [])
 
   // Load recent FIRMS events for quick-select

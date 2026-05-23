@@ -58,7 +58,7 @@ async def _search_scenes(
         async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.get(STAC_SEARCH_URL, params=params)
             if not resp.is_success:
-                logger.warning("STAC search %s → %d", STAC_URL, resp.status_code)
+                logger.warning("STAC search %s → %d", STAC_SEARCH_URL, resp.status_code)
                 return []
             features = resp.json().get("features", [])
     except Exception as exc:
@@ -101,43 +101,22 @@ async def _search_scenes(
 def _change_score(before: List[dict], after: List[dict]) -> float:
     """
     Catalog-level heuristic change score 0.0–1.0.
-    Proxy signals: cloud/smoke delta, scene availability, time gap.
+    Only scores when both before and after scenes exist — avoids emitting
+    misleading flags when there is nothing to compare.
+    Proxy signal: cloud cover delta weighted by scene clarity credibility.
     """
-    if not before and not after:
-        return 0.0
-    if not before:
-        return 0.25  # no baseline
-    if not after:
-        return 0.15  # no post-event imagery yet
+    if not before or not after:
+        return 0.0  # no comparison possible — emit only availability flags
 
     bc = min(s["cloud_cover"] for s in before)
     ac = min(s["cloud_cover"] for s in after)
-    cloud_delta = max(0.0, ac - bc)
+    cloud_delta = max(0.0, ac - bc) / 100.0  # normalize 0–1
 
-    score = 0.1
-    if cloud_delta > 25:
-        score += 0.35
-    elif cloud_delta > 12:
-        score += 0.20
-    elif cloud_delta > 5:
-        score += 0.10
+    # Credibility weight: penalise high-cloud scenes on either side
+    credibility = (1.0 - bc / 100.0) * (1.0 - ac / 100.0)
 
-    # Post-event imagery available
-    score += 0.15
-
-    # Temporal proximity bonus
-    try:
-        a_dt = datetime.fromisoformat(str(after[0]["datetime"]).replace("Z", "+00:00"))
-        b_dt = datetime.fromisoformat(str(before[0]["datetime"]).replace("Z", "+00:00"))
-        days = (a_dt - b_dt).days
-        if days <= 5:
-            score += 0.20
-        elif days <= 10:
-            score += 0.10
-    except Exception:
-        pass
-
-    return round(min(score, 1.0), 2)
+    score = round(min(cloud_delta * credibility * 2.5, 1.0), 2)
+    return score
 
 
 def _flags(score: float, before: List[dict], after: List[dict]) -> List[str]:
