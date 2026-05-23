@@ -1294,6 +1294,55 @@ async def v2_sitrep_accuracy(request: Request):
     return _m.fetch_sitrep_accuracy()
 
 
+@router.get("/api/v2/claims/{event_id}/lineage")
+async def v2_claim_lineage(event_id: str, request: Request, window_hours: float = 24.0):
+    """
+    Build a claim propagation tree for the given event.
+    Returns nodes + edges showing how the claim spread across sources.
+    """
+    import main as _m
+    _m.require_analyst_or_admin(request)
+
+    # Fetch seed event from postgres
+    seed_event: Optional[Dict[str, Any]] = None
+    try:
+        from psycopg.rows import dict_row as _dict_row
+        with _m.psycopg.connect(_m.DATABASE_URL, connect_timeout=3, row_factory=_dict_row) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, incident_id, type, desc, lat, lng, source, timestamp,
+                           url, confidence_score, observed_facts
+                    FROM events_v2
+                    WHERE id = %s
+                    LIMIT 1
+                    """,
+                    (event_id,),
+                )
+                seed_event = cur.fetchone()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    if not seed_event:
+        raise HTTPException(status_code=404, detail="Event not found")
+
+    # Fetch candidate events within the time window
+    candidates: List[Dict[str, Any]] = []
+    try:
+        candidates = _m.fetch_recent_v2_events_pg(limit=500)
+    except Exception:
+        pass
+
+    from claim_lineage import find_related_events, build_lineage_tree
+    related = find_related_events(
+        seed_event=dict(seed_event),
+        candidate_events=[dict(e) for e in candidates if e.get("id") != event_id],
+        window_hours=window_hours,
+    )
+    tree = build_lineage_tree(related)
+    return tree
+
+
 @router.websocket("/ws/live")
 async def ws_endpoint(websocket: WebSocket):
     import main as _m
