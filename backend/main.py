@@ -1763,6 +1763,23 @@ app.include_router(ops_router)
 from routes_v2 import router as v2_router
 app.include_router(v2_router)
 
+async def _escalation_retrain_loop() -> None:
+    """Background loop: retrain escalation HMM models weekly (Sunday 02:00 UTC approx.)."""
+    await asyncio.sleep(120)  # let startup settle
+    while True:
+        try:
+            import escalation_classifier
+            result = await asyncio.to_thread(
+                escalation_classifier.retrain_all_theaters, DATABASE_URL, psycopg
+            )
+            trained = result.get("trained", [])
+            if trained:
+                logger.info("[escalation] weekly retrain complete: %s", trained)
+        except Exception as exc:
+            logger.warning("[escalation] retrain loop error: %s", exc)
+        await asyncio.sleep(7 * 24 * 3600)  # 7 days
+
+
 async def _resolve_calibration_loop(window: str, interval_hours: int) -> None:
     """Background loop: resolve pending analyst calibration judgments."""
     await asyncio.sleep(60)  # let startup settle
@@ -1896,6 +1913,7 @@ async def startup_event():
     _bg_tasks.append(asyncio.create_task(prune_old_data()))
     _bg_tasks.append(asyncio.create_task(_resolve_calibration_loop("24h", interval_hours=1)))
     _bg_tasks.append(asyncio.create_task(_resolve_calibration_loop("7d", interval_hours=6)))
+    _bg_tasks.append(asyncio.create_task(_escalation_retrain_loop()))
     logger.info("[OSINT] Engine started — pollers + DB persistence active")
 
 
@@ -2400,6 +2418,34 @@ async def source_network_graph(request: Request):
     recent = fetch_recent_v2_events_pg(limit=500) if DATABASE_URL.startswith("postgres") else list(events_history[-500:])
     scan = await asyncio.to_thread(disinfo_detector.scan_for_disinfo, recent)
     result = await asyncio.to_thread(source_network.build_source_network, recent, scan["clusters"])
+    return result
+
+
+@app.get("/api/v2/escalation")
+async def escalation_states(request: Request):
+    """
+    Return current escalation state for all active conflict theaters.
+    Uses HMM if trained model exists, falls back to rule-based classification.
+    """
+    require_analyst_or_admin(request)
+    import escalation_classifier
+    result = await asyncio.to_thread(
+        escalation_classifier.get_all_theater_states, DATABASE_URL, psycopg
+    )
+    return {"theaters": result, "scanned_at": datetime.now(timezone.utc).isoformat()}
+
+
+@app.post("/api/v2/escalation/retrain")
+async def escalation_retrain(request: Request):
+    """Trigger immediate HMM retrain for all theaters. Admin only."""
+    user = auth_user_from_request(request)
+    if user.get("role") != "admin":
+        from fastapi import HTTPException
+        raise HTTPException(status_code=403, detail="Admin required")
+    import escalation_classifier
+    result = await asyncio.to_thread(
+        escalation_classifier.retrain_all_theaters, DATABASE_URL, psycopg
+    )
     return result
 
 
