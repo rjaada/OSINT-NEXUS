@@ -736,12 +736,23 @@ export function Dashboard() {
                   {evt.timestamp && (
                     <p className="text-[9px] text-muted-foreground mt-1">{evt.timestamp} UTC</p>
                   )}
-                  <button
-                    onClick={(e) => { e.stopPropagation(); void runTrace(evt.id) }}
-                    className="mt-1.5 text-[9px] px-2 py-0.5 rounded border border-osint-purple/40 text-osint-purple hover:bg-osint-purple/10 transition-colors"
-                  >
-                    Trace Intel
-                  </button>
+                  <div className="flex gap-1.5 mt-1.5">
+                    <button
+                      onClick={(e) => { e.stopPropagation(); void runTrace(evt.id) }}
+                      className="text-[9px] px-2 py-0.5 rounded border border-osint-purple/40 text-osint-purple hover:bg-osint-purple/10 transition-colors"
+                    >
+                      Trace Intel
+                    </button>
+                    {(evt.source ?? "").toLowerCase().includes("firm") && evt.lat && evt.lng && (
+                      <a
+                        href={`/v2/imagery?lat=${evt.lat}&lng=${evt.lng}&ts=${encodeURIComponent(evt.timestamp ?? new Date().toISOString())}`}
+                        onClick={e => e.stopPropagation()}
+                        className="text-[9px] px-2 py-0.5 rounded border border-orange-400/40 text-orange-400 hover:bg-orange-400/10 transition-colors"
+                      >
+                        Sat View
+                      </a>
+                    )}
+                  </div>
                 </article>
               )
             })}

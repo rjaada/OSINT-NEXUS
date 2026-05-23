@@ -2497,6 +2497,20 @@ async def delete_hypothesis(hyp_id: str, request: Request):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/api/v2/imagery/check")
+async def imagery_check(request: Request, lat: float, lng: float, timestamp: Optional[str] = None, km: float = 3.0):
+    """
+    Fetch Sentinel-2 before/after imagery for a coordinate.
+    Uses Copernicus Data Space STAC catalog (no auth required).
+    Change score is a cloud-cover heuristic — not full NDVI analysis.
+    """
+    require_analyst_or_admin(request)
+    import sentinel_imagery
+    ts = timestamp or datetime.now(timezone.utc).isoformat()
+    result = await sentinel_imagery.analyze_change(lat, lng, ts, km=km)
+    return result
+
+
 @app.get("/api/v2/source-network")
 async def source_network_graph(request: Request):
     """
