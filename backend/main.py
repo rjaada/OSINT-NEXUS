@@ -2321,6 +2321,121 @@ async def disinfo_scan(request: Request):
     return result
 
 
+@app.get("/api/v2/narrative/graph")
+async def narrative_graph(request: Request):
+    """
+    Returns a force-graph of narrative propagation across sources.
+    Transforms disinfo scan clusters into nodes + directed edges showing
+    which source reported a claim first and how it spread.
+    """
+    user = auth_user_from_request(request)
+    if user.get("role") not in ("analyst", "admin"):
+        from fastapi import HTTPException
+        raise HTTPException(status_code=403, detail="Analyst or admin required")
+
+    import disinfo_detector
+    from datetime import datetime as _dt
+
+    recent = fetch_recent_v2_events_pg(limit=500) if DATABASE_URL.startswith("postgres") else list(events_history[-500:])
+    scan = await asyncio.to_thread(disinfo_detector.scan_for_disinfo, recent)
+
+    nodes_map: dict = {}
+    edges: list = []
+
+    for cluster in scan["clusters"]:
+        cluster_events = sorted(cluster["events"], key=lambda e: e.get("timestamp", ""))
+        if not cluster_events:
+            continue
+
+        for evt in cluster_events:
+            src = evt.get("source") or "Unknown"
+            if src not in nodes_map:
+                nodes_map[src] = {
+                    "id": src,
+                    "channel_type": disinfo_detector._channel_type(src),
+                    "event_count": 0,
+                    "clusters": [],
+                }
+            nodes_map[src]["event_count"] += 1
+            cid = cluster["cluster_id"]
+            if cid not in nodes_map[src]["clusters"]:
+                nodes_map[src]["clusters"].append(cid)
+
+        if len(cluster_events) < 2:
+            continue
+
+        first = cluster_events[0]
+        first_src = first.get("source") or "Unknown"
+        try:
+            first_ts = _dt.fromisoformat(str(first.get("timestamp", "")).replace("Z", "+00:00"))
+        except Exception:
+            first_ts = None
+
+        for evt in cluster_events[1:]:
+            tgt_src = evt.get("source") or "Unknown"
+            if tgt_src == first_src:
+                continue
+            delay_min = 0.0
+            if first_ts:
+                try:
+                    t2 = _dt.fromisoformat(str(evt.get("timestamp", "")).replace("Z", "+00:00"))
+                    delay_min = round((t2 - first_ts).total_seconds() / 60, 1)
+                except Exception:
+                    pass
+            edges.append({
+                "source": first_src,
+                "target": tgt_src,
+                "delay_minutes": delay_min,
+                "cluster_id": cluster["cluster_id"],
+                "suspicion_level": cluster["suspicion_level"],
+                "common_tokens": cluster["common_tokens"][:5],
+            })
+
+    return {
+        "nodes": list(nodes_map.values()),
+        "edges": edges,
+        "clusters_detected": scan["clusters_detected"],
+        "scanned_at": scan["scanned_at"],
+        "events_scanned": scan["events_scanned"],
+    }
+
+
+@app.get("/api/v2/source-network")
+async def source_network_graph(request: Request):
+    """
+    Returns the source information network graph.
+    Nodes = sources, edges = co-occurrence weight from shared claim clusters.
+    Community detection groups sources into suspected information networks.
+    """
+    user = auth_user_from_request(request)
+    if user.get("role") not in ("analyst", "admin"):
+        from fastapi import HTTPException
+        raise HTTPException(status_code=403, detail="Analyst or admin required")
+
+    import disinfo_detector, source_network
+    recent = fetch_recent_v2_events_pg(limit=500) if DATABASE_URL.startswith("postgres") else list(events_history[-500:])
+    scan = await asyncio.to_thread(disinfo_detector.scan_for_disinfo, recent)
+    result = await asyncio.to_thread(source_network.build_source_network, recent, scan["clusters"])
+    return result
+
+
+@app.get("/api/v2/sigact/recent")
+async def sigact_recent(request: Request, limit: int = 50):
+    """
+    Returns recent events that were flagged as SIGACT reports.
+    Includes extracted grid refs, BDA, weapons, and sensor corroboration.
+    """
+    user = auth_user_from_request(request)
+    if user.get("role") not in ("analyst", "admin"):
+        from fastapi import HTTPException
+        raise HTTPException(status_code=403, detail="Analyst or admin required")
+
+    recent = fetch_recent_v2_events_pg(limit=500) if DATABASE_URL.startswith("postgres") else list(events_history[-500:])
+    sigacts = [e for e in recent if (e.get("sigact") or {}).get("is_sigact")]
+    sigacts.sort(key=lambda e: str(e.get("timestamp", "")), reverse=True)
+    return {"count": len(sigacts), "events": sigacts[:limit]}
+
+
 @app.get("/api/v2/baseline")
 async def source_baseline(request: Request):
     """

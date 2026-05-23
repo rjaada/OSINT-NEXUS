@@ -46,6 +46,18 @@ interface AlertItem {
   confidence_score?: number
 }
 
+interface SitrepResponse {
+  headline?: string
+  what_happened?: string
+  why_it_matters?: string
+  causal_chain?: string[]
+  contradictions_summary?: string
+  watch_items?: Array<{ item: string; timeframe: string; why?: string }>
+  confidence?: string
+  forecast?: { next_24h?: string; next_72h?: string; next_7d?: string }
+  generated_at?: string
+}
+
 const CACHE_KEY = "osint_v2_brief_cache"
 const API_BASE = "http://localhost:8000"
 
@@ -182,7 +194,7 @@ export default function V2BriefsPage() {
       setError("")
       setOfflineFallback(false)
       try {
-        const [opsRes, eventsRes, alertsRes] = await Promise.all([
+        const [opsRes, eventsRes, alertsRes, sitrepRes] = await Promise.all([
           fetch(`${API_BASE}/api/v2/ai/ops-brief`, {
             method: "POST",
             credentials: "include",
@@ -192,12 +204,14 @@ export default function V2BriefsPage() {
           }),
           fetch(`${API_BASE}/api/v2/events?limit=200`, { credentials: "include", cache: "no-store" }),
           fetch(`${API_BASE}/api/v2/alerts?limit=80`, { credentials: "include", cache: "no-store" }),
+          fetch(`${API_BASE}/api/v2/sitrep/latest`, { credentials: "include", cache: "no-store" }),
         ])
 
         if (!opsRes.ok) throw new Error("AI analyst offline")
         const ops = (await opsRes.json()) as OpsBriefResponse
         const events = eventsRes.ok ? ((await eventsRes.json()) as EventItem[]) : []
         const alerts = alertsRes.ok ? ((await alertsRes.json()) as AlertItem[]) : []
+        const sitrep: SitrepResponse | null = sitrepRes.ok ? ((await sitrepRes.json()) as SitrepResponse) : null
 
         const sourceSet = new Set(
           (Array.isArray(events) ? events : [])
@@ -235,26 +249,64 @@ export default function V2BriefsPage() {
         const executiveSummary =
           paragraphs.length > 0 ? paragraphs.slice(0, 3) : summary ? [summary] : ["No summary returned from AI analyst."]
 
+        // Enrich with SITREP when available
+        const sitrepDevelopments: DevelopmentItem[] = []
+        if (sitrep?.causal_chain?.length) {
+          for (const step of sitrep.causal_chain.slice(0, 4)) {
+            sitrepDevelopments.push({ priority: "HIGH", text: String(step), sources: ["SITREP"] })
+          }
+        }
+        if (sitrep?.watch_items?.length) {
+          for (const wi of sitrep.watch_items.slice(0, 3)) {
+            sitrepDevelopments.push({
+              priority: "MEDIUM",
+              text: `WATCH [${wi.timeframe}]: ${wi.item}`,
+              sources: ["SITREP"],
+            })
+          }
+        }
+        const finalDevelopments = sitrepDevelopments.length > 0
+          ? sitrepDevelopments
+          : buildDevelopments(ops, sourceSet)
+
+        const sitrepNotes: string[] = []
+        if (sitrep?.contradictions_summary) sitrepNotes.push(`CONTRADICTIONS: ${sitrep.contradictions_summary}`)
+        if (sitrep?.forecast?.next_24h) sitrepNotes.push(`NEXT 24H: ${sitrep.forecast.next_24h}`)
+        if (sitrep?.forecast?.next_72h) sitrepNotes.push(`NEXT 72H: ${sitrep.forecast.next_72h}`)
+        const finalNotes = sitrepNotes.length > 0
+          ? sitrepNotes
+          : [summary || "No one-line AI summary returned.", ...(paragraphs.length > 0 ? [paragraphs[0]] : [])]
+
+        const finalTitle = sitrep?.headline
+          ? String(sitrep.headline).toUpperCase()
+          : String(ops.report?.title || "INTELLIGENCE SUMMARY").toUpperCase()
+        const finalReportType: ReportType = sitrep ? "SITREP" : reportType
+        const sitrepConfidence = String(sitrep?.confidence || "").toUpperCase()
+        const finalConfidence: "LOW" | "MEDIUM" | "HIGH" =
+          sitrepConfidence === "HIGH" ? "HIGH" : sitrepConfidence === "LOW" ? "LOW" : confidence
+
+        const sitrepSummary: string[] = []
+        if (sitrep?.what_happened) sitrepSummary.push(sitrep.what_happened)
+        if (sitrep?.why_it_matters) sitrepSummary.push(sitrep.why_it_matters)
+        const finalSummary = sitrepSummary.length > 0 ? sitrepSummary : executiveSummary
+
         const nextData: IntelligenceReportData = {
-          reportType,
-          title: String(ops.report?.title || "INTELLIGENCE SUMMARY").toUpperCase(),
-          docId: String(ops.document_control || `OSINT-NEXUS-${generatedAtIso.slice(0, 10).replace(/-/g, "")}-${reportId}-${reportType}`),
+          reportType: finalReportType,
+          title: finalTitle,
+          docId: String(ops.document_control || `OSINT-NEXUS-${generatedAtIso.slice(0, 10).replace(/-/g, "")}-${reportId}-${finalReportType}`),
           classification: "UNCLASSIFIED // FOUO",
           distribution: "LIMITED",
           metadata: {
             generatedAt: isoToUtcText(generatedAtIso),
             analyst: "AI-NEXUS-01",
             sourcesActive: sourceSet.size,
-            confidence,
+            confidence: finalConfidence,
             reportId,
           },
-          executiveSummary,
-          keyDevelopments: buildDevelopments(ops, sourceSet),
+          executiveSummary: finalSummary,
+          keyDevelopments: finalDevelopments,
           threat,
-          analystNotes: [
-            summary || "No one-line AI summary returned.",
-            ...(paragraphs.length > 0 ? [paragraphs[0]] : []),
-          ],
+          analystNotes: finalNotes,
         }
 
         if (!isMounted) return

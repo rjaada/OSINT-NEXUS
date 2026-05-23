@@ -574,6 +574,26 @@ def persist_event_v2_pg(event: dict):
 async def ingest_event(event: dict):
     """Centralized ingest path: dedup, persistence, history, broadcast."""
     import main as _m
+
+    # SIGACT extraction — Telegram sources only, needs geolocated event
+    if _is_telegram_source(event):
+        try:
+            import sigact_extractor
+            text = str(event.get("desc") or event.get("description") or "")
+            sigact = sigact_extractor.extract_sigact(text)
+            if sigact.get("is_sigact"):
+                recent = list(_m.events_history[-200:])
+                corr = sigact_extractor.correlate_with_sensors(event, recent)
+                sigact["sensor_corroboration"] = corr
+                if corr.get("confidence_boost", 0) > 0:
+                    event["confidence_score"] = min(
+                        100,
+                        int(event.get("confidence_score") or 45) + corr["confidence_boost"],
+                    )
+            event["sigact"] = sigact
+        except Exception:
+            pass
+
     with _m.incident_lock:
         merge_id = should_merge_with_existing(event)
         if merge_id:

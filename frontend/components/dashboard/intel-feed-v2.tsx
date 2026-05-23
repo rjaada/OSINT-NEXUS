@@ -29,6 +29,17 @@ export interface IntelEvent {
   video_assessment?: string
   video_confidence?: string
   mgrs?: string
+  sigact?: {
+    is_sigact?: boolean
+    sigact_score?: number
+    grid_refs?: string[]
+    call_signs?: string[]
+    bda?: Array<{ action: string; count: number }>
+    bda_kia?: number
+    weapons?: string[]
+    time_on_target?: string[]
+    sensor_corroboration?: { three_source?: boolean; corroborated?: boolean; corroboration_sources?: string[] }
+  }
 }
 
 export interface Aircraft {
@@ -550,6 +561,19 @@ export function Dashboard() {
                             {(evt.corroborating_sources?.length ?? 0) > 0 && (
                               <span className="px-1 py-px rounded border border-osint-green/40 bg-osint-green/10 text-osint-green text-[8px]">{evt.corroborating_sources!.length + 1} src</span>
                             )}
+                            {evt.sigact?.is_sigact && (
+                              <span
+                                className="px-1 py-px rounded border text-[8px] font-bold"
+                                style={{
+                                  color: evt.sigact.sensor_corroboration?.three_source ? "#00ff88" : "#ffa630",
+                                  borderColor: evt.sigact.sensor_corroboration?.three_source ? "#00ff8840" : "#ffa63040",
+                                  background: evt.sigact.sensor_corroboration?.three_source ? "#00ff8810" : "#ffa63010",
+                                }}
+                                title={evt.sigact.weapons?.join(", ")}
+                              >
+                                {evt.sigact.sensor_corroboration?.three_source ? "SIGACT ×3" : "SIGACT"}
+                              </span>
+                            )}
                             <span className="text-[8px] text-muted-foreground ml-auto shrink-0">{evt.source}</span>
                           </div>
                           <p className="text-[#e0e0e8] line-clamp-2 leading-snug mb-1">
@@ -691,6 +715,19 @@ export function Dashboard() {
                     })()}
                     {(evt.corroborating_sources?.length ?? 0) > 0 && (
                       <span className="px-1 py-px rounded border border-osint-green/40 bg-osint-green/10 text-osint-green text-[8px]">{evt.corroborating_sources!.length + 1} src</span>
+                    )}
+                    {evt.sigact?.is_sigact && (
+                      <span
+                        className="px-1 py-px rounded border text-[8px] font-bold"
+                        style={{
+                          color: evt.sigact.sensor_corroboration?.three_source ? "#00ff88" : "#ffa630",
+                          borderColor: evt.sigact.sensor_corroboration?.three_source ? "#00ff8840" : "#ffa63040",
+                          background: evt.sigact.sensor_corroboration?.three_source ? "#00ff8810" : "#ffa63010",
+                        }}
+                        title={(evt.sigact.weapons ?? []).join(", ")}
+                      >
+                        {evt.sigact.sensor_corroboration?.three_source ? "SIGACT ×3" : "SIGACT"}
+                      </span>
                     )}
                     {(() => { const t = sourceTier(evt.source); return <span className="text-[8px] px-1 py-px rounded border" style={{ color: t.color, borderColor: t.borderColor, background: t.bg }}>{t.label}</span> })()}
                     <span className="ml-auto text-[9px] text-muted-foreground truncate max-w-[80px]">{evt.source}</span>
