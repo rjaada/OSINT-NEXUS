@@ -308,6 +308,7 @@ _graph_store: Optional[gstore.GraphStore] = None
 _ollama_available_models: set = set()
 _media_jobs: "asyncio.Queue[dict]" = asyncio.Queue()
 _media_job_state: Dict[str, dict] = {}
+_graph_tasks: set = set()
 _rate_limit: Dict[str, List[float]] = {}
 _failed_logins: Dict[str, Dict[str, Any]] = {}
 _review_cache: Dict[str, dict] = {}
