@@ -1763,6 +1763,33 @@ app.include_router(ops_router)
 from routes_v2 import router as v2_router
 app.include_router(v2_router)
 
+async def _resolve_calibration_loop(window: str, interval_hours: int) -> None:
+    """Background loop: resolve pending analyst calibration judgments."""
+    await asyncio.sleep(60)  # let startup settle
+    while True:
+        try:
+            from calibration_engine import resolve_judgments as _resolve_judgments
+            n = await asyncio.to_thread(_resolve_judgments, window, DATABASE_URL, psycopg)
+            if n:
+                logger.info("[calibration] resolved %d judgments (%s window)", n, window)
+        except Exception as exc:
+            logger.warning("[calibration] loop error (%s): %s", window, exc)
+        await asyncio.sleep(interval_hours * 3600)
+
+
+@app.get("/api/v2/calibration/stats")
+async def calibration_stats(request: Request, analyst_id: Optional[str] = None):
+    """Return Brier score calibration stats for an analyst (or all if analyst_id omitted)."""
+    require_analyst_or_admin(request)
+    from calibration_engine import get_calibration_stats as _get_stats
+    user = auth_user_from_request(request)
+    # Non-admins can only see their own stats
+    if user.get("role") != "admin":
+        analyst_id = str(user.get("username") or "analyst")
+    result = await asyncio.to_thread(_get_stats, analyst_id, DATABASE_URL, psycopg)
+    return result
+
+
 @app.on_event("startup")
 async def startup_event():
     global _start_time, _db, _ollama_http_client, _geocode_http_client, _graph_store, _redis_client
@@ -1867,6 +1894,8 @@ async def startup_event():
     _bg_tasks.append(asyncio.create_task(media_worker()))
     _bg_tasks.append(asyncio.create_task(runtime_housekeeping()))
     _bg_tasks.append(asyncio.create_task(prune_old_data()))
+    _bg_tasks.append(asyncio.create_task(_resolve_calibration_loop("24h", interval_hours=1)))
+    _bg_tasks.append(asyncio.create_task(_resolve_calibration_loop("7d", interval_hours=6)))
     logger.info("[OSINT] Engine started — pollers + DB persistence active")
 
 
@@ -2068,6 +2097,22 @@ async def submit_event_review(event_id: str, request: Request):
     except Exception as exc:
         from fastapi import HTTPException
         raise HTTPException(status_code=500, detail=str(exc))
+
+    # Record calibration judgment for ratings ≥4
+    if rating >= 4:
+        try:
+            from calibration_engine import record_judgment as _rec_judgment
+            _rec_judgment(
+                analyst_id=reviewer,
+                judgment_type="source_rating",
+                stated_prob=0.75 if rating == 4 else 0.90,
+                judgment_text=f"Rated event {event_id} {rating} stars",
+                database_url=DATABASE_URL,
+                psycopg_mod=psycopg,
+                event_id=event_id,
+            )
+        except Exception:
+            pass
 
     return {"status": "ok", "event_id": event_id, "reviewer": reviewer}
 
@@ -2288,6 +2333,23 @@ async def update_hypothesis(hyp_id: str, request: Request):
                     values,
                 )
             conn.commit()
+        # Record calibration judgment for CONFIRMED/REFUTED status changes
+        new_status = updates.get("status", "")
+        if new_status in ("CONFIRMED", "REFUTED"):
+            try:
+                from calibration_engine import record_judgment as _rec_judgment
+                user = auth_user_from_request(request)
+                _rec_judgment(
+                    analyst_id=str(user.get("username") or "analyst"),
+                    judgment_type="hypothesis_status",
+                    stated_prob=0.90 if new_status == "CONFIRMED" else 0.10,
+                    judgment_text=f"Marked hypothesis {hyp_id} as {new_status}",
+                    database_url=DATABASE_URL,
+                    psycopg_mod=psycopg,
+                    hypothesis_id=hyp_id,
+                )
+            except Exception:
+                pass
         return {"ok": True, "updated_at": now}
     except Exception as e:
         from fastapi import HTTPException

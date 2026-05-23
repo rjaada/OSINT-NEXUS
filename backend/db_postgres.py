@@ -358,4 +358,47 @@ def init_pg_schema(conn: psycopg.Connection) -> None:
             """
         )
 
+        # ── analyst_judgments ─────────────────────────────────────────────────
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS analyst_judgments (
+                id              SERIAL PRIMARY KEY,
+                analyst_id      TEXT NOT NULL,
+                judgment_type   TEXT NOT NULL,
+                event_id        TEXT,
+                hypothesis_id   TEXT,
+                stated_prob     DOUBLE PRECISION NOT NULL,
+                judgment_text   TEXT,
+                created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                resolve_at_24h  TIMESTAMPTZ NOT NULL,
+                resolve_at_7d   TIMESTAMPTZ NOT NULL
+            )
+            """
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_aj_analyst ON analyst_judgments(analyst_id)"
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_aj_resolve ON analyst_judgments(resolve_at_24h, resolve_at_7d)"
+        )
+
+        # ── judgment_outcomes ─────────────────────────────────────────────────
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS judgment_outcomes (
+                id                   SERIAL PRIMARY KEY,
+                judgment_id          INTEGER NOT NULL REFERENCES analyst_judgments(id),
+                resolution_window    TEXT NOT NULL,
+                outcome_prob         DOUBLE PRECISION NOT NULL,
+                brier_score          DOUBLE PRECISION NOT NULL,
+                resolved_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                ground_truth_source  TEXT NOT NULL,
+                UNIQUE (judgment_id, resolution_window)
+            )
+            """
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_jo_judgment ON judgment_outcomes(judgment_id)"
+        )
+
     conn.commit()
