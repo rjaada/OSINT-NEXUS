@@ -1,0 +1,28 @@
+# ============================================================
+# Apple Silicon (M-series) local dev override.
+#
+# docker-compose.yml assumes an NVIDIA GPU host (for `ollama`
+# and `media-hooks`/Whisper). This file adapts the stack for
+# Macs by:
+#   - pointing the backend at a NATIVE Ollama process on the
+#     host (Metal-accelerated, much faster than Docker CPU-only)
+#   - forcing the Whisper service onto CPU/int8 since there's
+#     no CUDA on Apple Silicon
+#
+# docker-compose.yml itself is left untouched so it still works
+# correctly on the original Windows/NVIDIA target.
+#
+# Usage: `docker compose up -d --build postgres redis neo4j backend frontend media-hooks`
+# (intentionally excludes `ollama` — run Ollama natively instead)
+# ============================================================
+services:
+  backend:
+    environment:
+      - OLLAMA_URL=http://host.docker.internal:11434/api/generate
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  media-hooks:
+    environment:
+      - WHISPER_DEVICE=cpu
+      - WHISPER_COMPUTE_TYPE=int8
