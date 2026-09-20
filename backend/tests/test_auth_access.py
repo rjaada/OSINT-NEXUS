@@ -73,21 +73,29 @@ class AuthAccessTests(unittest.TestCase):
         # in init_pg_schema's single transaction have been observed missing
         # from information_schema immediately afterward (auth_sessions,
         # conflict_zones) even though later statements in the SAME commit
-        # succeeded — looks like contention with the postgis image's own
-        # background extension setup on a brand-new container. init_pg_schema
-        # is idempotent (CREATE TABLE IF NOT EXISTS), so retry it directly
-        # against the specific table this suite depends on until it's real.
+        # succeeded, and retrying init_pg_schema on the SAME connection does
+        # not fix it — the table only becomes visible via a brand-new
+        # connection (test_db_schema.py, which opens its own connection
+        # later, sees it fine). Smells like a stale per-session catalog view
+        # on that first connection rather than a real schema gap. Replace
+        # the connection outright and re-verify via a fresh one.
         for _attempt in range(5):
             with backend_main._db.cursor() as _verify_cur:
                 _verify_cur.execute(
-                    "SELECT to_regclass('public.auth_sessions') IS NOT NULL AS ok"
+                    "SELECT EXISTS (SELECT 1 FROM information_schema.tables "
+                    "WHERE table_schema='public' AND table_name='auth_sessions') AS ok"
                 )
                 if _verify_cur.fetchone()["ok"]:
                     break
+            try:
+                backend_main._db.close()
+            except Exception:
+                pass
+            backend_main._db = backend_db_postgres.get_pg_conn()
             backend_db_postgres.init_pg_schema(backend_main._db)
             time.sleep(0.5)
         else:
-            raise RuntimeError("auth_sessions table still missing after 5 schema-init retries")
+            raise RuntimeError("auth_sessions table still missing after 5 fresh-connection retries")
         backend_main.ensure_default_admin()
         # NOTE: OSINT_DB_PATH above is vestigial — main.init_db() always opens
         # a real Postgres connection (db_ops.init_db -> db_postgres.get_pg_conn),
