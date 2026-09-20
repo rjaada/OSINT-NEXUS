@@ -69,35 +69,6 @@ class AuthAccessTests(unittest.TestCase):
         backend_main.app.router.on_startup.clear()
         backend_main.app.router.on_shutdown.clear()
         backend_main._db = backend_main.init_db()
-        # Against a freshly-started CI Postgres, some CREATE TABLE statements
-        # in init_pg_schema's single transaction (auth_sessions,
-        # conflict_zones) have been observed missing from information_schema
-        # immediately afterward, on a brand-new connection, even though 21
-        # other statements in the very same transaction/commit succeeded.
-        # test_db_schema.py's equivalent check (own fresh connection, own
-        # init_pg_schema call) reliably passes — but only because it runs
-        # later in the suite (after test_command_intelligence,
-        # test_command_route, test_core_logic), giving the fresh CI Postgres
-        # more wall-clock time since container start. A 2.5s retry budget
-        # here wasn't enough; give it a much longer one since it's a
-        # one-time cost.
-        for _attempt in range(20):
-            with backend_main._db.cursor() as _verify_cur:
-                _verify_cur.execute(
-                    "SELECT EXISTS (SELECT 1 FROM information_schema.tables "
-                    "WHERE table_schema='public' AND table_name='auth_sessions') AS ok"
-                )
-                if _verify_cur.fetchone()["ok"]:
-                    break
-            try:
-                backend_main._db.close()
-            except Exception:
-                pass
-            backend_main._db = backend_db_postgres.get_pg_conn()
-            backend_db_postgres.init_pg_schema(backend_main._db)
-            time.sleep(1)
-        else:
-            raise RuntimeError("auth_sessions table still missing after 20 retries (~20s)")
         backend_main.ensure_default_admin()
         # NOTE: OSINT_DB_PATH above is vestigial — main.init_db() always opens
         # a real Postgres connection (db_ops.init_db -> db_postgres.get_pg_conn),

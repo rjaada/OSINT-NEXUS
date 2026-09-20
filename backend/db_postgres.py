@@ -223,6 +223,25 @@ def init_pg_schema(conn: psycopg.Connection) -> None:
             "CREATE INDEX IF NOT EXISTS idx_users_username ON users(username)"
         )
 
+        # ── auth_sessions ─────────────────────────────────────────────────────
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS auth_sessions (
+                sig TEXT PRIMARY KEY,
+                username TEXT NOT NULL REFERENCES users(username) ON DELETE CASCADE,
+                expires_epoch BIGINT NOT NULL,
+                last_seen_epoch BIGINT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_auth_sessions_expires ON auth_sessions(expires_epoch)"
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_auth_sessions_user ON auth_sessions(username)"
+        )
+
         # ── revoked_tokens ────────────────────────────────────────────────────
         cur.execute(
             """
@@ -299,6 +318,27 @@ def init_pg_schema(conn: psycopg.Connection) -> None:
         )
         cur.execute(
             "CREATE INDEX IF NOT EXISTS idx_hypotheses_status ON hypotheses(status)"
+        )
+
+        # ── conflict_zones ────────────────────────────────────────────────────
+        # Required by the map, theater synchrony, and escalation classifier.
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS conflict_zones (
+                id TEXT PRIMARY KEY,
+                label TEXT NOT NULL,
+                color TEXT NOT NULL DEFAULT '#ef4444',
+                severity TEXT NOT NULL DEFAULT 'HIGH',
+                coordinates JSONB NOT NULL DEFAULT '[]'::jsonb,
+                created_by TEXT NOT NULL DEFAULT 'system',
+                active BOOLEAN NOT NULL DEFAULT TRUE,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_conflict_zones_active ON conflict_zones(active)"
         )
 
         # ── doctrine_profiles ─────────────────────────────────────────────────
