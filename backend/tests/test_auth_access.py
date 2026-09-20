@@ -69,6 +69,11 @@ class AuthAccessTests(unittest.TestCase):
         backend_main.app.router.on_startup.clear()
         backend_main.app.router.on_shutdown.clear()
         backend_main._db = backend_main.init_db()
+        with backend_main._db.cursor() as _diag_cur:
+            _diag_cur.execute("SELECT current_database(), current_user")
+            print("DIAG db/user:", _diag_cur.fetchone(), flush=True)
+            _diag_cur.execute("SELECT table_name FROM information_schema.tables WHERE table_schema='public' ORDER BY table_name")
+            print("DIAG tables:", [r["table_name"] for r in _diag_cur.fetchall()], flush=True)
         backend_main.ensure_default_admin()
         # NOTE: OSINT_DB_PATH above is vestigial — main.init_db() always opens
         # a real Postgres connection (db_ops.init_db -> db_postgres.get_pg_conn),
