@@ -1781,6 +1781,8 @@ from routes_v2 import router as v2_router
 app.include_router(v2_router)
 from routes_command import router as command_router
 app.include_router(command_router)
+from routes_investigations import router as investigations_router
+app.include_router(investigations_router)
 
 async def _escalation_retrain_loop() -> None:
     """Background loop: retrain escalation HMM models weekly (Sunday 02:00 UTC approx.)."""

@@ -7,6 +7,7 @@ const __dirname = path.dirname(__filename)
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   output: 'standalone',
+  experimental: { proxyTimeout: 180000 }, // Allow local inference to finish through the API proxy.
   turbopack: {
     root: __dirname,
   },

@@ -37,6 +37,16 @@ def init_pg_schema(conn: psycopg.Connection) -> None:
     """
     with conn.cursor() as cur:
         # ── events ────────────────────────────────────────────────────────────
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS investigations (
+                id TEXT PRIMARY KEY,
+                owner TEXT NOT NULL,
+                question TEXT NOT NULL,
+                report JSONB NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS investigations_owner_created ON investigations (owner, created_at DESC)")
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS events (

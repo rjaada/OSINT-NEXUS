@@ -341,3 +341,9 @@ Active development. Designed for continuous live ingestion, not a fixed demo dat
 Built by [Rachid Jaada](https://github.com/rjaada)
 
 </div>
+
+### Evidence investigations
+
+Analysts and admins can open `/v2/investigations` to ask a question about stored events over the last 1–30 days. Retrieval uses question keywords against event descriptions (up to 1,000 recent matches; 24 selected excerpts), then the existing Groq client with Ollama fallback produces cited source reports, inferences, potential contradictions and follow-up questions. This is bounded archive research, not autonomous external web collection.
+
+Each owner-private investigation saves its evidence snapshot in PostgreSQL and supports JSON export. Citation IDs are validated against retrieved records; semantic support and source independence still require analyst review. Model outages preserve evidence with an explicit incomplete-assessment status.

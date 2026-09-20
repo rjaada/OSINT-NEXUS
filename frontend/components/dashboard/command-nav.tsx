@@ -37,6 +37,7 @@ export function CommandNav() {
       ...(inV2 && (role === "analyst" || role === "admin") ? [{ href: `${prefix}/graph`, label: "Intel Graph" }] : []),
       ...(inV2 && (role === "analyst" || role === "admin") ? [{ href: `${prefix}/narrative`, label: "Narrative Map" }] : []),
       ...(inV2 && (role === "analyst" || role === "admin") ? [{ href: `${prefix}/network`, label: "Source Network" }] : []),
+      ...(inV2 && (role === "analyst" || role === "admin") ? [{ href: `${prefix}/investigations`, label: "Investigate" }] : []),
       ...(inV2 && (role === "analyst" || role === "admin") ? [{ href: `${prefix}/hypotheses`, label: "Hypotheses" }] : []),
       ...(inV2 && (role === "analyst" || role === "admin") ? [{ href: `${prefix}/imagery`, label: "Sat Imagery" }] : []),
       ...(inV2 ? [{ href: `${prefix}/card`, label: "My Card" }] : []),
