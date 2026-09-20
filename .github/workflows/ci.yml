@@ -9,6 +9,12 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      # docker compose derives its default project name (and image tags)
+      # from the checkout directory name, which differs between local dev
+      # (OSINT) and the CI runner (OSINT-NEXUS). Pin it so the built image
+      # is always tagged osint-backend, matching the test step below.
+      COMPOSE_PROJECT_NAME: osint
     services:
       postgres:
         image: postgis/postgis:16-3.4

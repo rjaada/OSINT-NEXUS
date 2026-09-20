@@ -87,37 +87,54 @@ Paste any press conference transcript → structured extraction: headline, key c
 
 ## Architecture
 
-```
-┌───────────────────────────────────────────────────────────────────────┐
-│                              Data Sources                             │
-│  RSS/News · Telegram · ADS-B flights · AIS · NASA FIRMS · Red Alert   │
-└──────────────────────────────┬────────────────────────────────────────┘
-                                │  async pollers
-┌───────────────────────────────▼────────────────────────────────────────┐
-│                         Backend  (FastAPI)                            │
-│  geocoding · classification · confidence scoring · ACLED taxonomy     │
-│  MGRS coords · SIGACT extraction · Bayesian source reliability        │
-└──────┬──────────────────┬──────────────────┬──────────────────────────┘
-       │                  │                  │
-┌──────▼──────┐   ┌───────▼──────┐   ┌───────▼──────┐
-│ PostgreSQL  │   │    Neo4j     │   │    Redis     │
-│ events_v2   │   │ Temporal KG  │   │  WebSocket   │
-│ ACLED cols  │   │ 30-day edge  │   │  pub/sub     │
-│ AI reports  │   │ decay        │   │  live feed   │
-└─────────────┘   └──────────────┘   └──────────────┘
-                          │
-┌─────────────────────────▼────────────────────────────────────────────┐
-│                         Reasoning Engine                              │
-│  Groq (primary) → Ollama local (auto-fallback on rate limit/error)    │
-│  SITREP · Intel Trace · escalation HMM · synchrony detection          │
-│  claim lineage · calibration scoring · doctrine profiling             │
-└─────────────────────────┬───────────────────────────────────────────┘
-                           │  REST + WebSocket
-┌─────────────────────────▼───────────────────────────────────────────┐
-│                        Frontend  (Next.js 15)                        │
-│  Intel Feed · Live Map · SITREP · Graph Explorer · Hypothesis Board   │
-│  Narrative Map · Source Network · Sat Imagery · Admin · AR/RTL        │
-└────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+    subgraph SRC["Data Sources"]
+        direction LR
+        RSS["RSS / News"]
+        TG["Telegram"]
+        ADSB["ADS-B Flights"]
+        AIS["Maritime AIS"]
+        FIRMS["NASA FIRMS"]
+        ALERT["Red Alert"]
+    end
+
+    SRC -->|async pollers| BE
+
+    BE["Backend — FastAPI
+    geocoding · classification · confidence scoring
+    ACLED taxonomy · MGRS coords · SIGACT extraction
+    Bayesian source reliability"]
+
+    BE --> PG[("PostgreSQL
+    events_v2 · ACLED columns
+    AI reports")]
+    BE --> NEO[("Neo4j
+    Temporal knowledge graph
+    30-day edge decay")]
+    BE --> REDIS[("Redis
+    WebSocket pub/sub")]
+    BE <--> MEDIA["media-hooks
+    Whisper transcription
+    deepfake analysis (CPU-only)"]
+
+    PG --> RE
+    NEO --> RE
+
+    RE["Reasoning Engine
+    Groq (primary) → Ollama local (auto-fallback)
+    SITREP · Intel Trace · escalation HMM
+    synchrony detection · claim lineage
+    calibration scoring · doctrine profiling"]
+
+    RE -->|REST + WebSocket| FE
+
+    FE["Frontend — Next.js 15
+    Intel Feed · Live Map · SITREP · Graph Explorer
+    Hypothesis Board · Narrative Map · Source Network
+    Sat Imagery · Admin · AR/RTL"]
+
+    REDIS -.->|live feed| FE
 ```
 
 A dedicated `media-hooks` service handles Whisper transcription and deepfake analysis for ingested video, kept as a separate container so it can run CPU-only on hosts without a GPU.
