@@ -48,7 +48,7 @@ Existing registration privilege restrictions, idle-session expiration, role-chan
 4. New calibration rules reduce false certainty but still use proxy corroboration. Matching type and distance alone do not establish the truth of an event.
 5. Media DNS validation rejects private resolved addresses but does not pin the validated address through the subsequent HTTP connection. DNS-rebinding defense and strict network egress restrictions remain hardening work.
 6. Hardware passkey enrollment, model accuracy, real OCR/transcription quality, satellite providers, all external-source outages and sustained concurrency were not exhaustively tested. Passing smoke checks demonstrates routing/rendering and sampled data flows, not universal correctness.
-7. Review/test changes and the user's pre-existing work remain uncommitted. No security-sensitive commit or push was made. CI was not changed or rerun.
+7. Follow-up: the user authorized committing all reviewed project changes and fixing CI. The preview branch now includes those changes. CI runs all 66 regression tests, frontend lint/type checks and production image builds; its PostgreSQL service uses `osint_test`. A clean staged-source build and isolated fresh-database test run passed locally before pushing.
 
 ## Recommended next feature: autonomous evidence investigation
 
