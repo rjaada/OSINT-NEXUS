@@ -69,11 +69,25 @@ class AuthAccessTests(unittest.TestCase):
         backend_main.app.router.on_startup.clear()
         backend_main.app.router.on_shutdown.clear()
         backend_main._db = backend_main.init_db()
-        with backend_main._db.cursor() as _diag_cur:
-            _diag_cur.execute("SELECT current_database(), current_user")
-            print("DIAG db/user:", _diag_cur.fetchone(), flush=True)
-            _diag_cur.execute("SELECT table_name FROM information_schema.tables WHERE table_schema='public' ORDER BY table_name")
-            print("DIAG tables:", [r["table_name"] for r in _diag_cur.fetchall()], flush=True)
+        # Against a freshly-started CI Postgres, some CREATE TABLE statements
+        # in init_pg_schema's single transaction have been observed missing
+        # from information_schema immediately afterward (auth_sessions,
+        # conflict_zones) even though later statements in the SAME commit
+        # succeeded — looks like contention with the postgis image's own
+        # background extension setup on a brand-new container. init_pg_schema
+        # is idempotent (CREATE TABLE IF NOT EXISTS), so retry it directly
+        # against the specific table this suite depends on until it's real.
+        for _attempt in range(5):
+            with backend_main._db.cursor() as _verify_cur:
+                _verify_cur.execute(
+                    "SELECT to_regclass('public.auth_sessions') IS NOT NULL AS ok"
+                )
+                if _verify_cur.fetchone()["ok"]:
+                    break
+            backend_db_postgres.init_pg_schema(backend_main._db)
+            time.sleep(0.5)
+        else:
+            raise RuntimeError("auth_sessions table still missing after 5 schema-init retries")
         backend_main.ensure_default_admin()
         # NOTE: OSINT_DB_PATH above is vestigial — main.init_db() always opens
         # a real Postgres connection (db_ops.init_db -> db_postgres.get_pg_conn),
