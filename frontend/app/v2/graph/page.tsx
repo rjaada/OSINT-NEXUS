@@ -1,5 +1,7 @@
 "use client"
 
+import { websocketBase } from "@/lib/api"
+
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { CommandNav } from "@/components/dashboard/command-nav"
 import { TopBar } from "@/components/dashboard/top-bar"
@@ -252,13 +254,7 @@ export default function V2GraphPage() {
   const [search, setSearch] = useState("")
   const [expandedClusters, setExpandedClusters] = useState<Set<string>>(new Set())
   const [aiAssess, setAiAssess] = useState<AssessState>({ loading: false, text: "", offline: false })
-  const wsBase = useMemo(() => {
-    const fromEnv = process.env.NEXT_PUBLIC_WS_URL
-    if (fromEnv) return fromEnv
-    if (typeof window === "undefined") return "ws://localhost:8000"
-    const proto = window.location.protocol === "https:" ? "wss" : "ws"
-    return `${proto}://${window.location.host}`
-  }, [])
+  const wsBase = useMemo(() => websocketBase(), [])
 
   const allowed = role === "analyst" || role === "admin"
 

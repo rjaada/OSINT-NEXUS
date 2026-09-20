@@ -1,5 +1,7 @@
 "use client"
 
+import { API_BASE } from "@/lib/api"
+
 import { useEffect, useMemo, useState } from "react"
 import { TopBar } from "@/components/dashboard/top-bar"
 import { CommandNav } from "@/components/dashboard/command-nav"
@@ -61,9 +63,9 @@ export default function ArabicSourcesPage() {
     const load = async () => {
       try {
         const [r1, r2, r3] = await Promise.all([
-          fetch("http://localhost:8000/api/v2/sources?limit=220"),
-          fetch("http://localhost:8000/api/v2/evaluation/scorecard"),
-          fetch("http://localhost:8000/api/v2/system"),
+          fetch(`${API_BASE}/api/v2/sources?limit=220`, { credentials: "include" }),
+          fetch(`${API_BASE}/api/v2/evaluation/scorecard`, { credentials: "include" }),
+          fetch(`${API_BASE}/api/v2/system`, { credentials: "include" }),
         ])
         if (r1.ok) setData(await r1.json())
         if (r2.ok) setScorecard(await r2.json())

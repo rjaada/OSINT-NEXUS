@@ -1,5 +1,7 @@
 "use client"
 
+import { API_BASE } from "@/lib/api"
+
 import { useEffect, useMemo, useState } from "react"
 import { TopBar } from "@/components/dashboard/top-bar"
 import { CommandNav } from "@/components/dashboard/command-nav"
@@ -27,7 +29,7 @@ export default function ArabicAdminUsersPage() {
     setLoading(true)
     setMsg("")
     try {
-      const res = await fetch("http://localhost:8000/api/admin/users", { credentials: "include", cache: "no-store" })
+      const res = await fetch(`${API_BASE}/api/admin/users`, { credentials: "include", cache: "no-store" })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) {
         setMsg(data?.detail || "فشل تحميل المستخدمين")
@@ -53,7 +55,7 @@ export default function ArabicAdminUsersPage() {
     setBusyUser(username)
     setMsg("")
     try {
-      const res = await fetch(`http://localhost:8000/api/admin/users/${encodeURIComponent(username)}/role`, {
+      const res = await fetch(`${API_BASE}/api/admin/users/${encodeURIComponent(username)}/role`, {
         method: "PATCH",
         headers: csrfHeaders({ "Content-Type": "application/json" }),
         credentials: "include",
@@ -79,7 +81,7 @@ export default function ArabicAdminUsersPage() {
     setBusyUser(username)
     setMsg("")
     try {
-      const res = await fetch(`http://localhost:8000/api/admin/users/${encodeURIComponent(username)}`, {
+      const res = await fetch(`${API_BASE}/api/admin/users/${encodeURIComponent(username)}`, {
         method: "DELETE",
         headers: csrfHeaders(),
         credentials: "include",

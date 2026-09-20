@@ -7,6 +7,7 @@ function isPublicPath(pathname: string): boolean {
   if (pathname.startsWith("/icon")) return true
   if (pathname.startsWith("/apple-icon")) return true
   if (pathname.startsWith("/fonts")) return true
+  if (pathname.startsWith("/maplibre/")) return true
   if (pathname.startsWith("/v2/briefs/print")) return true
   if (pathname.startsWith("/media")) return true
   return false
@@ -26,6 +27,7 @@ async function resolveAuthFromBackend(req: NextRequest): Promise<{ authenticated
         method: "GET",
         headers: { cookie: cookieHeader },
         cache: "no-store",
+        signal: AbortSignal.timeout(3000),
       })
       if (!res.ok) continue
       const data = await res.json().catch(() => null)
@@ -45,13 +47,10 @@ export async function proxy(req: NextRequest) {
   const { pathname, search } = req.nextUrl
   if (isPublicPath(pathname)) return NextResponse.next()
 
-  const session = req.cookies.get("osint_session")?.value
   const signedSession = req.cookies.get("osint_auth")?.value
-  const cookieRole = (req.cookies.get("osint_role")?.value || "viewer").toLowerCase()
-
   const backendAuth = signedSession ? await resolveAuthFromBackend(req) : null
-  const authenticated = Boolean((session === "1" || Boolean(signedSession)) && (backendAuth ? backendAuth.authenticated : true))
-  const role = backendAuth?.role || cookieRole
+  const authenticated = backendAuth?.authenticated === true
+  const role = backendAuth?.role || "viewer"
 
   if (authenticated) {
     const isV2AdminPath = pathname === "/v2/admin" || pathname.startsWith("/v2/admin/") || pathname === "/v2/ar/admin" || pathname.startsWith("/v2/ar/admin/")

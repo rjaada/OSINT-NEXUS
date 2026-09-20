@@ -38,7 +38,7 @@ def verify_password(password: str, encoded: str) -> bool:
 
 
 def auth_sign(auth_secret: str, username: str, role: str, expires_epoch: int) -> str:
-    payload = f"{username}|{role}|{expires_epoch}"
+    payload = f"{username}|{role}|{expires_epoch}|{secrets.token_urlsafe(24)}"
     sig = hmac.new(auth_secret.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
     token = f"{payload}|{sig}"
     return base64.urlsafe_b64encode(token.encode("utf-8")).decode("utf-8")
@@ -47,8 +47,11 @@ def auth_sign(auth_secret: str, username: str, role: str, expires_epoch: int) ->
 def auth_verify(auth_secret: str, token: str) -> Optional[dict]:
     try:
         decoded = base64.urlsafe_b64decode(token.encode("utf-8")).decode("utf-8")
-        username, role, expires_txt, sig = decoded.split("|", 3)
-        payload = f"{username}|{role}|{expires_txt}"
+        payload, sig = decoded.rsplit("|", 1)
+        fields = payload.split("|")
+        if len(fields) not in (3, 4):
+            return None
+        username, role, expires_txt = fields[:3]
         expected = hmac.new(auth_secret.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
         if not hmac.compare_digest(expected, sig):
             return None
@@ -245,22 +248,82 @@ def is_token_revoked(db, sig: str) -> bool:
 def cleanup_revoked_tokens(db) -> None:
     if db is None:
         return
+    now = int(time.time())
     with db.cursor() as cur:
-        cur.execute("DELETE FROM revoked_tokens WHERE expires_epoch < %s", (int(time.time()),))
+        cur.execute("DELETE FROM revoked_tokens WHERE expires_epoch < %s", (now,))
+        cur.execute("DELETE FROM auth_sessions WHERE expires_epoch < %s", (now,))
     db.commit()
 
 
-def auth_user_from_request(request: Request, auth_secret: str, db) -> dict:
+def _require_active_session(verified: dict, db, idle_timeout_sec: int) -> dict:
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    sig = str(verified.get("sig", ""))
+    username = str(verified.get("username", "")).strip().lower()
+    now = int(time.time())
+    idle_cutoff = now - max(60, int(idle_timeout_sec))
+    try:
+        with db.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE auth_sessions
+                SET last_seen_epoch = %s
+                WHERE sig = %s AND username = %s
+                  AND expires_epoch >= %s AND last_seen_epoch >= %s
+                RETURNING sig
+                """,
+                (now, sig, username, now, idle_cutoff),
+            )
+            active = cur.fetchone()
+            if not active:
+                cur.execute("DELETE FROM auth_sessions WHERE sig = %s", (sig,))
+        db.commit()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        raise HTTPException(status_code=503, detail="Database unavailable") from exc
+    if not active:
+        raise HTTPException(status_code=401, detail="Session expired due to inactivity")
+    return verified
+
+
+def _require_current_session_role(verified: dict, db) -> dict:
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    username = str(verified.get("username", "")).strip().lower()
+    token_role = str(verified.get("role", "")).strip().lower()
+    if not username or token_role not in {"viewer", "analyst", "admin"}:
+        raise HTTPException(status_code=401, detail="Invalid session identity")
+    try:
+        with db.cursor() as cur:
+            cur.execute("SELECT role FROM users WHERE username = %s", (username,))
+            row = cur.fetchone()
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="Database unavailable") from exc
+    if not row:
+        raise HTTPException(status_code=401, detail="Session user no longer exists")
+    current_role = str(row.get("role") if hasattr(row, "get") else row[0]).strip().lower()
+    if current_role != token_role:
+        raise HTTPException(status_code=401, detail="Session role changed; re-authentication required")
+    return verified
+
+
+def auth_user_from_request(request: Request, auth_secret: str, db, idle_timeout_sec: int = 900) -> dict:
     token = request.cookies.get("osint_auth") or ""
     verified = auth_verify(auth_secret, token) if token else None
     if not verified:
         raise HTTPException(status_code=401, detail="Authentication required")
     if is_token_revoked(db, str(verified.get("sig", ""))):
         raise HTTPException(status_code=401, detail="Session revoked")
-    return verified
+    _require_active_session(verified, db, idle_timeout_sec)
+    return _require_current_session_role(verified, db)
 
 
-def auth_user_from_websocket(websocket: WebSocket, auth_secret: str, db) -> Optional[dict]:
+def auth_user_from_websocket(websocket: WebSocket, auth_secret: str, db, idle_timeout_sec: int = 900) -> Optional[dict]:
     token = websocket.cookies.get("osint_auth") or websocket.query_params.get("token", "")
     if not token:
         return None
@@ -269,7 +332,11 @@ def auth_user_from_websocket(websocket: WebSocket, auth_secret: str, db) -> Opti
         return None
     if is_token_revoked(db, str(verified.get("sig", ""))):
         return None
-    return verified
+    try:
+        _require_active_session(verified, db, idle_timeout_sec)
+        return _require_current_session_role(verified, db)
+    except HTTPException:
+        return None
 
 
 def build_auth_card_payload(

@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useRef, useState } from "react"
-import maplibregl from "maplibre-gl"
+import * as maplibregl from "maplibre-gl"
 import "maplibre-gl/dist/maplibre-gl.css"
 import type { IntelEvent } from "./intel-feed-v2"
 
@@ -212,6 +212,7 @@ export function MapArea({
   const overlayIdsRef   = useRef<string[]>([])
   const [isSatellite, setIsSatellite] = useState(false)
   const [mapError, setMapError] = useState<string | null>(null)
+  const [mapRevision, setMapRevision] = useState(0)
   const activeZonesRef = useRef(CONFLICT_ZONES)
 
   // Fetch dynamic zones from DB — merge on top of hardcoded fallback
@@ -418,6 +419,8 @@ export function MapArea({
   useEffect(() => {
     if (mapRef.current || !containerRef.current) return
     try {
+      // v6 uses a separate module worker; its URL cannot be inferred after bundling.
+      maplibregl.setWorkerUrl("/maplibre/maplibre-gl-worker.mjs")
       const map = new maplibregl.Map({
         container: containerRef.current,
         style: DARK_STYLE,
@@ -431,6 +434,7 @@ export function MapArea({
         setMapError(null)
         addCustomLayers(map)
         void loadOverlayFiles(map)
+        setMapRevision((value) => value + 1)
       })
       map.on("error", (evt) => {
         const msg = String(evt?.error ?? "")
@@ -465,10 +469,13 @@ export function MapArea({
 
     const next = !isSatellite
     setIsSatellite(next)
+    mapReadyRef.current = false
     map.setStyle(next ? SATELLITE_STYLE : DARK_STYLE)
     map.once("style.load", () => {
+      mapReadyRef.current = true
       addCustomLayers(map)
       void loadOverlayFiles(map)
+      setMapRevision((value) => value + 1)
     })
   }
 
@@ -654,7 +661,7 @@ export function MapArea({
         .addTo(map)
       eventMarkersRef.current[evt.id] = marker
     })
-  }, [events, isSatellite, onEventClick])
+  }, [events, isSatellite, onEventClick, mapRevision])
 
   useEffect(() => {
     const map = mapRef.current
@@ -662,7 +669,7 @@ export function MapArea({
     if (map.getLayer("weather-overlay-layer")) {
       map.setLayoutProperty("weather-overlay-layer", "visibility", showWeatherOverlay ? "visible" : "none")
     }
-  }, [showWeatherOverlay, isSatellite])
+  }, [showWeatherOverlay, isSatellite, mapRevision])
 
   const evtCount  = events?.length ?? 0
   const strikeCnt = events?.filter((e) => e.type === "STRIKE" || e.type === "CRITICAL").length ?? 0

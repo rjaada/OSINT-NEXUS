@@ -1,5 +1,7 @@
 "use client"
 
+import { API_BASE } from "@/lib/api"
+
 import { useEffect, useState } from "react"
 import { Activity, AlertTriangle, Radio, Clock, Timer } from "lucide-react"
 
@@ -26,7 +28,7 @@ export function BottomBar() {
   useEffect(() => {
     const fetchStats = async () => {
       try {
-        const res = await fetch("http://localhost:8000/api/stats")
+        const res = await fetch(`${API_BASE}/api/stats`, { credentials: "include" })
         if (res.ok) setStats(await res.json())
       } catch (_) {}
     }

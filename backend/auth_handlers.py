@@ -28,7 +28,7 @@ def register_user(
     enforce_rate_limit("register_ip", client_ip(request), rate_register_per_ip, rate_window_sec)
     username = payload.username.strip().lower()
     password = payload.password
-    role = (payload.role or "viewer").strip().lower()
+    role = "viewer"
     if not re.match(r"^[a-z0-9_.-]{3,32}$", username):
         raise HTTPException(status_code=400, detail="Username must be 3-32 chars [a-z0-9_.-]")
 
@@ -74,6 +74,9 @@ def login_user(
     mfa_enabled_for_user: Callable[[str], bool],
     mfa_verify_user_code: Callable[[str, str], bool],
     admin_password_block_reason: Callable[[str, str, str], Optional[str]],
+    break_glass_authorized: Callable[[str, str, str], bool],
+    auth_token_signature: Callable[[str], Optional[str]],
+    create_session: Callable[..., None],
 ) -> dict:
     if db is None:
         raise HTTPException(status_code=503, detail="Database unavailable")
@@ -114,16 +117,24 @@ def login_user(
     block_reason = admin_password_block_reason(username, role, break_glass_code)
     if block_reason:
         raise HTTPException(status_code=401, detail=block_reason)
-    if mfa_required_for_role(role) and mfa_enabled_for_user(username):
-        mfa_code = str(getattr(payload, "mfa_code", "") or "").strip()
-        if not mfa_code:
-            raise HTTPException(status_code=401, detail="MFA code required")
-        if not mfa_verify_user_code(username, mfa_code):
-            raise HTTPException(status_code=401, detail="Invalid MFA code")
+    if mfa_required_for_role(role):
+        if not mfa_enabled_for_user(username):
+            if not break_glass_authorized(username, role, break_glass_code):
+                raise HTTPException(status_code=401, detail="MFA enrollment required for this role")
+        else:
+            mfa_code = str(getattr(payload, "mfa_code", "") or "").strip()
+            if not mfa_code:
+                raise HTTPException(status_code=401, detail="MFA code required")
+            if not mfa_verify_user_code(username, mfa_code):
+                raise HTTPException(status_code=401, detail="Invalid MFA code")
 
     expiry_dt = datetime.now(timezone.utc) + timedelta(hours=access_hours)
     expires_epoch = int(expiry_dt.timestamp())
     token = auth_sign(username, role, expires_epoch)
+    sig = auth_token_signature(token)
+    if not sig:
+        raise HTTPException(status_code=503, detail="Unable to establish server session")
+    create_session(db, sig, username, expires_epoch, int(time.time()), lambda: datetime.now(timezone.utc).isoformat())
     csrf_token = secrets.token_urlsafe(24)
     cookie_expires = expiry_dt.strftime("%a, %d %b %Y %H:%M:%S GMT")
 
@@ -160,11 +171,13 @@ def logout_user(
     db,
     now_iso: Callable[[], str],
     auth_cookie_secure: bool,
+    delete_session: Callable[[Any, str], None],
 ) -> dict:
     enforce_csrf(request)
     token = request.cookies.get("osint_auth") or ""
     verified = auth_verify(token) if token else None
     if verified:
+        delete_session(db, str(verified.get("sig", "")))
         revoke_token(
             db,
             sig=str(verified.get("sig", "")),

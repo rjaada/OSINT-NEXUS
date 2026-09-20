@@ -1,5 +1,7 @@
 "use client"
 
+import { websocketBase } from "@/lib/api"
+
 import Link from "next/link"
 import { useEffect, useMemo, useRef, useState } from "react"
 import { Shield, Radio, Lock, Search, X } from "lucide-react"
@@ -73,11 +75,7 @@ export function TopBar({ headlines }: { headlines?: string[] }) {
   const [commandOpen, setCommandOpen] = useState(false)
   const [query, setQuery] = useState("")
   const [eventItems, setEventItems] = useState<SearchItem[]>([])
-  const [assetItems, setAssetItems] = useState<SearchItem[]>([
-    { id: "asset-1", label: "UAV-7792", hint: "aircraft 35.45N 36.83E", section: "Tracked Assets" },
-    { id: "asset-2", label: "CVN-78", hint: "vessel 33.93N 35.36E", section: "Tracked Assets" },
-    { id: "asset-3", label: "DDG-112", hint: "vessel 34.06N 35.36E", section: "Tracked Assets" },
-  ])
+  const [assetItems, setAssetItems] = useState<SearchItem[]>([])
   const [warnActive, setWarnActive] = useState(false)
   const [countdownText, setCountdownText] = useState("03:00")
   const [terminalLocked, setTerminalLocked] = useState(false)
@@ -85,13 +83,7 @@ export function TopBar({ headlines }: { headlines?: string[] }) {
   const [defconModal, setDefconModal] = useState<DefconChangePayload | null>(null)
   const lastActivityRef = useRef<number>(Date.now())
   const searchInputRef = useRef<HTMLInputElement>(null)
-  const wsBase = useMemo(() => {
-    const fromEnv = process.env.NEXT_PUBLIC_WS_URL
-    if (fromEnv) return fromEnv
-    if (typeof window === "undefined") return "ws://localhost:8000"
-    const proto = window.location.protocol === "https:" ? "wss" : "ws"
-    return `${proto}://${window.location.host}`
-  }, [])
+  const wsBase = useMemo(() => websocketBase(), [])
 
   useEffect(() => {
     const update = () => {
@@ -178,25 +170,9 @@ export function TopBar({ headlines }: { headlines?: string[] }) {
   }, [authRole])
 
   useEffect(() => {
-    const NAV_ITEMS: SearchItem[] = [
-      { id: "nav-ops", label: "Operations", hint: "Live map and intel feed", section: "Navigation", href: "/operations" },
-      { id: "nav-alerts", label: "Alerts", hint: "Confidence and ETA board", section: "Navigation", href: "/alerts" },
-      { id: "nav-sources", label: "Sources", hint: "Reliability and source health", section: "Navigation", href: "/sources" },
-      { id: "nav-v2-ops", label: "V2 Operations", hint: "Phase-2 operations", section: "Navigation", href: "/v2/operations" },
-      { id: "nav-v2-alerts", label: "V2 Alerts", hint: "Phase-2 alert board", section: "Navigation", href: "/v2/alerts" },
-      { id: "nav-v2-sources", label: "V2 Sources", hint: "Phase-2 sources", section: "Navigation", href: "/v2/sources" },
-      { id: "nav-v2-health", label: "V2 Health", hint: "System reliability", section: "Navigation", href: "/v2/health" },
-      ...(role === "analyst" || role === "admin"
-        ? [
-            { id: "nav-v2-briefs", label: "V2 Intel Briefs", hint: "Cinematic classified briefs", section: "Navigation" as const, href: "/v2/briefs" },
-            { id: "nav-v2-graph", label: "V2 Intel Graph", hint: "Neo4j entity relationship graph", section: "Navigation" as const, href: "/v2/graph" },
-          ]
-        : []),
-    ]
-
     const load = async () => {
       try {
-        const res = await fetch(`${API_BASE}/api/v2/events?limit=18`, { cache: "no-store" })
+        const res = await fetch(`${API_BASE}/api/v2/events?limit=18`, { cache: "no-store", credentials: "include" })
         if (!res.ok) return
         const data = await res.json()
         const parsed: SearchItem[] = (data || []).map((evt: { id: string; desc?: string; source?: string; timestamp?: string }, idx: number) => ({
@@ -207,7 +183,7 @@ export function TopBar({ headlines }: { headlines?: string[] }) {
         }))
         setEventItems(parsed)
       } catch (_) {
-        // Keep static fallback
+        setEventItems([])
       }
     }
 
@@ -281,9 +257,6 @@ export function TopBar({ headlines }: { headlines?: string[] }) {
 
   const baseItems = useMemo(() => {
     const nav: SearchItem[] = [
-      { id: "nav-ops", label: "Operations", hint: "Live map and intel feed", section: "Navigation", href: "/operations" },
-      { id: "nav-alerts", label: "Alerts", hint: "Confidence and ETA board", section: "Navigation", href: "/alerts" },
-      { id: "nav-sources", label: "Sources", hint: "Reliability and source health", section: "Navigation", href: "/sources" },
       { id: "nav-v2-ops", label: "V2 Operations", hint: "Phase-2 operations", section: "Navigation", href: "/v2/operations" },
       { id: "nav-v2-alerts", label: "V2 Alerts", hint: "Phase-2 alert board", section: "Navigation", href: "/v2/alerts" },
       { id: "nav-v2-health", label: "V2 Health", hint: "System reliability", section: "Navigation", href: "/v2/health" },
@@ -303,16 +276,8 @@ export function TopBar({ headlines }: { headlines?: string[] }) {
     return baseItems.filter((x) => `${x.label} ${x.hint || ""} ${x.section}`.toLowerCase().includes(q))
   }, [baseItems, query])
 
-  const tickerItems = headlines && headlines.length > 0
-    ? headlines
-    : [
-        "IDF confirms strikes on Hezbollah positions in southern Lebanon",
-        "CENTCOM: US forces intercept Houthi anti-ship missile over Red Sea",
-        "Iran state TV: IRGC naval exercise underway in Strait of Hormuz",
-        "US deploys additional carrier strike group to Eastern Mediterranean",
-        "Israeli PM: Operation ongoing until all hostages returned",
-      ]
-  const tickerText = tickerItems.join("   ·   ")
+  const tickerItems = headlines?.length ? headlines : eventItems.map((item) => `${item.label} — ${item.hint || ""}`)
+  const tickerText = tickerItems.length ? tickerItems.join("   ·   ") : "No current headlines available."
 
   const unlockTerminal = () => {
     lastActivityRef.current = Date.now()
@@ -410,7 +375,7 @@ export function TopBar({ headlines }: { headlines?: string[] }) {
 
         <div className="flex items-center bg-osint-red/10 border-t border-osint-red/20 overflow-hidden h-6">
           <div className="shrink-0 bg-osint-red px-2 h-full flex items-center">
-            <span className="text-[9px] font-bold tracking-[0.15em] text-white whitespace-nowrap">● BREAKING</span>
+            <span className="text-[9px] font-bold tracking-[0.15em] text-white whitespace-nowrap">● LATEST</span>
           </div>
           <div className="flex-1 overflow-hidden relative">
             <div className="flex whitespace-nowrap text-[10px] text-[#c0c0d0] tracking-wide" style={{ animation: "ticker 60s linear infinite", willChange: "transform" }}>

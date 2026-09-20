@@ -1,5 +1,7 @@
 "use client"
 
+import { API_BASE } from "@/lib/api"
+
 import { useEffect, useState } from "react"
 import { TopBar } from "@/components/dashboard/top-bar"
 import { CommandNav } from "@/components/dashboard/command-nav"
@@ -63,7 +65,7 @@ export default function ArabicAlertsPage() {
 
   const load = async () => {
     try {
-      const res = await fetch("http://localhost:8000/api/v2/alerts?limit=60")
+      const res = await fetch(`${API_BASE}/api/v2/alerts?limit=60`, { credentials: "include" })
       if (!res.ok) return
       setAlerts(await res.json())
       setLastSync(new Date().toISOString().slice(11, 19) + "Z")
@@ -101,7 +103,7 @@ export default function ArabicAlertsPage() {
           <section className="grid gap-3">
             {alerts.map((a) => {
               const c = CONF_STYLE[a.confidence]
-              const videoHref = a.video_url ? (a.video_url.startsWith("/media/") ? `http://localhost:8000${a.video_url}` : a.video_url) : null
+              const videoHref = a.video_url ? (a.video_url.startsWith("/media/") ? `${API_BASE}${a.video_url}` : a.video_url) : null
               const canInlineVideo = isPlayableVideoUrl(a.video_url)
               return (
                 <article

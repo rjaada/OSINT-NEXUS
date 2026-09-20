@@ -439,11 +439,11 @@ def cleanup_revoked_tokens() -> None:
 
 
 def auth_user_from_request(request: Request) -> dict:
-    return authsec.auth_user_from_request(request, AUTH_SECRET, _db)
+    return authsec.auth_user_from_request(request, AUTH_SECRET, _db, AUTH_IDLE_TIMEOUT_SEC)
 
 
 def auth_user_from_websocket(websocket: WebSocket) -> Optional[dict]:
-    return authsec.auth_user_from_websocket(websocket, AUTH_SECRET, _db)
+    return authsec.auth_user_from_websocket(websocket, AUTH_SECRET, _db, AUTH_IDLE_TIMEOUT_SEC)
 
 
 def build_auth_card_payload(verified: dict) -> dict:
@@ -456,7 +456,7 @@ def build_auth_card_payload(verified: dict) -> dict:
 
 
 def require_admin(request: Request) -> dict:
-    verified = authsec.auth_user_from_request(request, AUTH_SECRET, _db)
+    verified = authsec.auth_user_from_request(request, AUTH_SECRET, _db, AUTH_IDLE_TIMEOUT_SEC)
     if str(verified.get("role", "")).lower() != "admin":
         raise HTTPException(status_code=403, detail="Admin role required")
     return verified
@@ -701,6 +701,16 @@ def passkey_count_for_user(username: str) -> int:
     return authpasskey.count_for_user(_db, username.strip().lower())
 
 
+def break_glass_authorized(username: str, role: str, break_glass_code: str) -> bool:
+    del username
+    return bool(
+        str(role).strip().lower() == "admin"
+        and AUTH_BREAK_GLASS_CODE
+        and break_glass_code
+        and hmac.compare_digest(AUTH_BREAK_GLASS_CODE, break_glass_code)
+    )
+
+
 def admin_password_block_reason(username: str, role: str, break_glass_code: str) -> Optional[str]:
     if str(role).strip().lower() != "admin":
         return None
@@ -821,6 +831,10 @@ def _set_auth_cookies(response: Response, username: str, role: str) -> dict:
     expiry_dt = datetime.now(timezone.utc) + timedelta(hours=AUTH_ACCESS_HOURS)
     expires_epoch = int(expiry_dt.timestamp())
     token = auth_sign(username, role, expires_epoch)
+    sig = auth_token_signature(token)
+    if not sig:
+        raise HTTPException(status_code=503, detail="Unable to establish server session")
+    authstore.create_session(_db, sig, username, expires_epoch, int(time.time()), utc_now_iso)
     csrf_token = secrets.token_urlsafe(24)
     cookie_expires = expiry_dt.strftime("%a, %d %b %Y %H:%M:%S GMT")
     for key, value in [
@@ -835,7 +849,7 @@ def _set_auth_cookies(response: Response, username: str, role: str) -> dict:
             value=value,
             path="/",
             expires=cookie_expires,
-            httponly=(key in ("osint_auth", "osint_session")),
+            httponly=(key != "osint_csrf"),
             samesite="lax",
             secure=AUTH_COOKIE_SECURE,
         )
@@ -1668,6 +1682,9 @@ async def runtime_housekeeping():
             _prune_runtime_state()
             cleanup_revoked_tokens()
             await refresh_defcon_state()
+            if _graph_store is not None and not _graph_store.status().get("connected"):
+                if await asyncio.to_thread(_graph_store.reconnect):
+                    logger.info("[GRAPH] Neo4j connection restored")
         except Exception as e:
             logger.warning(f"[HOUSEKEEPING] Error: {e}")
         await asyncio.sleep(60)
@@ -1762,6 +1779,8 @@ from routes_ops import router as ops_router
 app.include_router(ops_router)
 from routes_v2 import router as v2_router
 app.include_router(v2_router)
+from routes_command import router as command_router
+app.include_router(command_router)
 
 async def _escalation_retrain_loop() -> None:
     """Background loop: retrain escalation HMM models weekly (Sunday 02:00 UTC approx.)."""

@@ -1,5 +1,7 @@
 "use client"
 
+import { websocketBase } from "@/lib/api"
+
 import { useEffect, useState, useCallback, useRef, useMemo } from "react"
 import { MapArea } from "./map-area"
 import { AiAnalyst } from "./ai-analyst-v2"
@@ -397,7 +399,7 @@ export function Dashboard() {
 
     const connect = () => {
       try {
-        const wsUrl = (process.env.NEXT_PUBLIC_WS_URL ?? (typeof window !== "undefined" ? `${window.location.protocol === "https:" ? "wss" : "ws"}://${window.location.host}` : "ws://localhost:8000")) + "/ws/live/v2"
+        const wsUrl = websocketBase() + "/ws/live/v2"
         ws = new WebSocket(wsUrl)
         ws.onopen = () => setWsStatus("live")
         ws.onclose = () => {

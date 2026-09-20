@@ -53,37 +53,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setState({ role, username, authenticated: true, loading: false })
       try { localStorage.setItem("osint_role", role); localStorage.setItem("osint_user", username) } catch (_) {}
     } catch (_) {
-      // Network error: use cached values if available
-      try {
-        const cachedRole = localStorage.getItem("osint_role")
-        const cachedUser = localStorage.getItem("osint_user")
-        if (cachedRole) {
-          setState({ role: cachedRole, username: cachedUser ?? "user", authenticated: true, loading: false })
-          return
-        }
-      } catch (_) {}
+      try { localStorage.removeItem("osint_role"); localStorage.removeItem("osint_user") } catch (_) {}
       setState({ role: "viewer", username: "user", authenticated: false, loading: false })
     }
   }, [])
 
   useEffect(() => {
-    // Seed from localStorage immediately for instant render, then verify with server
-    try {
-      const r = localStorage.getItem("osint_role")
-      const u = localStorage.getItem("osint_user")
-      if (r) setState((prev) => ({ ...prev, role: r, username: u ?? prev.username }))
-    } catch (_) {}
-
     fetchSession()
 
-    // Listen for login events dispatched by the login card
-    const onLogin = (e: Event) => {
-      const d = (e as CustomEvent).detail
-      if (!d?.role) return
-      const role = String(d.role).toLowerCase()
-      const username = String(d.username || "user")
-      setState({ role, username, authenticated: true, loading: false })
-      try { localStorage.setItem("osint_role", role); localStorage.setItem("osint_user", username) } catch (_) {}
+    // Login events are hints only; authorization state always comes from the server.
+    const onLogin = () => {
+      void fetchSession()
     }
     window.addEventListener("osint:login", onLogin)
     return () => window.removeEventListener("osint:login", onLogin)
@@ -92,11 +72,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const logout = useCallback(async () => {
     try {
       const { csrfHeaders } = await import("@/lib/security")
-      await fetch(apiUrl("/api/auth/logout"), {
+      const response = await fetch(apiUrl("/api/auth/logout"), {
         method: "POST", credentials: "include",
         headers: csrfHeaders({ "Content-Type": "application/json" }),
       })
-    } catch (_) {}
+      if (!response.ok) return
+    } catch (_) {
+      return
+    }
     const exp = "Thu, 01 Jan 1970 00:00:00 GMT"
     for (const name of ["osint_session", "osint_role", "osint_user", "osint_csrf", "osint_auth"]) {
       document.cookie = `${name}=; Path=/; Expires=${exp}; SameSite=Lax`

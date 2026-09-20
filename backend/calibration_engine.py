@@ -13,7 +13,7 @@ Resolution windows: 24h and 7d.
 Ground truth hierarchy (strongest first):
   1. Sensor corroboration: NASA FIRMS / ADS-B / Red Alert event within 50km + same type in window
   2. Cross-source corroboration: corroborating_sources count ≥2 in events_v2
-  3. No match: outcome = 0.0 (prediction failed)
+  3. No match: unresolved; missing evidence does not establish falsity.
 """
 
 from __future__ import annotations
@@ -178,11 +178,11 @@ def _resolve_single(judgment: dict, cur) -> Optional[Dict[str, Any]]:
                 cur.execute(
                     """
                     SELECT source, lat, lng FROM events_v2
-                    WHERE source = ANY(%s)
+                    WHERE source = ANY(%s) AND id <> %s AND type = %s
                       AND timestamp >= %s AND timestamp <= %s
                     LIMIT 200
                     """,
-                    (list(_SENSOR_SOURCES), window_start.isoformat(), window_end.isoformat()),
+                    (list(_SENSOR_SOURCES), event_id, orig[2], window_start.isoformat(), window_end.isoformat()),
                 )
                 sensor_events = cur.fetchall()
                 for se in sensor_events:
@@ -212,12 +212,9 @@ def _resolve_single(judgment: dict, cur) -> Optional[Dict[str, Any]]:
                         pass
 
     if outcome is None:
-        # No ground truth found — treat as failed prediction only after window closed
-        now = datetime.now(timezone.utc)
-        if now < resolve_at:
-            return None  # window not yet closed
-        outcome = 0.0
-        ground_truth_source = "no_matching_event"
+        # A closed collection window is not evidence that a claim was false.
+        # Leave unresolved judgments out of Brier statistics.
+        return None
 
     bs = brier_score(stated_prob, outcome)
     return {

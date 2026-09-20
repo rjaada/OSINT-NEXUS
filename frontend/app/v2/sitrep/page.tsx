@@ -144,14 +144,15 @@ function AccuracyBadge({ stats }: { stats: AccuracyStats }) {
   const color = pct == null ? "text-zinc-500" : pct >= 70 ? "text-emerald-400" : pct >= 50 ? "text-amber-400" : "text-red-400"
   return (
     <div className="rounded border border-zinc-700 bg-zinc-900/60 p-4">
-      <div className="text-[10px] font-mono text-zinc-500 tracking-widest uppercase mb-3">Prediction Accuracy (last {stats.window_days}d)</div>
+      <div className="text-[10px] font-mono text-zinc-500 tracking-widest uppercase mb-3">Watch-item text matches (last {stats.window_days}d)</div>
       <div className={`text-4xl font-mono font-bold ${color} mb-2`}>
         {pct != null ? `${pct}%` : "—"}
       </div>
+      <p className="text-xs text-zinc-500 mb-3">Keyword overlap only; these scores do not verify whether a prediction came true.</p>
       <div className="flex gap-3 text-xs font-mono">
-        <span className="text-emerald-400">✓ {stats.correct} correct</span>
+        <span className="text-emerald-400">✓ {stats.correct} strong</span>
         <span className="text-amber-400">~ {stats.partial} partial</span>
-        <span className="text-red-400">✗ {stats.incorrect} wrong</span>
+        <span className="text-red-400">✗ {stats.incorrect} unmatched</span>
         <span className="text-zinc-500">⏳ {stats.pending} pending</span>
       </div>
     </div>

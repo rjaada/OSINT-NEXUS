@@ -78,6 +78,40 @@ def create_user(
     db.commit()
 
 
+
+def create_session(
+    db: Optional[Any],
+    sig: str,
+    username: str,
+    expires_epoch: int,
+    now_epoch: int,
+    now_iso: Callable[[], str],
+) -> None:
+    if db is None:
+        raise RuntimeError("Database unavailable")
+    with db.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO auth_sessions (sig, username, expires_epoch, last_seen_epoch, created_at)
+            VALUES (%s, %s, %s, %s, %s)
+            ON CONFLICT (sig) DO UPDATE SET
+                username = EXCLUDED.username,
+                expires_epoch = EXCLUDED.expires_epoch,
+                last_seen_epoch = EXCLUDED.last_seen_epoch,
+                created_at = EXCLUDED.created_at
+            """,
+            (sig, username.lower(), expires_epoch, now_epoch, now_iso()),
+        )
+    db.commit()
+
+
+def delete_session(db: Optional[Any], sig: str) -> None:
+    if db is None or not sig:
+        return
+    with db.cursor() as cur:
+        cur.execute("DELETE FROM auth_sessions WHERE sig = %s", (sig,))
+    db.commit()
+
 def revoke_token(
     db: Optional[Any],
     sig: str,

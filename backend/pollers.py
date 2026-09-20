@@ -24,6 +24,11 @@ RED_ALERT_URL = "https://www.oref.org.il/WarningMessages/alert/alerts.json"
 _red_alert_403_last_logged: float = 0.0
 
 
+def _red_alert_backoff_seconds(status_code: int) -> int:
+    """Avoid hammering OREF when the deployment IP is geo-blocked."""
+    return 600 if status_code == 403 else 0
+
+
 async def poll_flights():
     import main as _m
     import httpx
@@ -275,8 +280,9 @@ async def poll_red_alert():
                         _m.metrics["last_success"]["red_alert"] = _m.utc_now_iso()
                         _now = asyncio.get_event_loop().time()
                         if _now - _red_alert_403_last_logged > 600:
-                            logger.warning("[RED ALERT] 403 Forbidden — OREF geo-blocking this IP (logged once per 10m)")
+                            logger.warning("[RED ALERT] 403 Forbidden — OREF geo-blocking this IP (backing off 10m)")
                             _red_alert_403_last_logged = _now
+                        await asyncio.sleep(_red_alert_backoff_seconds(resp.status_code))
                     continue
                 # Healthy poll — mark success regardless of whether an alert is active.
                 # Empty/null response = no active sirens = still working correctly.

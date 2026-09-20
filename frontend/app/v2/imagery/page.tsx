@@ -40,9 +40,9 @@ function scoreColor(s: number): string {
 }
 
 function scoreLabel(s: number): string {
-  if (s >= 0.6) return "SIGNIFICANT CHANGE"
+  if (s >= 0.6) return "CLOUD METADATA DIFFERENCE"
   if (s >= 0.35) return "REVIEW RECOMMENDED"
-  return "NO SIGNIFICANT CHANGE"
+  return "NO LARGE CLOUD METADATA DIFFERENCE"
 }
 
 function fmtDt(iso: string): string {
@@ -120,7 +120,7 @@ function ImageryContent() {
       <CommandNav />
 
       <div className="flex items-center justify-between px-4 py-2 border-b border-white/10 shrink-0">
-        <span className="text-[9px] tracking-[0.2em] text-white/30 uppercase">Sentinel-2 Imagery Change Detection</span>
+        <span className="text-[9px] tracking-[0.2em] text-white/30 uppercase">Sentinel-2 Scene Comparison</span>
         <span className="text-[9px] text-white/20">Copernicus Data Space · No auth required · 10m resolution · 5-day revisit</span>
       </div>
 
@@ -232,14 +232,14 @@ function ImageryContent() {
                   >
                     {scoreLabel(result.change_score)}
                   </div>
-                  <div className="text-[9px] text-white/30">Change score: {(result.change_score * 100).toFixed(0)}%</div>
+                  <div className="text-[9px] text-white/30">Cloud metadata score: {(result.change_score * 100).toFixed(0)}%</div>
                 </div>
               </div>
 
               {/* Change score bar */}
               <div className="mb-6">
                 <div className="flex items-center gap-3 mb-1">
-                  <div className="text-[8px] text-white/30 uppercase tracking-wider w-16">Change</div>
+                  <div className="text-[8px] text-white/30 uppercase tracking-wider w-16">Clouds</div>
                   <div className="flex-1 h-2 bg-white/10 rounded-full overflow-hidden">
                     <div
                       className="h-full rounded-full transition-all"
@@ -286,7 +286,6 @@ function ImageryContent() {
                         <>
                           {scene.thumbnail ? (
                             <div className="relative bg-black">
-                              {/* eslint-disable-next-line @next/next/no-img-element */}
                               <img
                                 src={scene.thumbnail}
                                 alt={`${period} scene`}

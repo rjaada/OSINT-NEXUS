@@ -38,7 +38,7 @@ services:
       context: ./landing
       dockerfile: Dockerfile
     ports:
-      - "4000:4000"
+      - "${LANDING_HOST_PORT:-14000}:4000"
     environment:
       - NODE_ENV=production
       - PORT=4000
@@ -58,7 +58,6 @@ services:
     environment:
       - NODE_ENV=production
       - NEXT_PUBLIC_API_URL=
-      - NEXT_PUBLIC_WS_URL=ws://localhost:8000
       - NEXT_PUBLIC_LOCAL_IP=${LOCAL_IP:-127.0.0.1}
       - BACKEND_INTERNAL_URL=http://backend:8000
     depends_on:
@@ -76,7 +75,7 @@ services:
     environment:
       - REDIS_URL=redis://redis:6379
       - GROQ_API_KEY=${GROQ_API_KEY:-}
-      - GROQ_MODEL=${GROQ_MODEL:-llama-3.3-70b-versatile}
+      - GROQ_MODEL=${GROQ_MODEL:-openai/gpt-oss-120b}
       - TG_DIGEST_TOKEN=${TG_DIGEST_TOKEN:-}
       - TG_DIGEST_CHAT_ID=${TG_DIGEST_CHAT_ID:-}
       - TG_DIGEST_HOUR_UTC=${TG_DIGEST_HOUR_UTC:-6}
@@ -126,9 +125,9 @@ services:
       postgres:
         condition: service_healthy
       neo4j:
-        condition: service_started
+        condition: service_healthy
       media-hooks:
-        condition: service_started
+        condition: service_healthy
     volumes:
       - backend_data:/data
     secrets:
@@ -154,12 +153,18 @@ services:
       - "8090:8090"
     environment:
       - WHISPER_MODEL=${WHISPER_MODEL:-small}
-      - WHISPER_DEVICE=${WHISPER_DEVICE:-cuda}
-      - WHISPER_COMPUTE_TYPE=${WHISPER_COMPUTE_TYPE:-int8_float16}
+      - WHISPER_DEVICE=${WHISPER_DEVICE:-cpu}
+      - WHISPER_COMPUTE_TYPE=${WHISPER_COMPUTE_TYPE:-int8}
       - WHISPER_BEAM_SIZE=${WHISPER_BEAM_SIZE:-2}
       - WHISPER_MAX_SECONDS=${WHISPER_MAX_SECONDS:-240}
     volumes:
       - backend_data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8090/health')"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
     mem_limit: 512m
     restart: unless-stopped
 
@@ -185,18 +190,17 @@ services:
   ollama:
     image: ollama/ollama:latest
     ports:
-      - "11434:11434"
+      - "${OLLAMA_HOST_PORT:-11435}:11434"
     environment:
       - OLLAMA_NUM_PARALLEL=1
     volumes:
       - ./ollama_data:/root/.ollama
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
     restart: unless-stopped
 
   postgres:
@@ -206,7 +210,7 @@ services:
       - POSTGRES_USER=osint
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
     ports:
-      - "5432:5432"
+      - "${POSTGRES_HOST_PORT:-5433}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -224,6 +228,16 @@ services:
       - NEO4J_AUTH=neo4j/${NEO4J_PASSWORD}
     volumes:
       - neo4j_data:/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          password=$${NEO4J_AUTH#*/};
+          /var/lib/neo4j/bin/cypher-shell -a neo4j://127.0.0.1:7687 -u neo4j -p "$$password" "RETURN 1" >/dev/null 2>&1
+      interval: 10s
+      timeout: 8s
+      retries: 12
+      start_period: 30s
     mem_limit: 1500m
     restart: unless-stopped
 

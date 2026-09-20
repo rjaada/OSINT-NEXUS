@@ -2,6 +2,38 @@ import json
 from typing import Any, Callable, List, Optional, Sequence
 
 
+_EVENTS_V2_CREATE = """
+CREATE TABLE IF NOT EXISTS events_v2 (
+    id TEXT PRIMARY KEY,
+    type TEXT,
+    source TEXT,
+    timestamp TIMESTAMPTZ,
+    lat DOUBLE PRECISION,
+    lng DOUBLE PRECISION,
+    description TEXT,
+    payload_json JSONB,
+    notes TEXT
+)
+"""
+
+_EVENTS_V2_COLUMNS = (
+    "time_precision INTEGER",
+    "geo_precision INTEGER",
+    "source_scale TEXT",
+    "civilian_targeting BOOLEAN NOT NULL DEFAULT FALSE",
+    "acled_event_type TEXT",
+    "acled_sub_event_type TEXT",
+    "confidence_score INTEGER NOT NULL DEFAULT 0",
+)
+
+
+def ensure_events_v2_schema(cur) -> None:
+    """Create and forward-migrate the event table used by enrichment jobs."""
+    cur.execute(_EVENTS_V2_CREATE)
+    for definition in _EVENTS_V2_COLUMNS:
+        cur.execute(f"ALTER TABLE events_v2 ADD COLUMN IF NOT EXISTS {definition}")
+
+
 def postgres_status(database_url: str, psycopg_mod) -> dict:
     configured = database_url.startswith("postgres")
     if not configured:
@@ -11,21 +43,7 @@ def postgres_status(database_url: str, psycopg_mod) -> dict:
     try:
         with psycopg_mod.connect(database_url, connect_timeout=3) as conn:
             with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS events_v2 (
-                        id TEXT PRIMARY KEY,
-                        type TEXT,
-                        source TEXT,
-                        timestamp TIMESTAMPTZ,
-                        lat DOUBLE PRECISION,
-                        lng DOUBLE PRECISION,
-                        description TEXT,
-                        payload_json JSONB,
-                        notes TEXT
-                    )
-                    """
-                )
+                ensure_events_v2_schema(cur)
                 cur.execute("SELECT COUNT(*) FROM events_v2")
                 count = int(cur.fetchone()[0])
                 return {"configured": True, "connected": True, "events_count": count, "error": None}
@@ -163,27 +181,13 @@ def persist_event_v2_pg(
         acled = _compute_acled_fields(event, src)
         with psycopg_mod.connect(database_url, connect_timeout=3) as conn:
             with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS events_v2 (
-                        id TEXT PRIMARY KEY,
-                        type TEXT,
-                        source TEXT,
-                        timestamp TIMESTAMPTZ,
-                        lat DOUBLE PRECISION,
-                        lng DOUBLE PRECISION,
-                        description TEXT,
-                        payload_json JSONB,
-                        notes TEXT
-                    )
-                    """
-                )
+                ensure_events_v2_schema(cur)
                 cur.execute(
                     """
                     INSERT INTO events_v2 (id, type, source, timestamp, lat, lng, description, payload_json,
-                        time_precision, geo_precision, source_scale, civilian_targeting,
+                        confidence_score, time_precision, geo_precision, source_scale, civilian_targeting,
                         acled_event_type, acled_sub_event_type, notes)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (id) DO UPDATE SET
                         type = EXCLUDED.type,
                         source = EXCLUDED.source,
@@ -192,6 +196,7 @@ def persist_event_v2_pg(
                         lng = EXCLUDED.lng,
                         description = EXCLUDED.description,
                         payload_json = EXCLUDED.payload_json,
+                        confidence_score = EXCLUDED.confidence_score,
                         time_precision = EXCLUDED.time_precision,
                         geo_precision = EXCLUDED.geo_precision,
                         source_scale = EXCLUDED.source_scale,
@@ -209,6 +214,7 @@ def persist_event_v2_pg(
                         float(event["lng"]) if event.get("lng") is not None else None,
                         str(event.get("desc", "")),
                         json.dumps(payload, ensure_ascii=False),
+                        payload["confidence_score"],
                         acled["time_precision"],
                         acled["geo_precision"],
                         acled["source_scale"],

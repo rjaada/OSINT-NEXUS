@@ -66,6 +66,7 @@ AUTH_DEFAULT_ADMIN_USER = os.getenv("AUTH_DEFAULT_ADMIN_USER", "admin")
 AUTH_DEFAULT_ADMIN_PASSWORD = os.getenv("AUTH_DEFAULT_ADMIN_PASSWORD", "")
 AUTH_COOKIE_SECURE = os.getenv("AUTH_COOKIE_SECURE", "1").lower() in ("1", "true", "yes", "on")
 AUTH_ACCESS_HOURS = int(os.getenv("AUTH_ACCESS_HOURS", "8"))
+AUTH_IDLE_TIMEOUT_SEC = max(60, int(os.getenv("AUTH_IDLE_TIMEOUT_SEC", "900")))
 AUTH_LOGIN_MAX_ATTEMPTS = int(os.getenv("AUTH_LOGIN_MAX_ATTEMPTS", "5"))
 AUTH_LOGIN_LOCK_SEC = int(os.getenv("AUTH_LOGIN_LOCK_SEC", "300"))
 AUTH_RATE_WINDOW_SEC = int(os.getenv("AUTH_RATE_WINDOW_SEC", "60"))
@@ -98,7 +99,7 @@ PASSKEY_CHALLENGE_TTL_SEC = int(os.getenv("PASSKEY_CHALLENGE_TTL_SEC", "180"))
 # Ollama / AI Models
 # ---------------------------------------------------------------------------
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
-GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
 GROQ_TRACE_TIMEOUT_SEC = int(os.getenv("GROQ_TRACE_TIMEOUT_SEC", "60"))
 
 TG_DIGEST_TOKEN = os.getenv("TG_DIGEST_TOKEN", "")

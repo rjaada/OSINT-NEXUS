@@ -1,5 +1,7 @@
 "use client"
 
+import { websocketBase } from "@/lib/api"
+
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { TopBar } from "@/components/dashboard/top-bar"
 import { CommandNav } from "@/components/dashboard/command-nav"
@@ -85,7 +87,7 @@ export default function AlertsPage() {
 
   const loadMain = useCallback(async () => {
     try {
-      const res = await fetch(`${API_BASE}/api/v2/alerts?limit=${crisisMode ? 80 : 60}`, { cache: "no-store", credentials: "include" })
+      const res = await fetch(`${API_BASE}/api/v2/alerts?limit=${crisisMode ? 80 : 60}`, { credentials: "include", cache: "no-store" })
       if (!res.ok) return
       const data: AlertAssessment[] = await res.json()
       const normalized = crisisMode ? data.filter((a) => a.type === "CRITICAL" || a.type === "STRIKE") : data
@@ -120,7 +122,7 @@ export default function AlertsPage() {
 
     const connect = () => {
       try {
-        const wsUrl = (process.env.NEXT_PUBLIC_WS_URL ?? "ws://localhost:8000") + "/ws/live/v2"
+        const wsUrl = websocketBase() + "/ws/live/v2"
         ws = new WebSocket(wsUrl)
         ws.onclose = () => {
           retry = setTimeout(connect, 3500)
@@ -177,7 +179,7 @@ export default function AlertsPage() {
           <section className="grid gap-3">
             {alerts.map((a) => {
               const c = CONF_STYLE[a.confidence]
-              const videoHref = a.video_url ? (a.video_url.startsWith("/media/") ? `http://localhost:8000${a.video_url}` : a.video_url) : null
+              const videoHref = a.video_url ? (a.video_url.startsWith("/media/") ? `${API_BASE}${a.video_url}` : a.video_url) : null
               const canInlineVideo = isPlayableVideoUrl(a.video_url)
               const review = a.review?.status || "unreviewed"
               return (

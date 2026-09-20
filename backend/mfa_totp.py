@@ -9,8 +9,24 @@ _REPLAY_TTL = 90
 
 
 def ensure_table(db) -> None:
-    """No-op: schema is managed by db_postgres.init_pg_schema."""
-    return
+    """Ensure replay storage exists for tests and non-Postgres deployments."""
+    if db is None:
+        return
+    cur = db.cursor()
+    try:
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS totp_used_codes (
+                username TEXT NOT NULL,
+                code TEXT NOT NULL,
+                used_at INTEGER NOT NULL,
+                PRIMARY KEY (username, code)
+            )
+            """
+        )
+        db.commit()
+    finally:
+        cur.close()
 
 
 def get_record(db, username: str):
@@ -75,63 +91,56 @@ def verify_code(secret: str, code: str, valid_window: int = 1) -> bool:
 
 
 def verify_and_consume(db, username: str, secret: str, code: str, valid_window: int = 1) -> bool:
-    """Verify a TOTP code and mark it as used to prevent replay attacks.
+    """Atomically verify and consume a TOTP code.
 
-    Returns False if the code is invalid OR has already been used within the
-    replay window, even if pyotp would otherwise accept it.
+    When replay storage is supplied, database errors fail closed: accepting a
+    valid code without recording its use would make replay protection illusory.
     """
     code = str(code).strip()
     try:
-        t = pyotp.TOTP(secret)
-        if not t.verify(code, valid_window=valid_window):
+        if not pyotp.TOTP(secret).verify(code, valid_window=valid_window):
             return False
     except Exception:
         return False
 
     if db is None:
-        return True  # no DB — degrade gracefully, still better than nothing
+        return True
 
     now = int(time.time())
-
-    # Prune expired entries first (keep table small).
+    placeholder = "?" if db.__class__.__module__.startswith("sqlite3") else "%s"
+    cur = db.cursor()
     try:
-        with db.cursor() as cur:
+        # Pruning is housekeeping only; failure must not block the atomic insert.
+        try:
             cur.execute(
-                "DELETE FROM totp_used_codes WHERE used_at < %s",
+                f"DELETE FROM totp_used_codes WHERE used_at < {placeholder}",
                 (now - _REPLAY_TTL,),
             )
-    except Exception:
-        pass
+        except Exception:
+            db.rollback()
+            cur.close()
+            cur = db.cursor()
 
-    # Reject if this (username, code) pair was already consumed.
-    try:
-        with db.cursor() as cur:
-            cur.execute(
-                "SELECT 1 FROM totp_used_codes WHERE username = %s AND code = %s",
-                (username.lower(), code),
-            )
-            row = cur.fetchone()
-        if row:
-            return False
-    except Exception:
-        pass
-
-    # Mark consumed.
-    try:
-        with db.cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO totp_used_codes (username, code, used_at)
-                VALUES (%s, %s, %s)
-                ON CONFLICT (username, code) DO NOTHING
-                """,
-                (username.lower(), code, now),
-            )
+        cur.execute(
+            f"""
+            INSERT INTO totp_used_codes (username, code, used_at)
+            VALUES ({placeholder}, {placeholder}, {placeholder})
+            ON CONFLICT (username, code) DO NOTHING
+            RETURNING 1
+            """,
+            (username.lower(), code, now),
+        )
+        inserted = cur.fetchone()
         db.commit()
+        return bool(inserted)
     except Exception:
-        pass
-
-    return True
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        return False
+    finally:
+        cur.close()
 
 
 def is_enabled(db, username: str) -> bool:

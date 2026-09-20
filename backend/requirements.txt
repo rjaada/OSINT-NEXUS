@@ -1,12 +1,12 @@
 fastapi==0.135.1
 uvicorn==0.24.0.post1
 websockets==12.0
-python-dotenv==1.0.0
+python-dotenv==1.2.2
 httpx==0.25.1
 pydantic==2.11.7
 feedparser==6.0.11
 beautifulsoup4==4.12.3
-yt-dlp==2026.2.21
+yt-dlp==2026.7.4
 psycopg[binary]==3.2.10
 mgrs==1.5.0
 pyotp==2.9.0

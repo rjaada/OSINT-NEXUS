@@ -69,6 +69,9 @@ async def auth_login(request: Request, response: Response):
         mfa_enabled_for_user=_m.mfa_enabled_for_user,
         mfa_verify_user_code=_m.mfa_verify_user_code,
         admin_password_block_reason=_m.admin_password_block_reason,
+        break_glass_authorized=_m.break_glass_authorized,
+        auth_token_signature=_m.auth_token_signature,
+        create_session=_m.authstore.create_session,
     )
 
 
@@ -84,17 +87,26 @@ async def auth_logout(request: Request, response: Response):
         db=_m._db,
         now_iso=_m.utc_now_iso,
         auth_cookie_secure=_m.AUTH_COOKIE_SECURE,
+        delete_session=_m.authstore.delete_session,
     )
 
 
 @router.get("/api/auth/session")
 async def auth_session(request: Request):
     import main as _m
-    return _m.authhandlers.session_user(
-        request=request,
-        auth_verify=_m.auth_verify,
-        is_token_revoked=_m.is_token_revoked,
-    )
+    try:
+        verified = _m.auth_user_from_request(request)
+    except HTTPException as exc:
+        if exc.status_code != 401:
+            raise
+        return {"authenticated": False}
+    return {
+        "authenticated": True,
+        "username": str(verified.get("username", "")),
+        "role": str(verified.get("role", "")),
+        "expires": int(verified.get("expires", 0)),
+        "csrf": request.cookies.get("osint_csrf", ""),
+    }
 
 
 @router.get("/api/auth/card")

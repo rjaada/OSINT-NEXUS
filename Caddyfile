@@ -23,7 +23,7 @@ landing.{$DOMAIN} {
     handle /ws/* {
         reverse_proxy backend:8000 {
             transport http {
-                versions h1
+                versions 1.1
             }
             header_up Upgrade {http.request.header.Upgrade}
             header_up Connection {http.request.header.Connection}

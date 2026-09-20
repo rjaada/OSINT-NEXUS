@@ -13,14 +13,11 @@ route:
       receiver: 'default'
       repeat_interval: 1h
 
+# Safe local default: alerts remain visible in Prometheus/Grafana without
+# attempting delivery to an unconfigured webhook. Deployments can replace this
+# receiver with a secret-backed integration-specific configuration.
 receivers:
   - name: 'default'
-    webhook_configs:
-      - url: '${ALERT_WEBHOOK_URL:-http://localhost:9999/alert}'
-        send_resolved: true
-        http_config:
-          tls_config:
-            insecure_skip_verify: false
 
 inhibit_rules:
   - source_match:

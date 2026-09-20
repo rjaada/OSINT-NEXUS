@@ -9,23 +9,17 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    env:
-      # docker compose derives its default project name (and image tags)
-      # from the checkout directory name, which differs between local dev
-      # (OSINT) and the CI runner (OSINT-NEXUS). Pin it so the built image
-      # is always tagged osint-backend, matching the test step below.
-      COMPOSE_PROJECT_NAME: osint
     services:
       postgres:
         image: postgis/postgis:16-3.4
         env:
-          POSTGRES_DB: osint
+          POSTGRES_DB: osint_test
           POSTGRES_USER: osint
           POSTGRES_PASSWORD: ci_test_password
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U osint -d osint"
+          --health-cmd "pg_isready -U osint -d osint_test"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
@@ -33,10 +27,13 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Build backend image
-        run: docker compose build backend
+        run: docker build -t osint-backend backend
 
       - name: Build frontend image
-        run: docker compose build frontend
+        run: |
+          docker build --target builder -t osint-frontend-tests frontend
+          docker run --rm osint-frontend-tests sh -c "npm run lint && npm test && npx tsc --noEmit"
+          docker build -t osint-frontend frontend
 
       - name: Run backend test suite
         run: |
@@ -44,7 +41,7 @@ jobs:
             -e POSTGRES_HOST=localhost \
             -e POSTGRES_USER=osint \
             -e POSTGRES_PASSWORD=ci_test_password \
-            -e POSTGRES_DB=osint \
+            -e POSTGRES_DB=osint_test \
             -e NEO4J_PASSWORD=ci_test_password \
             -e AUTH_SECRET=ci-test-secret-at-least-32-chars-long \
             -e AUTH_DEFAULT_ADMIN_PASSWORD=CiTestPass123! \
@@ -52,6 +49,14 @@ jobs:
             -w /app \
             osint-backend \
             python -m unittest discover -s tests -p "test_*.py" -v
+
+      - name: Test media hooks
+        run: |
+          docker build -t osint-media-hooks backend/hooks_local
+          docker run --rm -v "$PWD/backend/hooks_local:/app:ro" osint-media-hooks python -m unittest test_app -v
+
+      - name: Test backup scripts
+        run: python3 -m unittest discover -s scripts/tests -p 'test_*.py' -v
 
   deploy:
     runs-on: ubuntu-latest

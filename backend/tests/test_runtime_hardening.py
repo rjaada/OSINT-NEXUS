@@ -1,7 +1,4 @@
-import importlib
-import os
 import sys
-import tempfile
 import time
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -13,38 +10,10 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 import auth_security as authsec  # noqa: E402
-import config as backend_config  # noqa: E402
-import db_sqlite as backend_db_sqlite  # noqa: E402
 import main as backend_main  # noqa: E402
 
 
 class RuntimeHardeningTests(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls) -> None:
-        cls.tmp = tempfile.TemporaryDirectory()
-        os.environ["OSINT_DB_PATH"] = str(Path(cls.tmp.name) / "runtime_hardening.db")
-        os.environ["AUTH_DEFAULT_ADMIN_USER"] = "admin"
-        os.environ["AUTH_DEFAULT_ADMIN_PASSWORD"] = "AdminPass123!"
-        os.environ["AUTH_ADMIN_REQUIRE_PASSKEY"] = "0"
-        global backend_main
-        # Reload config → db_sqlite → main so env-var changes propagate cleanly.
-        importlib.reload(backend_config)
-        importlib.reload(backend_db_sqlite)
-        backend_main = importlib.reload(backend_main)
-        backend_main.app.router.on_startup.clear()
-        backend_main.app.router.on_shutdown.clear()
-        backend_main._db = backend_main.init_db()
-        backend_main.ensure_default_admin()
-
-    @classmethod
-    def tearDownClass(cls) -> None:
-        try:
-            if backend_main._db is not None:
-                backend_main._db.close()
-        except Exception:
-            pass
-        cls.tmp.cleanup()
-
     def setUp(self) -> None:
         backend_main._rate_limit.clear()
         backend_main._failed_logins.clear()

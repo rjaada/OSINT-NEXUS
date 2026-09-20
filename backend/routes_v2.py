@@ -57,54 +57,12 @@ resolve_write_identity = _lazy("resolve_write_identity")
 source_ops_metrics     = _lazy("source_ops_metrics")
 utc_now_iso            = _lazy("utc_now_iso")
 
-# ── Shared state from state.py (same object as main.py uses) ──────────────────
-import state as _state
-_v2_report_state    = _state._v2_report_state
-_analyst_state      = _state._analyst_state
-_defcon_state       = _state._defcon_state
-_media_job_state    = _state._media_job_state
-seen_articles       = _state.seen_articles
-seen_telegram_posts = _state.seen_telegram_posts
-metrics             = _state.metrics
-manager             = _state.manager
-last_aircraft       = _state.last_aircraft
-_start_time         = _state._start_time
-_media_jobs         = _state._media_jobs
-_review_cache       = _state._review_cache
-_ollama_available_models = _state._ollama_available_models
-events_buffer       = _state.events_buffer
-events_history      = _state.events_history
-graph_logger        = _state.graph_logger
+# Runtime values are owned by main; state.py contains separate legacy objects.
+# Resolve at use time so startup/reloads/reassigned buffers remain visible.
+def _runtime():
+    import main
+    return main
 
-
-# ── Live-rebound state: proxy to always reflect current value ─────────────────
-class _DbProxy:
-    """Forwards attribute/call access to state._db (set at startup)."""
-    def __getattr__(self, name):
-        db = _state._db
-        if db is None:
-            raise RuntimeError("DB not initialized")
-        return getattr(db, name)
-_db = _DbProxy()
-
-
-class _SchedulerProxy:
-    """Forwards attribute access to state._v2_ai_scheduler (set at startup)."""
-    def __getattr__(self, name):
-        s = _state._v2_ai_scheduler
-        if s is None:
-            import main as _m
-            s = _m._v2_ai_scheduler
-        return getattr(s, name)
-_v2_ai_scheduler = _SchedulerProxy()
-
-
-class _GraphStoreProxy:
-    """Forwards attribute access to state._graph_store (set at startup)."""
-    def __getattr__(self, name):
-        gs = _state._graph_store
-        return getattr(gs, name) if gs is not None else None
-_graph_store = _GraphStoreProxy()
 
 # ── Config constants ──────────────────────────────────────────────────────────
 from config import (
@@ -138,7 +96,7 @@ async def v2_ping():
 async def v2_ai_policy(request: Request):
     import main as _m
     _m.require_analyst_or_admin(request)
-    return _v2_ai_scheduler.status()
+    return _runtime()._v2_ai_scheduler.status()
 
 
 @router.get("/api/v2/ai/report")
@@ -160,10 +118,10 @@ async def v2_ai_report(force: bool = False, _user: dict = Depends(_require_analy
     event_fp = hashlib.sha256(fingerprint_seed.encode()).hexdigest() if fingerprint_seed else "empty"
 
     now_ts = time.time()
-    age_ok = (now_ts - float(_v2_report_state.get("last_generated_ts", 0.0))) < V2_REPORT_CACHE_TTL_SEC
-    same_events = _v2_report_state.get("last_event_fp") == event_fp
-    if (not force) and age_ok and same_events and _v2_report_state.get("report"):
-        return _v2_report_state["report"]
+    age_ok = (now_ts - float(_runtime()._v2_report_state.get("last_generated_ts", 0.0))) < V2_REPORT_CACHE_TTL_SEC
+    same_events = _runtime()._v2_report_state.get("last_event_fp") == event_fp
+    if (not force) and age_ok and same_events and _runtime()._v2_report_state.get("report"):
+        return _runtime()._v2_report_state["report"]
     if not latest_slice:
         return _safe_v2_report("No recent events available for v2 report generation.")
 
@@ -192,7 +150,7 @@ EVIDENCE:
 {evidence_lines}
 """
     try:
-        data = await _v2_ai_scheduler.run_json("report", prompt=prompt, temperature=0.05)
+        data = await _runtime()._v2_ai_scheduler.run_json("report", prompt=prompt, temperature=0.05)
     except HTTPException:
         return _safe_v2_report("Report model unavailable or timed out.")
 
@@ -212,9 +170,9 @@ EVIDENCE:
         "generated_at": utc_now_iso(),
         "model": V2_MODEL_REPORT,
     }
-    _v2_report_state["report"] = report
-    _v2_report_state["last_event_fp"] = event_fp
-    _v2_report_state["last_generated_ts"] = now_ts
+    _runtime()._v2_report_state["report"] = report
+    _runtime()._v2_report_state["last_event_fp"] = event_fp
+    _runtime()._v2_report_state["last_generated_ts"] = now_ts
     persist_ai_report("v2", report, event_fp)
     return report
 
@@ -248,7 +206,7 @@ PUBLISHED_AT: {published_at or "unknown"}
 TITLE: {title}
 BODY: {body}
 """
-    data = await _v2_ai_scheduler.run_json("verify", prompt=prompt, temperature=0.0)
+    data = await _runtime()._v2_ai_scheduler.run_json("verify", prompt=prompt, temperature=0.0)
     classification = str(data.get("classification", "uncertain")).lower().strip()
     if classification not in {"verified", "likely", "uncertain", "disputed"}:
         classification = "uncertain"
@@ -282,9 +240,9 @@ async def v2_reports_history(
 async def v2_event_graph(request: Request, limit: int = 350):
     require_analyst_or_admin(request)
     safe_limit = min(max(limit, 30), 1500)
-    if _state._graph_store is not None and _graph_store.status().get("connected"):
+    if _runtime()._graph_store is not None and _runtime()._graph_store.status().get("connected"):
         try:
-            graph = await asyncio.to_thread(_graph_store.get_graph_data, safe_limit)
+            graph = await asyncio.to_thread(_runtime()._graph_store.get_graph_data, safe_limit)
             return {
                 "backend": "neo4j",
                 "nodes": graph.get("nodes", []),
@@ -292,11 +250,11 @@ async def v2_event_graph(request: Request, limit: int = 350):
                 "generated_at": utc_now_iso(),
             }
         except Exception as exc:
-            graph_logger.warning("[GRAPH] graph query failed, falling back: %s", exc)
+            _runtime().graph_logger.warning("[GRAPH] graph query failed, falling back: %s", exc)
 
     rows = fetch_recent_v2_events_pg(limit=safe_limit)
     if not rows:
-        rows = events_history[-safe_limit:]
+        rows = _runtime().events_history[-safe_limit:]
     fallback_graph = build_event_graph(rows)
     return {
         "backend": "fallback",
@@ -309,9 +267,9 @@ async def v2_event_graph(request: Request, limit: int = 350):
 @router.get("/api/v2/graph/node/{node_id}")
 async def v2_graph_node_profile(node_id: str, request: Request):
     require_analyst_or_admin(request)
-    if _state._graph_store is None or not _graph_store.status().get("connected"):
+    if _runtime()._graph_store is None or not _runtime()._graph_store.status().get("connected"):
         raise HTTPException(status_code=503, detail="Graph store unavailable")
-    profile = await asyncio.to_thread(_graph_store.get_node_profile, node_id)
+    profile = await asyncio.to_thread(_runtime()._graph_store.get_node_profile, node_id)
     if not profile:
         raise HTTPException(status_code=404, detail="Node not found")
     return profile
@@ -355,7 +313,7 @@ NODE_PAYLOAD:
 {json.dumps(compact, ensure_ascii=False)}
 """
     try:
-        data = await _v2_ai_scheduler.run_json("report", prompt=prompt, temperature=0.05)
+        data = await _runtime()._v2_ai_scheduler.run_json("report", prompt=prompt, temperature=0.05)
         text = str(data.get("assessment", "")).strip()
         if not text:
             text = "Insufficient verified evidence for a stable node-level assessment."
@@ -407,13 +365,13 @@ async def media_consume(
 
     # Clear stale video_url from runtime + DB.
     if event_id:
-        for e in events_history:
+        for e in _runtime().events_history:
             if str(e.get("id")) == event_id:
                 e["video_url"] = None
                 persist_event(e)
                 break
     else:
-        for e in events_history:
+        for e in _runtime().events_history:
             if str(e.get("video_url", "")) == video_url:
                 e["video_url"] = None
                 persist_event(e)
@@ -426,14 +384,14 @@ async def v2_system(request: Request):
     import main as _m
     _m.require_analyst_or_admin(request)
     pg = postgres_status()
-    ai_status = _v2_ai_scheduler.status()
-    graph_status = _graph_store.status() if _state._graph_store is not None else {"enabled": False, "connected": False, "error": "not initialized"}
+    ai_status = _runtime()._v2_ai_scheduler.status()
+    graph_status = _runtime()._graph_store.status() if _runtime()._graph_store is not None else {"enabled": False, "connected": False, "error": "not initialized"}
     return {
         "version": "v2-beta",
         "storage_backend": STORAGE_BACKEND,
         "ollama_model_primary": OLLAMA_MODEL,
         "ollama_model_fallback": OLLAMA_FALLBACK_MODEL,
-        "ollama_models_available": sorted(_ollama_available_models),
+        "ollama_models_available": sorted(_runtime()._ollama_available_models),
         "v2_ai_models": {
             "default": V2_MODEL_DEFAULT,
             "verify": V2_MODEL_VERIFY,
@@ -442,11 +400,11 @@ async def v2_system(request: Request):
         "postgres": pg,
         "neo4j": graph_status,
         "queue": {
-            "media_jobs_pending": _media_jobs.qsize(),
-            "media_jobs_tracked": len(_media_job_state),
+            "media_jobs_pending": _runtime()._media_jobs.qsize(),
+            "media_jobs_tracked": len(_runtime()._media_job_state),
         },
-        "defcon_level": int(_defcon_state.get("level", 5)),
-        "defcon_reason": str(_defcon_state.get("reason", "Baseline monitoring state")),
+        "defcon_level": int(_runtime()._defcon_state.get("level", 5)),
+        "defcon_reason": str(_runtime()._defcon_state.get("reason", "Baseline monitoring state")),
         "ai_policy": ai_status.get("policy"),
         "ai_runtime": ai_status.get("runtime"),
         "generated_at": utc_now_iso(),
@@ -470,7 +428,7 @@ async def v2_metoc(request: Request, lat: Optional[float] = None, lng: Optional[
     if lat is None or lng is None:
         sample = fetch_recent_v2_events_pg(limit=120)
         if not sample:
-            sample = list(events_history[-120:])
+            sample = list(_runtime().events_history[-120:])
         if sample:
             lat = sum(float(e.get("lat", 0.0)) for e in sample) / len(sample)
             lng = sum(float(e.get("lng", 0.0)) for e in sample) / len(sample)
@@ -491,7 +449,7 @@ async def v2_ai_ops_brief(payload: OpsBriefPayload, request: Request):
         type_whitelist=["STRIKE", "CRITICAL", "CLASH", "MOVEMENT", "NOTAM"],
     )
     if not recent:
-        recent = list(events_history[-1200:])
+        recent = list(_runtime().events_history[-1200:])
     recent_sorted = sorted(recent, key=lambda x: _parse_iso(str(x.get("timestamp", utc_now_iso()))), reverse=True)
     sample = recent_sorted[:limit]
     if not sample:
@@ -514,7 +472,7 @@ Body: {str(e.get('desc',''))[:400]}
 Source: {str(e.get('source',''))}
 Timestamp: {str(e.get('timestamp',''))}
 """
-            vr = await _v2_ai_scheduler.run_json("verify", verify_prompt, temperature=0.0)
+            vr = await _runtime()._v2_ai_scheduler.run_json("verify", verify_prompt, temperature=0.0)
             verify_cards.append(
                 {
                     "event_id": e.get("id"),
@@ -552,7 +510,7 @@ Return strict JSON:
 Context:
 {chr(10).join(context_lines)}
 """
-    report_json = await _v2_ai_scheduler.run_json("report", report_prompt, temperature=0.1)
+    report_json = await _runtime()._v2_ai_scheduler.run_json("report", report_prompt, temperature=0.1)
     priority_actions = report_json.get("priority_actions") if isinstance(report_json.get("priority_actions"), list) else []
     commander_chat = {
         "one_line_risk": str(report_json.get("summary", "")).strip()[:240],
@@ -561,7 +519,7 @@ Context:
     generated_at = utc_now_iso()
     dt = _parse_iso(generated_at)
     document_control = f"OSINT-NEXUS-{dt.strftime('%Y%m%d')}-{dt.strftime('%H%M')}-{mode.replace(' ', '-')}"
-    await manager.broadcast(
+    await _runtime().manager.broadcast(
         {
             "type": "report_generated",
             "data": {
@@ -576,7 +534,7 @@ Context:
         "verify": verify_cards,
         "report": report_json,
         "commander_chat": commander_chat,
-        "model_policy": _v2_ai_scheduler.status().get("policy"),
+        "model_policy": _runtime()._v2_ai_scheduler.status().get("policy"),
         "generated_at": generated_at,
         "document_control": document_control,
     }
@@ -605,7 +563,7 @@ async def v2_events(request: Request, limit: int = 120, clustered: bool = False,
     # Frontend applies its own trust/confidence gate per source type.
     rows = fetch_recent_v2_events_pg(limit=limit, before_iso=replay_at)
     if not rows:
-        rows = list(reversed(events_history[-1200:]))[:limit]
+        rows = list(reversed(_runtime().events_history[-1200:]))[:limit]
     now = datetime.now(timezone.utc)
     by_bucket = defaultdict(list)
     for e in rows:
@@ -621,7 +579,7 @@ async def v2_events(request: Request, limit: int = 120, clustered: bool = False,
         x["media"] = get_media_analysis(str(e.get("id", "")))
         if not is_playable_video_url(str(x.get("video_url") or "")):
             x["video_url"] = None
-        x["review"] = _review_cache.get(str(e.get("id", "")))
+        x["review"] = _runtime()._review_cache.get(str(e.get("id", "")))
         x["confidence_score"] = score
         x["confidence"] = "HIGH" if score >= 78 else ("MEDIUM" if score >= 55 else "LOW")
         x["confidence_reason"] = reason
@@ -649,7 +607,7 @@ async def v2_alerts(request: Request, limit: int = 60, replay_at: Optional[str] 
         before_iso=replay_at,
     )
     if not recent:
-        recent = [e for e in events_history[-1000:] if e.get("type") in {"STRIKE", "CRITICAL", "CLASH"}]
+        recent = [e for e in _runtime().events_history[-1000:] if e.get("type") in {"STRIKE", "CRITICAL", "CLASH"}]
     by_bucket = defaultdict(list)
     for e in recent:
         by_bucket[(round(float(e.get("lat", 0.0)), 1), round(float(e.get("lng", 0.0)), 1))].append(e)
@@ -687,7 +645,7 @@ async def v2_alerts(request: Request, limit: int = 60, replay_at: Optional[str] 
                 "video_confidence": e.get("video_confidence"),
                 "mgrs": mgrs_from_latlng(float(e.get("lat", 0.0)), float(e.get("lng", 0.0))),
                 "media": get_media_analysis(str(e.get("id", ""))),
-                "review": _review_cache.get(str(e.get("id", ""))),
+                "review": _runtime()._review_cache.get(str(e.get("id", ""))),
             }
         )
     return cards[:limit]
@@ -707,9 +665,6 @@ async def v2_ai_press_brief(payload: Dict[str, Any], request: Request):
         raise HTTPException(status_code=400, detail="text too long (max 20,000 chars)")
 
     import groq_client
-
-    if not groq_client.groq_available():
-        raise HTTPException(status_code=503, detail="AI unavailable — GROQ_API_KEY not set")
 
     prompt = f"""You are an intelligence analyst specializing in decoding political and military statements.
 
@@ -784,7 +739,7 @@ async def v2_sources(request: Request, limit: int = 200, replay_at: Optional[str
     limit = min(max(limit, 1), 400)
     rows = fetch_recent_v2_events_pg(limit=limit, before_iso=replay_at)
     if not rows:
-        rows = list(reversed(events_history[-1200:]))[:limit]
+        rows = list(reversed(_runtime().events_history[-1200:]))[:limit]
     grouped = defaultdict(int)
     for r in rows:
         grouped[_extract_source(r)] += 1
@@ -820,17 +775,17 @@ async def v2_reviews(
         raise HTTPException(status_code=400, detail="invalid status")
     if not event_id:
         raise HTTPException(status_code=400, detail="missing event_id")
-    incident_id = next((e.get("incident_id") for e in events_history if e.get("id") == event_id), None)
-    if _db is not None:
-        _db.execute(
+    incident_id = next((e.get("incident_id") for e in _runtime().events_history if e.get("id") == event_id), None)
+    if _runtime()._db is not None:
+        _runtime()._db.execute(
             """
             INSERT INTO reviews (event_id, incident_id, status, analyst, note, created_at)
             VALUES (?, ?, ?, ?, ?, ?)
             """,
             (event_id, incident_id, status, actor, note, utc_now_iso()),
         )
-        _db.commit()
-    _review_cache[event_id] = {"status": status, "analyst": actor, "note": note, "updated_at": utc_now_iso()}
+        _runtime()._db.commit()
+    _runtime()._review_cache[event_id] = {"status": status, "analyst": actor, "note": note, "updated_at": utc_now_iso()}
     audit_log("review.set", actor, role, payload, target_id=event_id)
     return {"ok": True, "event_id": event_id, "status": status}
 
@@ -840,9 +795,9 @@ async def v2_reviews_list(request: Request, limit: int = 200):
     import main as _m
     _m.require_analyst_or_admin(request)
     limit = min(max(limit, 1), 500)
-    if _db is None:
+    if _runtime()._db is None:
         return []
-    rows = _db.execute(
+    rows = _runtime()._db.execute(
         """
         SELECT id, event_id, incident_id, status, analyst, note, created_at
         FROM reviews ORDER BY id DESC LIMIT ?
@@ -869,13 +824,13 @@ async def v2_saved_views_create(
     filters = payload.get("filters", {})
     if not name:
         raise HTTPException(status_code=400, detail="missing name")
-    if _db is not None:
-        with _db.cursor() as _cur:
+    if _runtime()._db is not None:
+        with _runtime()._db.cursor() as _cur:
             _cur.execute(
                 "INSERT INTO saved_views (name, owner, filters_json, created_at) VALUES (%s, %s, %s, %s)",
                 (name, actor, json.dumps(filters, ensure_ascii=False), utc_now_iso()),
             )
-        _db.commit()
+        _runtime()._db.commit()
     audit_log("saved_view.create", actor, role, payload, target_id=name)
     return {"ok": True}
 
@@ -886,9 +841,9 @@ async def v2_saved_views(request: Request, owner: str = "anon", x_api_key: Optio
     _m.require_analyst_or_admin(request)
     if x_api_key != V2_API_KEY:
         owner = auth_user_from_request(request).get("username", "anon")
-    if _db is None:
+    if _runtime()._db is None:
         return []
-    with _db.cursor() as _cur:
+    with _runtime()._db.cursor() as _cur:
         _cur.execute(
             "SELECT id, name, owner, filters_json, created_at FROM saved_views WHERE owner = %s ORDER BY id DESC",
             (owner,),
@@ -926,13 +881,13 @@ async def v2_watchlist_create(
     tags = payload.get("tags", [])
     if not name or not query:
         raise HTTPException(status_code=400, detail="missing name/query")
-    if _db is not None:
-        with _db.cursor() as _cur:
+    if _runtime()._db is not None:
+        with _runtime()._db.cursor() as _cur:
             _cur.execute(
                 "INSERT INTO watchlists (name, owner, query, tags_json, created_at) VALUES (%s, %s, %s, %s, %s)",
                 (name, actor, query, json.dumps(tags, ensure_ascii=False), utc_now_iso()),
             )
-        _db.commit()
+        _runtime()._db.commit()
     audit_log("watchlist.create", actor, role, payload, target_id=name)
     return {"ok": True}
 
@@ -943,9 +898,9 @@ async def v2_watchlists(request: Request, owner: str = "anon", x_api_key: Option
     _m.require_analyst_or_admin(request)
     if x_api_key != V2_API_KEY:
         owner = auth_user_from_request(request).get("username", "anon")
-    if _db is None:
+    if _runtime()._db is None:
         return []
-    with _db.cursor() as _cur:
+    with _runtime()._db.cursor() as _cur:
         _cur.execute(
             "SELECT id, name, owner, query, tags_json, created_at FROM watchlists WHERE owner = %s ORDER BY id DESC",
             (owner,),
@@ -955,9 +910,9 @@ async def v2_watchlists(request: Request, owner: str = "anon", x_api_key: Option
     for r in rows:
         query = str(r["query"])
         hits = 0
-        if _db is not None:
+        if _runtime()._db is not None:
             try:
-                with _db.cursor() as _hcur:
+                with _runtime()._db.cursor() as _hcur:
                     _hcur.execute(
                         "SELECT COUNT(*) AS cnt FROM events_v2 WHERE description ILIKE %s OR source ILIKE %s",
                         (f"%{query}%", f"%{query}%"),
@@ -997,8 +952,8 @@ async def v2_pin_incident(
     note = str(payload.get("note", "")).strip()[:400]
     if not incident_id:
         raise HTTPException(status_code=400, detail="missing incident_id")
-    if _db is not None:
-        with _db.cursor() as _cur:
+    if _runtime()._db is not None:
+        with _runtime()._db.cursor() as _cur:
             _cur.execute(
                 """
                 INSERT INTO pinned_incidents (incident_id, owner, note, created_at)
@@ -1007,7 +962,7 @@ async def v2_pin_incident(
                 """,
                 (incident_id, actor, note, utc_now_iso()),
             )
-        _db.commit()
+        _runtime()._db.commit()
     audit_log("pin.set", actor, role, payload, target_id=incident_id)
     return {"ok": True}
 
@@ -1018,9 +973,9 @@ async def v2_pins(request: Request, owner: str = "anon", x_api_key: Optional[str
     _m.require_analyst_or_admin(request)
     if x_api_key != V2_API_KEY:
         owner = auth_user_from_request(request).get("username", "anon")
-    if _db is None:
+    if _runtime()._db is None:
         return []
-    with _db.cursor() as _cur:
+    with _runtime()._db.cursor() as _cur:
         _cur.execute(
             "SELECT incident_id, owner, note, created_at FROM pinned_incidents WHERE owner = %s ORDER BY created_at DESC",
             (owner,),
@@ -1046,13 +1001,13 @@ async def v2_handoff_add(
     note = str(payload.get("note", "")).strip()[:1000]
     if not incident_id or not note:
         raise HTTPException(status_code=400, detail="missing incident_id/note")
-    if _db is not None:
-        with _db.cursor() as _cur:
+    if _runtime()._db is not None:
+        with _runtime()._db.cursor() as _cur:
             _cur.execute(
                 "INSERT INTO handoff_notes (incident_id, owner, note, created_at) VALUES (%s, %s, %s, %s)",
                 (incident_id, actor, note, utc_now_iso()),
             )
-        _db.commit()
+        _runtime()._db.commit()
     audit_log("handoff.add", actor, role, payload, target_id=incident_id)
     return {"ok": True}
 
@@ -1061,9 +1016,9 @@ async def v2_handoff_add(
 async def v2_handoff(request: Request, incident_id: str):
     import main as _m
     _m.require_analyst_or_admin(request)
-    if _db is None:
+    if _runtime()._db is None:
         return []
-    with _db.cursor() as _cur:
+    with _runtime()._db.cursor() as _cur:
         _cur.execute(
             "SELECT id, incident_id, owner, note, created_at FROM handoff_notes WHERE incident_id = %s ORDER BY id DESC",
             (incident_id,),
@@ -1089,8 +1044,8 @@ async def v2_notifications_create(
     event_types = payload.get("event_types", ["CRITICAL"])
     channels = payload.get("channels", ["in_app"])
     enabled = 1 if payload.get("enabled", True) else 0
-    if _db is not None:
-        with _db.cursor() as _cur:
+    if _runtime()._db is not None:
+        with _runtime()._db.cursor() as _cur:
             _cur.execute(
                 """
                 INSERT INTO notification_rules (owner, min_confidence, event_types_json, channels_json, enabled, created_at)
@@ -1098,7 +1053,7 @@ async def v2_notifications_create(
                 """,
                 (actor, min_confidence, json.dumps(event_types), json.dumps(channels), enabled, utc_now_iso()),
             )
-        _db.commit()
+        _runtime()._db.commit()
     audit_log("notifications.create", actor, role, payload)
     return {"ok": True}
 
@@ -1109,9 +1064,9 @@ async def v2_notifications(request: Request, owner: str = "anon", x_api_key: Opt
     _m.require_analyst_or_admin(request)
     if x_api_key != V2_API_KEY:
         owner = auth_user_from_request(request).get("username", "anon")
-    if _db is None:
+    if _runtime()._db is None:
         return []
-    with _db.cursor() as _cur:
+    with _runtime()._db.cursor() as _cur:
         _cur.execute(
             """
             SELECT id, owner, min_confidence, event_types_json, channels_json, enabled, created_at
@@ -1141,8 +1096,8 @@ async def v2_eval_scorecard(request: Request):
     now = datetime.now(timezone.utc)
     week_ago = (now - timedelta(days=7)).isoformat()
     reviews = []
-    if _db is not None:
-        with _db.cursor() as _cur:
+    if _runtime()._db is not None:
+        with _runtime()._db.cursor() as _cur:
             _cur.execute(
                 "SELECT event_id, status, created_at FROM reviews WHERE created_at >= %s",
                 (week_ago,),
@@ -1153,8 +1108,8 @@ async def v2_eval_scorecard(request: Request):
     rejected = sum(1 for r in reviews if r["status"] == "reject")
     needs_review = sum(1 for r in reviews if r["status"] == "needs_review")
     false_positive_rate = round((rejected / total) * 100.0, 2) if total else 0.0
-    geo_with_evidence = [e for e in events_history[-600:] if not e.get("insufficient_evidence")]
-    geo_accuracy_proxy = round((len(geo_with_evidence) / max(1, len(events_history[-600:]))) * 100.0, 2)
+    geo_with_evidence = [e for e in _runtime().events_history[-600:] if not e.get("insufficient_evidence")]
+    geo_accuracy_proxy = round((len(geo_with_evidence) / max(1, len(_runtime().events_history[-600:]))) * 100.0, 2)
     return {
         "window_days": 7,
         "reviewed_total": total,
@@ -1191,16 +1146,21 @@ async def v2_ops_dashboard(request: Request):
     pg = postgres_status()
     return {
         "status": "nominal" if not warnings else "degraded",
-        "uptime_seconds": int(time.time() - _start_time),
+        "uptime_seconds": int(time.time() - _runtime()._start_time),
         "watchdog_warnings": warnings,
-        "metrics": metrics,
+        "metrics": _runtime().metrics,
+        "connectors": {
+            "adsblol": {"configured": bool(_m.ENABLE_ADSBLOL and _m.ADSBLOL_API_URL)},
+            "ais": {"configured": bool(_m.ENABLE_AISSTREAM and _m.AISSTREAM_API_KEY)},
+            "firms": {"configured": bool(_m.ENABLE_FIRMS and _m.FIRMS_MAP_KEY and _m.FIRMS_BBOX)},
+        },
         "queues": {
-            "events_history": len(events_history),
-            "events_buffer": len(events_buffer),
-            "media_jobs_pending": _media_jobs.qsize(),
-            "media_jobs_tracked": len(_media_job_state),
-            "seen_articles": len(seen_articles),
-            "seen_telegram_posts": len(seen_telegram_posts),
+            "events_history": len(_runtime().events_history),
+            "events_buffer": len(_runtime().events_buffer),
+            "media_jobs_pending": _runtime()._media_jobs.qsize(),
+            "media_jobs_tracked": len(_runtime()._media_job_state),
+            "seen_articles": len(_runtime().seen_articles),
+            "seen_telegram_posts": len(_runtime().seen_telegram_posts),
         },
         "postgres": pg,
         "generated_at": utc_now_iso(),

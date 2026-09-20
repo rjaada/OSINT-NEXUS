@@ -6,6 +6,9 @@ const TTL_MS = 2 * 60 * 1000
 const STORE_DIR = "/tmp/osint_briefs_pdf"
 
 function filePathFor(key: string): string {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(key)) {
+    throw new Error("Invalid PDF key")
+  }
   return path.join(STORE_DIR, `${key}.json`)
 }
 

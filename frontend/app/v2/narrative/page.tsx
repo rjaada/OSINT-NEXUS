@@ -251,7 +251,6 @@ export default function NarrativePage() {
       alive = false
       if (rafRef.current) cancelAnimationFrame(rafRef.current)
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data, lineage, mode])
 
   const nodeMap = new Map(nodesRef.current.map(n => [n.id, n]))

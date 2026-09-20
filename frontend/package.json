@@ -6,7 +6,10 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "test": "node --test tests/*.test.cjs",
+    "prebuild": "node scripts/prepare-map-worker.cjs",
+    "predev": "node scripts/prepare-map-worker.cjs"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.9.1",
@@ -47,8 +50,8 @@
     "embla-carousel-react": "8.6.0",
     "input-otp": "1.4.2",
     "lucide-react": "^0.564.0",
-    "maplibre-gl": "^5.19.0",
-    "next": "16.1.7",
+    "maplibre-gl": "^6.10.0",
+    "next": "^16.3.5",
     "next-themes": "^0.4.6",
     "playwright": "^1.58.2",
     "react": "19.2.4",
@@ -67,6 +70,8 @@
     "@types/node": "^22",
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",
+    "@typescript-eslint/parser": "^8.70.0",
+    "eslint": "^10.11.0",
     "postcss": "^8.5",
     "tailwindcss": "^4.2.0",
     "tw-animate-css": "1.3.3",

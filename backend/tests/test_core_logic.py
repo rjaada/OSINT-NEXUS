@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import mfa_totp
 import intel_utils
+import pollers
 
 
 def _make_db() -> sqlite3.Connection:
@@ -94,6 +95,18 @@ class TestEvaluateClaimAlignment(unittest.TestCase):
         self.assertEqual(label, "UNVERIFIED_VISUAL")
         self.assertIn("No OCR/STT", msg)
 
+    def test_missing_extractors_are_not_evidence(self):
+        label, note = intel_utils.evaluate_claim_alignment(
+            "airstrike in northern city", ["tesseract_unavailable"], ["whisper_unavailable"]
+        )
+        self.assertEqual(label, "UNVERIFIED_VISUAL")
+        self.assertIn("No OCR/STT", note)
+
+    def test_real_transcript_survives_missing_ocr(self):
+        claim = "explosion strike attack missile drone rocket airstrike forces"
+        label, _ = intel_utils.evaluate_claim_alignment(claim, ["tesseract_unavailable"], [claim])
+        self.assertEqual(label, "LIKELY_RELATED")
+
     def test_low_overlap_mismatch(self):
         desc = "airstrike in northern city"
         ocr = ["completely unrelated content here"]
@@ -123,6 +136,14 @@ class TestClusterEventsForMap(unittest.TestCase):
         ]
         clusters = intel_utils.cluster_events_for_map(events)
         self.assertEqual(len(clusters), 2, "Far-apart events should remain separate clusters")
+
+
+class TestRedAlertBackoff(unittest.TestCase):
+    def test_geo_blocked_feed_backs_off_for_ten_minutes(self):
+        self.assertEqual(pollers._red_alert_backoff_seconds(403), 600)
+
+    def test_healthy_feed_does_not_add_backoff(self):
+        self.assertEqual(pollers._red_alert_backoff_seconds(200), 0)
 
 
 if __name__ == "__main__":

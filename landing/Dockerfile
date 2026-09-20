@@ -1,5 +1,7 @@
 FROM node:22-alpine AS base
-RUN npm install -g pnpm
+# Pin pnpm to the packageManager version declared in package.json.
+# Unpinned pnpm 11 on Alpine cannot delegate to this pnpm 10 project.
+RUN npm install -g pnpm@10.4.1
 
 # ── Install deps ──
 FROM base AS deps
@@ -17,7 +19,7 @@ RUN pnpm build
 
 # ── Production image ──
 FROM node:22-alpine AS runner
-RUN npm install -g pnpm
+RUN npm install -g pnpm@10.4.1
 WORKDIR /app
 ENV NODE_ENV=production
 ENV PORT=4000

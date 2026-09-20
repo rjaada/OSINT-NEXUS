@@ -1,5 +1,9 @@
 "use client"
 
+import { websocketBase } from "@/lib/api"
+
+import { API_BASE } from "@/lib/api"
+
 import { useEffect, useState, useCallback, useRef } from "react"
 import { MapArea } from "./map-area"
 import { TopBar } from "./top-bar"
@@ -136,7 +140,7 @@ function IntelCard({
   const sourceTag   = event.desc.match(/^\[(.+?)\]/)?.[1] ?? event.source
 
   const videoHref = event.video_url
-    ? (event.video_url.startsWith("/media/") ? `http://localhost:8000${event.video_url}` : event.video_url)
+    ? (event.video_url.startsWith("/media/") ? `${API_BASE}${event.video_url}` : event.video_url)
     : null
 
   return (
@@ -251,7 +255,7 @@ export function Dashboard() {
   useEffect(() => {
     const backfill = async () => {
       try {
-        const res = await fetch(`http://localhost:8000/api/events?limit=80`)
+        const res = await fetch(`${API_BASE}/api/events?limit=80`, { credentials: "include" })
         if (res.ok) {
           const data: IntelEvent[] = await res.json()
           
@@ -274,7 +278,7 @@ export function Dashboard() {
 
     const connect = () => {
       try {
-        const wsUrl = (process.env.NEXT_PUBLIC_WS_URL ?? "ws://localhost:8000") + "/ws/live"
+        const wsUrl = websocketBase() + "/ws/live"
         ws = new WebSocket(wsUrl)
         ws.onopen  = () => setWsStatus("live")
         ws.onclose = () => {

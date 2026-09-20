@@ -308,7 +308,10 @@ def assess_confidence_v2(
 
 def evaluate_claim_alignment(desc: str, ocr_lines: List[str], stt_lines: List[str]) -> Tuple[str, str]:
     text = normalize_desc(desc)
-    merged = normalize_desc(" ".join(ocr_lines + stt_lines))
+    # Capability markers are diagnostics, never evidence about a claim.
+    unavailable = {"tesseract_unavailable", "whisper_unavailable"}
+    evidence = [line for line in ocr_lines + stt_lines if line.strip().lower() not in unavailable]
+    merged = normalize_desc(" ".join(evidence))
     if not merged:
         return "UNVERIFIED_VISUAL", "No OCR/STT evidence available from media."
     overlap = len({t for t in set(text.split()) & set(merged.split()) if len(t) > 2})

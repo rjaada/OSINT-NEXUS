@@ -174,6 +174,20 @@ def init_db() -> sqlite3.Connection:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_users_username ON users(username)")
     conn.execute(
         """
+        CREATE TABLE IF NOT EXISTS auth_sessions (
+            sig TEXT PRIMARY KEY,
+            username TEXT NOT NULL,
+            expires_epoch INTEGER NOT NULL,
+            last_seen_epoch INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (username) REFERENCES users(username) ON DELETE CASCADE
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_auth_sessions_expires ON auth_sessions(expires_epoch)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_auth_sessions_user ON auth_sessions(username)")
+    conn.execute(
+        """
         CREATE TABLE IF NOT EXISTS revoked_tokens (
             sig TEXT PRIMARY KEY,
             expires_epoch INTEGER NOT NULL,

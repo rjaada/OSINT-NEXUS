@@ -10,6 +10,29 @@ export const dynamic = "force-dynamic"
 const PDF_TIMEOUT_MS = 90_000
 
 export async function POST(req: NextRequest) {
+  if (!req.cookies.get("osint_auth")?.value) {
+    return NextResponse.json({ error: "Authentication required" }, { status: 401 })
+  }
+  const csrf = req.cookies.get("osint_csrf")?.value
+  if (!csrf || req.headers.get("x-csrf-token") !== csrf) {
+    return NextResponse.json({ error: "CSRF validation failed" }, { status: 403 })
+  }
+  try {
+    const backend = process.env.BACKEND_INTERNAL_URL || "http://localhost:8000"
+    const auth = await fetch(`${backend}/api/auth/session`, {
+      headers: { cookie: req.headers.get("cookie") || "" },
+      cache: "no-store",
+      signal: AbortSignal.timeout(5000),
+    })
+    if (!auth.ok) return NextResponse.json({ error: "Authentication service unavailable" }, { status: 503 })
+    const session = await auth.json()
+    if (!session.authenticated) return NextResponse.json({ error: "Authentication required" }, { status: 401 })
+    if (!["analyst", "admin"].includes(session.role)) {
+      return NextResponse.json({ error: "Analyst or admin role required" }, { status: 403 })
+    }
+  } catch {
+    return NextResponse.json({ error: "Authentication service unavailable" }, { status: 503 })
+  }
   let key = ""
   let browser: Awaited<ReturnType<typeof chromium.launch>> | null = null
   try {
@@ -19,7 +42,7 @@ export async function POST(req: NextRequest) {
     }
 
     key = await putPdfPayload(payload)
-    const origin = new URL(req.url).origin
+    const origin = process.env.PDF_RENDER_ORIGIN || `http://127.0.0.1:${process.env.PORT || "3000"}`
     const printUrl = `${origin}/v2/briefs/print?pdfKey=${encodeURIComponent(key)}`
 
     browser = await chromium.launch({

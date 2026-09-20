@@ -122,7 +122,7 @@ def _change_score(before: List[dict], after: List[dict]) -> float:
 def _flags(score: float, before: List[dict], after: List[dict]) -> List[str]:
     flags: List[str] = []
     if score >= 0.60:
-        flags.append("SIGNIFICANT_CHANGE_DETECTED")
+        flags.append("CLOUD_METADATA_DIFFERENCE")
     elif score >= 0.35:
         flags.append("IMAGERY_REVIEW_RECOMMENDED")
     if not before:
@@ -132,11 +132,11 @@ def _flags(score: float, before: List[dict], after: List[dict]) -> List[str]:
     if before and after:
         try:
             if min(s["cloud_cover"] for s in after) - min(s["cloud_cover"] for s in before) > 20:
-                flags.append("SMOKE_OR_CLOUD_SIGNATURE")
+                flags.append("CLOUD_COVER_INCREASE")
         except Exception:
             pass
     if not flags:
-        flags.append("NO_SIGNIFICANT_CHANGE")
+        flags.append("NO_LARGE_CLOUD_METADATA_DIFFERENCE")
     return flags
 
 
@@ -176,6 +176,7 @@ async def analyze_change(
         "after": after_scenes[0] if after_scenes else None,
         "before_scenes_found": len(before_scenes),
         "after_scenes_found": len(after_scenes),
+        "assessment_method": "cloud_metadata_only",
         "change_score": score,
         "flags": _flags(score, before_scenes, after_scenes),
         "coverage_km": km,

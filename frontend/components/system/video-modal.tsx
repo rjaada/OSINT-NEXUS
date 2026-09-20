@@ -1,5 +1,7 @@
 "use client"
 
+import { API_BASE } from "@/lib/api"
+
 import { useEffect, useState } from "react"
 import { csrfHeaders } from "@/lib/security"
 
@@ -24,14 +26,14 @@ export function VideoModal({ open, videoUrl, eventId, title, onClose, onConsumed
   }, [open])
 
   const normalized = videoUrl
-    ? (videoUrl.startsWith("/media/") ? `http://localhost:8000${videoUrl}` : videoUrl)
+    ? (videoUrl.startsWith("/media/") ? `${API_BASE}${videoUrl}` : videoUrl)
     : null
 
   const consumeNow = async () => {
     if (consumed || !videoUrl) return
     setBusy(true)
     try {
-      const res = await fetch("http://localhost:8000/api/media/consume", {
+      const res = await fetch(`${API_BASE}/api/media/consume`, {
         method: "POST",
         headers: csrfHeaders({ "Content-Type": "application/json" }),
         credentials: "include",

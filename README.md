@@ -9,7 +9,7 @@
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
 [![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker)](docker-compose.yml)
 [![Python](https://img.shields.io/badge/Python-3.11-3776AB?logo=python)](backend/)
-[![Next.js](https://img.shields.io/badge/Next.js-15-black?logo=next.js)](frontend/)
+[![Next.js](https://img.shields.io/badge/Next.js-16-black?logo=next.js)](frontend/)
 [![Research](https://img.shields.io/badge/Preprint-Zenodo-blue)](https://doi.org/10.5281/zenodo.19169143)
 
 </div>
@@ -18,7 +18,7 @@
 
 Most dashboards show you data. OSINT Nexus **reasons** about it.
 
-It ingests live news, Telegram channels, flight tracking, maritime AIS, active-fire satellite data, and civil defense alerts — fuses them through a Neo4j temporal knowledge graph — and runs LLM reasoning to produce structured intelligence products: SITREPs, causal chains, contradiction detection, escalation forecasts, and ranked priority actions. Then it scores its own past predictions against what actually happened, and feeds that back into how much it trusts itself next time.
+It ingests live news, Telegram channels, flight tracking, maritime AIS, active-fire satellite data, and civil defense alerts — fuses them through a Neo4j temporal knowledge graph — and runs LLM reasoning to produce structured intelligence products: SITREPs, causal chains, contradiction detection, escalation forecasts, and ranked priority actions. Watch-item tracking currently uses keyword overlap as a review aid. Analyst calibration records evidence-based outcomes; neither mechanism establishes autonomous ground-truth verification.
 
 > Built as a production system, not a demo. Runs continuously against live open sources.
 
@@ -42,7 +42,7 @@ It ingests live news, Telegram channels, flight tracking, maritime AIS, active-f
 Always-visible top-3 ranked events scored by `confidence × corroboration × freshness × type_weight`. Zero clicks to reach. Every card explains itself: *"Ranked #1 because: X."* Designed to **NATO Meaningful Human Control (MHC)** standards — the system explains, the analyst decides.
 
 ### SITREP
-Auto-generated situation reports every 60 minutes: what happened, why it happened, a 24h/72h/7d forward projection, and 3 specific watch items with timeframes. Confidence follows ICD 203. Every prediction it makes gets checked against reality later — see Analyst Calibration Engine below.
+Auto-generated situation reports every 60 minutes: what happened, why it happened, a 24h/72h/7d forward projection, and 3 specific watch items with timeframes. Confidence follows ICD 203. Watch items are compared with event text using a keyword heuristic; the displayed match score is not verified forecast accuracy.
 
 ### Intel Trace
 Click any event → full causal chain from Neo4j + LLM analysis. What came before, what followed, actors involved, contradiction flags, ICD 203 confidence level. Groq (primary) with automatic local Ollama fallback on rate limits or generation failures.
@@ -63,7 +63,7 @@ Sliding 45-minute window across all sources. Flags coordinated information opera
 Per-actor EWMA baselines (IDF, Hamas, Hezbollah, Houthis, Russia, Ukraine) across 5 behavioral features. Flags doctrine deviations at z>2.0 (early warning) and z>3.0 (critical) — a sudden change in *how* an actor operates, not just event volume.
 
 ### Analyst Calibration Engine
-Records falsifiable judgments — high-confidence star ratings, hypothesis CONFIRMED/REFUTED calls — and resolves them against ground truth (sensor corroboration, cross-source confirmation) on 24h/7d windows using Brier scores. The system's stated confidence gets more honest over time, not less.
+Records falsifiable judgments — high-confidence star ratings, hypothesis CONFIRMED/REFUTED calls — and resolves them against ground truth (sensor corroboration, cross-source confirmation) on 24h/7d windows using Brier scores. Missing evidence remains unresolved rather than being counted as a false claim. The quality of these proxy outcomes still needs human validation.
 
 ### Hypothesis Board
 A structured analytic reasoning workspace: OPEN → CONFIRMED / REFUTED / SUSPENDED kanban, ICD 203 confidence slider, evidence attached directly from the live feed, analyst notes exported in ICD 203 format.
@@ -71,8 +71,8 @@ A structured analytic reasoning workspace: OPEN → CONFIRMED / REFUTED / SUSPEN
 ### Narrative Cartography & Source Network Mapping
 A force-directed propagation graph of how a narrative moved between channels, and a separate co-occurrence heatmap of which sources cluster together in disinfo events — both computed in pure Python/SVG, no D3 or networkx dependency.
 
-### Satellite Imagery Change Detection
-Before/after Sentinel-2 scene comparison for any coordinate — one click from a FIRMS fire event. Flags significant change, recommends manual review, or identifies a likely smoke/cloud signature.
+### Satellite Imagery Scene Comparison
+Before/after Sentinel-2 scene comparison for any coordinate — one click from a FIRMS fire event. Compares scene availability and cloud-cover metadata for manual review. Pixel-level change detection and smoke identification are not implemented.
 
 ### SIGACT Pattern Extraction
 Regex-based extraction of MGRS grids, call signs, BDA, ZULU timestamps, weapons, and bearing/distance from raw text, with automatic sensor corroboration (FIRMS/ADS-B within 500m/30min) boosting confidence when three independent sources agree.
@@ -116,7 +116,7 @@ flowchart TD
     WebSocket pub/sub")]
     BE <--> MEDIA["media-hooks
     Whisper transcription
-    deepfake analysis (CPU-only)"]
+    video-quality heuristic (CPU-only)"]
 
     PG --> RE
     NEO --> RE
@@ -129,7 +129,7 @@ flowchart TD
 
     RE -->|REST + WebSocket| FE
 
-    FE["Frontend — Next.js 15
+    FE["Frontend — Next.js 16
     Intel Feed · Live Map · SITREP · Graph Explorer
     Hypothesis Board · Narrative Map · Source Network
     Sat Imagery · Admin · AR/RTL"]
@@ -137,7 +137,7 @@ flowchart TD
     REDIS -.->|live feed| FE
 ```
 
-A dedicated `media-hooks` service handles Whisper transcription and deepfake analysis for ingested video, kept as a separate container so it can run CPU-only on hosts without a GPU.
+A dedicated `media-hooks` service handles Whisper transcription and a non-forensic video-quality heuristic for ingested video, kept as a separate container so it can run CPU-only on hosts without a GPU.
 
 ---
 
@@ -152,7 +152,7 @@ A dedicated `media-hooks` service handles Whisper transcription and deepfake ana
 - `hmmlearn` for escalation classification; disinformation clustering, Fisher's exact test, and narrative graphs are pure Python — no scipy/networkx dependency
 
 **Frontend**
-- Next.js 15 App Router · TypeScript · Tailwind CSS
+- Next.js 16 App Router · TypeScript · Tailwind CSS
 - MapLibre GL — conflict zone overlays, event markers, MGRS grid
 - Radix UI · WebSocket real-time feed
 
@@ -226,7 +226,7 @@ Full variable reference: see `.env.example`.
 | `/v2/narrative` | Narrative propagation map + claim lineage tree |
 | `/v2/network` | Source co-occurrence network — disinformation cluster mapping |
 | `/v2/hypotheses` | Analyst hypothesis board with evidence attachment |
-| `/v2/imagery` | Sentinel-2 satellite change detection |
+| `/v2/imagery` | Sentinel-2 scene and cloud-metadata comparison |
 | `/v2/card` | Interactive 3D operator access card |
 | `/v2/health` | System health — PostgreSQL, Redis, watchdog, queue stats |
 | `/v2/admin` | User role management, passkey enrollment, dynamic conflict zone editor |
@@ -302,7 +302,7 @@ Key references: ACLED methodology · NATO HFM-377 · DARPA EMHAT · Endsley (199
 │   ├── disinfo_detector.py       # Coordinated info-op signature detection
 │   ├── doctrine_profiler.py      # Per-actor EWMA behavioral baselines
 │   ├── calibration_engine.py     # Brier-score analyst judgment tracking
-│   ├── prediction_tracker.py     # Scores SITREP predictions vs. reality
+│   ├── prediction_tracker.py     # Heuristic SITREP watch-item text matching
 │   ├── sigact_extractor.py       # MGRS/callsign/BDA pattern extraction
 │   ├── source_network.py         # Source co-occurrence + community detection
 │   ├── sentinel_imagery.py       # Sentinel-2 before/after change detection

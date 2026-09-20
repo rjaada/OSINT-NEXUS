@@ -1,5 +1,6 @@
 "use client"
 
+import { csrfHeaders } from "@/lib/security"
 import { useCallback, useState } from "react"
 import { Download, Loader2 } from "lucide-react"
 import { toast } from "sonner"
@@ -33,7 +34,7 @@ export function DownloadButton({ data }: { data: IntelligenceReportData }) {
       // Single mode: pixel-perfect server-side Chromium PDF.
       const serverRes = await fetch("/api/v2/briefs/pdf", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: csrfHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify(data),
       })
 

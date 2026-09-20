@@ -83,26 +83,48 @@ class GraphStore:
         self.user = (user or "").strip()
         self.password = (password or "").strip()
         self._driver = None
-        self._enabled = bool(self.uri and self.user and self.password and GraphDatabase is not None)
+        self._configured = bool(self.uri and self.user and self.password and GraphDatabase is not None)
+        self._enabled = self._configured
         self._last_error: Optional[str] = None
 
-        if not self._enabled:
+        if not self._configured:
             if GraphDatabase is None:
                 self._last_error = "neo4j driver unavailable"
             else:
                 self._last_error = "neo4j not configured"
             return
+        self._connect()
 
+    def _connect(self) -> bool:
+        driver = None
         try:
-            self._driver = GraphDatabase.driver(self.uri, auth=(self.user, self.password))
-            with self._driver.session() as session:
+            driver = GraphDatabase.driver(self.uri, auth=(self.user, self.password))
+            with driver.session() as session:
                 session.run("RETURN 1").single()
+            self._driver = driver
+            self._enabled = True
+            self._last_error = None
             self._ensure_indexes()
+            return True
         except Exception as exc:
+            try:
+                if driver is not None:
+                    driver.close()
+            except Exception:
+                pass
             self._last_error = str(exc)
             self._enabled = False
             self._driver = None
             logger.warning("[GRAPH] Neo4j init failed: %s", exc)
+            return False
+
+    def reconnect(self) -> bool:
+        """Retry a failed initial connection without restarting the backend."""
+        if self._driver is not None:
+            return True
+        if not self._configured:
+            return False
+        return self._connect()
 
     def _ensure_indexes(self) -> None:
         """Create indexes and constraints if they don't exist. Safe to run repeatedly."""

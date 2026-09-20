@@ -1,5 +1,7 @@
 "use client"
 
+import { API_BASE } from "@/lib/api"
+
 import { useEffect, useState, useRef } from "react"
 import { Bot, RefreshCw, ChevronDown, ChevronUp, AlertTriangle } from "lucide-react"
 
@@ -46,7 +48,7 @@ export function AiAnalyst() {
   const fetchReport = async (force = false) => {
     setLoading(true)
     try {
-      const res = await fetch(`http://localhost:8000/api/analyst${force ? "?force=true" : ""}`, { cache: "no-store" })
+      const res = await fetch(`${API_BASE}/api/analyst${force ? "?force=true" : ""}`, { credentials: "include", cache: "no-store" })
       if (res.ok) {
         const data = await res.json()
         setReport(data)

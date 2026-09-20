@@ -30,19 +30,14 @@ def _ensure_test_database(dbname: str) -> None:
     is never the real app's database, or every run pollutes production data
     with test accounts.
     """
-    host = os.getenv("POSTGRES_HOST", "postgres")
-    user = os.getenv("POSTGRES_USER", "osint")
-    password = urllib.parse.quote(os.getenv("POSTGRES_PASSWORD", ""), safe="")
-    admin_conn = psycopg.connect(
-        f"postgresql://{user}:{password}@{host}:5432/{user}", autocommit=True
-    )
-    try:
-        with admin_conn.cursor() as cur:
-            cur.execute("SELECT 1 FROM pg_database WHERE datname = %s", (dbname,))
-            if not cur.fetchone():
-                cur.execute(f'CREATE DATABASE "{dbname}"')
-    finally:
-        admin_conn.close()
+    if dbname != "osint_test":
+        raise RuntimeError("Tests may only create osint_test")
+    params = psycopg.conninfo.conninfo_to_dict(backend_config.DATABASE_URL)
+    params["dbname"] = "postgres"
+    with psycopg.connect(**params, autocommit=True) as conn:
+        if not conn.execute("SELECT 1 FROM pg_database WHERE datname = %s", (dbname,)).fetchone():
+            conn.execute(psycopg.sql.SQL("CREATE DATABASE {}").format(psycopg.sql.Identifier(dbname)))
+
 
 
 class AuthAccessTests(unittest.TestCase):
@@ -65,17 +60,14 @@ class AuthAccessTests(unittest.TestCase):
         # a copied binding, not a live reference — so it must be reloaded
         # explicitly after config or it keeps pointing at the real database.
         importlib.reload(backend_db_postgres)
+        if urllib.parse.urlparse(backend_db_postgres.DATABASE_URL).path != "/osint_test":
+            raise RuntimeError("Refusing auth tests against a non-test database")
         backend_main = importlib.reload(backend_main)
         backend_main.app.router.on_startup.clear()
         backend_main.app.router.on_shutdown.clear()
         backend_main._db = backend_main.init_db()
         backend_main.ensure_default_admin()
-        # NOTE: OSINT_DB_PATH above is vestigial — main.init_db() always opens
-        # a real Postgres connection (db_ops.init_db -> db_postgres.get_pg_conn),
-        # ignoring OSINT_DB_PATH entirely. This suite is NOT isolated: it runs
-        # against whatever Postgres the container is pointed at. Every username
-        # this class creates MUST be tracked here and deleted in tearDownClass,
-        # or repeated runs leave junk accounts in a real database.
+        # All users created here belong exclusively to the isolated test database.
         cls.created_usernames = ["admin"]
 
     @classmethod

@@ -154,7 +154,7 @@ def fetch_accuracy_stats(
     limit_days: int = 30,
 ) -> dict:
     """Return accuracy stats for the last N days."""
-    empty = {"total": 0, "correct": 0, "partial": 0, "incorrect": 0, "pending": 0, "accuracy_pct": None}
+    empty = {"assessment_method": "keyword_overlap_heuristic", "window_days": limit_days, "total": 0, "correct": 0, "partial": 0, "incorrect": 0, "pending": 0, "accuracy_pct": None}
     if not database_url.startswith("postgres") or psycopg_mod is None:
         return empty
     try:
@@ -164,7 +164,7 @@ def fetch_accuracy_stats(
                 cur.execute(
                     """
                     SELECT outcome, COUNT(*) FROM prediction_outcomes
-                    WHERE created_at >= NOW() - INTERVAL '%s days'
+                    WHERE created_at >= NOW() - (%s * INTERVAL '1 day')
                     GROUP BY outcome
                     """,
                     (limit_days,),
@@ -179,6 +179,7 @@ def fetch_accuracy_stats(
                 scored = correct + partial + incorrect
                 accuracy = round((correct + 0.5 * partial) / scored * 100, 1) if scored > 0 else None
                 return {
+                    "assessment_method": "keyword_overlap_heuristic",
                     "total": total,
                     "correct": correct,
                     "partial": partial,

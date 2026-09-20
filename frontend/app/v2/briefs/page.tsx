@@ -1,5 +1,9 @@
 "use client"
 
+import { websocketBase } from "@/lib/api"
+
+import { API_BASE } from "@/lib/api"
+
 import { useEffect, useMemo, useState } from "react"
 import { useRouter } from "next/navigation"
 import { CommandNav } from "@/components/dashboard/command-nav"
@@ -59,7 +63,6 @@ interface SitrepResponse {
 }
 
 const CACHE_KEY = "osint_v2_brief_cache"
-const API_BASE = "http://localhost:8000"
 
 function isoToUtcText(input: string): string {
   const parsed = new Date(input)
@@ -348,7 +351,7 @@ export default function V2BriefsPage() {
     let retry: ReturnType<typeof setTimeout> | null = null
     const connect = () => {
       try {
-        const wsUrl = (process.env.NEXT_PUBLIC_WS_URL ?? "ws://localhost:8000") + "/ws/live/v2"
+        const wsUrl = websocketBase() + "/ws/live/v2"
         ws = new WebSocket(wsUrl)
         ws.onmessage = (evt) => {
           try {

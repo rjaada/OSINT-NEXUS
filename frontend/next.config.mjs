@@ -17,6 +17,7 @@ const nextConfig = {
     const backend = process.env.BACKEND_INTERNAL_URL || "http://localhost:8000"
     return {
       fallback: [
+        { source: "/ws/:path*", destination: `${backend}/ws/:path*` },
         {
           source: "/api/:path*",
           destination: `${backend}/api/:path*`,
