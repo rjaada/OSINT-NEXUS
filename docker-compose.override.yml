@@ -1,0 +1,35 @@
+# Local Apple Silicon (Docker Desktop for Mac) dev overrides.
+# Auto-loaded by `docker compose` alongside docker-compose.yml — do not
+# pass -f explicitly. Keeps the base docker-compose.yml untouched so it
+# stays correct for non-Mac / NVIDIA hosts.
+#
+# Points the backend at a natively-running Ollama process (Metal/MLX
+# accelerated) instead of the `ollama` container, which has no GPU
+# passthrough on Docker Desktop for Mac. Start native Ollama with
+# `brew services start ollama` before bringing this stack up, and
+# omit the `ollama` service from `docker compose up`.
+
+services:
+  backend:
+    environment:
+      - OLLAMA_URL=${OLLAMA_URL:-http://host.docker.internal:11434/api/generate}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  media-hooks:
+    environment:
+      - WHISPER_DEVICE=cpu
+      - WHISPER_COMPUTE_TYPE=int8
+    # Base 512m limit leaves ~50MB headroom even before the whisper model is
+    # lazily loaded on first transcription (idle baseline already ~460MB from
+    # faster-whisper/onnxruntime/opencv/av imports) — one real job away from
+    # an OOM kill. Mac has room to spare.
+    mem_limit: 1536m
+
+  # Base compose keeps Neo4j internal-only (no published ports) for prod
+  # safety. Publish them locally so you can open the Neo4j Browser / use
+  # cypher-shell from the host while developing.
+  neo4j:
+    ports:
+      - "7474:7474"
+      - "7687:7687"

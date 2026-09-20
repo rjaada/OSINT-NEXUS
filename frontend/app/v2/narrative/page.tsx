@@ -123,7 +123,7 @@ export default function NarrativePage() {
   const [, forceRender] = useState(0)
 
   const nodesRef = useRef<SimNode[]>([])
-  const rafRef = useRef<number>()
+  const rafRef = useRef<number | undefined>(undefined)
   const frameRef = useRef(0)
 
   // ── Network data fetch ──────────────────────────────────────────────────────

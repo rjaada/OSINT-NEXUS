@@ -9,6 +9,20 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgis/postgis:16-3.4
+        env:
+          POSTGRES_DB: osint
+          POSTGRES_USER: osint
+          POSTGRES_PASSWORD: ci_test_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U osint -d osint"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v4
 
@@ -17,6 +31,21 @@ jobs:
 
       - name: Build frontend image
         run: docker compose build frontend
+
+      - name: Run backend test suite
+        run: |
+          docker run --rm --network host \
+            -e POSTGRES_HOST=localhost \
+            -e POSTGRES_USER=osint \
+            -e POSTGRES_PASSWORD=ci_test_password \
+            -e POSTGRES_DB=osint \
+            -e NEO4J_PASSWORD=ci_test_password \
+            -e AUTH_SECRET=ci-test-secret-at-least-32-chars-long \
+            -e AUTH_DEFAULT_ADMIN_PASSWORD=CiTestPass123! \
+            -e AUTH_COOKIE_SECURE=0 \
+            -w /app \
+            osint-backend \
+            python -m unittest discover -s tests -p "test_*.py" -v
 
   deploy:
     runs-on: ubuntu-latest

@@ -12,7 +12,7 @@ import type {
   ThreatLevel,
   ReportType,
 } from "@/components/briefs/report/types"
-import { readCookie } from "@/lib/security"
+import { useAuth } from "@/lib/auth-context"
 import { useReportNotifications } from "@/hooks/use-report-notifications"
 
 type Role = "viewer" | "analyst" | "admin"
@@ -166,7 +166,8 @@ function defaultBriefData(): IntelligenceReportData {
 
 export default function V2BriefsPage() {
   const router = useRouter()
-  const [role, setRole] = useState<Role>("viewer")
+  const { role: authRole } = useAuth()
+  const role = authRole as Role
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState("")
   const [offlineFallback, setOfflineFallback] = useState(false)
@@ -176,11 +177,6 @@ export default function V2BriefsPage() {
   const { requestPermissionOnce, notifyReportGenerated } = useReportNotifications(() => {
     router.push("/v2/briefs")
   })
-
-  useEffect(() => {
-    const raw = readCookie("osint_role").toLowerCase()
-    if (raw === "analyst" || raw === "admin" || raw === "viewer") setRole(raw)
-  }, [])
 
   useEffect(() => {
     if (!allowed) {

@@ -56,11 +56,7 @@ OSINT_NEXUS_DOCUMENTATION.md
 .claire/
 .claude/
 
-# V3 frontend (local only)
-frontend/app/v3/
-frontend/components/v3/
-frontend/public/logo.svg
-frontend/components/dashboard/command-nav.tsx
+# Local-only tooling
 landing/client/public/label_tool.html
 
 # Evaluation tooling (local only)

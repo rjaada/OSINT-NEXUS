@@ -15,7 +15,7 @@ import {
   type RelationshipType,
   normalizeGraphPayload,
 } from "@/lib/graph-data"
-import { readCookie } from "@/lib/security"
+import { useAuth } from "@/lib/auth-context"
 
 type Role = "viewer" | "analyst" | "admin"
 type AssessState = { loading: boolean; text: string; offline: boolean }
@@ -231,7 +231,8 @@ function addLiveEvent(
 }
 
 export default function V2GraphPage() {
-  const [role, setRole] = useState<Role>("viewer")
+  const { role: authRole } = useAuth()
+  const role = authRole as Role
   const [nodes, setNodes] = useState<GraphNode[]>([])
   const [edges, setEdges] = useState<GraphEdge[]>([])
   const edgesRef = useRef<GraphEdge[]>([])
@@ -264,11 +265,6 @@ export default function V2GraphPage() {
   useEffect(() => {
     edgesRef.current = edges
   }, [edges])
-
-  useEffect(() => {
-    const raw = readCookie("osint_role").toLowerCase()
-    if (raw === "analyst" || raw === "admin" || raw === "viewer") setRole(raw)
-  }, [])
 
   const loadGraph = useCallback(async () => {
     setLoading(true)
