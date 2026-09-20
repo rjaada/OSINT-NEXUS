@@ -7,7 +7,7 @@
 **Autonomous all-source intelligence analyst. Never sleeps.**
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
-[![Docker](https://img.shields.io/badge/Docker-9_services-2496ED?logo=docker)](docker-compose.yml)
+[![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker)](docker-compose.yml)
 [![Python](https://img.shields.io/badge/Python-3.11-3776AB?logo=python)](backend/)
 [![Next.js](https://img.shields.io/badge/Next.js-15-black?logo=next.js)](frontend/)
 [![Research](https://img.shields.io/badge/Preprint-Zenodo-blue)](https://doi.org/10.5281/zenodo.19169143)
@@ -18,21 +18,21 @@
 
 Most dashboards show you data. OSINT Nexus **reasons** about it.
 
-It ingests live news, Telegram channels, flight tracking, maritime AIS, and civil defense alerts — fuses them through a Neo4j temporal knowledge graph — and runs LLM reasoning to produce structured intelligence products: SITREPs, causal chains, contradiction detection, and ranked priority actions.
+It ingests live news, Telegram channels, flight tracking, maritime AIS, active-fire satellite data, and civil defense alerts — fuses them through a Neo4j temporal knowledge graph — and runs LLM reasoning to produce structured intelligence products: SITREPs, causal chains, contradiction detection, escalation forecasts, and ranked priority actions. Then it scores its own past predictions against what actually happened, and feeds that back into how much it trusts itself next time.
 
-> Running live data. 2,300+ events ingested. Built as a production system, not a demo.
+> Built as a production system, not a demo. Runs continuously against live open sources.
 
 ---
 
-## What It Does
+## The Five Layers
 
-| Layer | Capability | Status |
-|-------|-----------|--------|
-| **Ingestion** | RSS/news, Telegram, ADSB flights, AIS maritime, Red Alert civil defense | Live |
-| **Fusion** | Neo4j temporal knowledge graph — actors, events, locations, corroboration edges | Live |
-| **Reasoning** | LLM causal chain analysis, contradiction detection, SITREP generation | Live |
-| **Verification** | Multi-source corroboration scoring, disinformation signature detection | Live |
-| **Action** | Priority Action Panel, Telegram digest, ETA-scored alerts | Live |
+| Layer | What it does | Built |
+|-------|-----------|:---:|
+| **1. Ingestion** | RSS/news, Telegram, ADS-B flights, AIS maritime, NASA FIRMS fire detection, Red Alert civil defense, market data | ✅ |
+| **2. Verification** | Multi-source corroboration, disinformation signature detection, claim-lineage fingerprinting, behavioral anomaly baselines | ✅ |
+| **3. Reasoning** | Causal chains, contradiction detection, SITREP generation, escalation classification, cross-theater synchrony | ✅ |
+| **4. Self-Learning** | Analyst calibration (Brier scoring), prediction-vs-reality tracking, Bayesian source reliability updates | ✅ |
+| **5. Action** | Priority Action Panel, Telegram digest, ETA-scored alerts | ✅ |
 
 ---
 
@@ -41,14 +41,44 @@ It ingests live news, Telegram channels, flight tracking, maritime AIS, and civi
 ### Priority Action Panel
 Always-visible top-3 ranked events scored by `confidence × corroboration × freshness × type_weight`. Zero clicks to reach. Every card explains itself: *"Ranked #1 because: X."* Designed to **NATO Meaningful Human Control (MHC)** standards — the system explains, the analyst decides.
 
-### Intel Trace
-Click any event → full causal chain from Neo4j + LLM analysis. What came before, what followed, actors involved, contradiction flags, ICD 203 confidence level. Powered by DeepSeek-R1 via Groq with Ollama local fallback.
-
 ### SITREP
-Auto-generated situation reports every 60 minutes: what happened, why it happened, what to watch next (3 specific watch items with timeframes), forward projection (24h / 72h / 7d), confidence with reasoning. Stored in PostgreSQL, queryable via API.
+Auto-generated situation reports every 60 minutes: what happened, why it happened, a 24h/72h/7d forward projection, and 3 specific watch items with timeframes. Confidence follows ICD 203. Every prediction it makes gets checked against reality later — see Analyst Calibration Engine below.
+
+### Intel Trace
+Click any event → full causal chain from Neo4j + LLM analysis. What came before, what followed, actors involved, contradiction flags, ICD 203 confidence level. Groq (primary) with automatic local Ollama fallback on rate limits or generation failures.
+
+### Escalation Ladder Classifier
+Per-theater 6-state Hidden Markov Model (LATENT → SPORADIC → ACTIVE → ESCALATING → PEAK → DE_ESCALATING), trained directly from ingested event history — no external ACLED CSV required. Falls back to rule-based labeling when the model isn't confident.
+
+### Cross-Theater Synchrony Detection
+Detects correlated multi-theater activity using a pure-Python Fisher's exact test (one-sided, Bonferroni-corrected) over sliding windows, with per-source-pair temporal tolerances rather than one universal time bucket.
+
+### Claim Lineage Fingerprinting
+Builds a time-ordered propagation tree showing how a specific claim spread across sources — greedy closest-ancestor algorithm, hybrid time/text-distance weighting, parallel-origin detection.
 
 ### Disinformation Detector
-Sliding 45-minute window across all sources. Flags coordinated information operations when the same claim appears on 3+ channels simultaneously — cosine similarity clustering, not keyword matching.
+Sliding 45-minute window across all sources. Flags coordinated information operations when the same claim appears on 3+ channels in a tight window — cosine similarity clustering on claim text, not keyword matching.
+
+### Behavioral Doctrine Profiling
+Per-actor EWMA baselines (IDF, Hamas, Hezbollah, Houthis, Russia, Ukraine) across 5 behavioral features. Flags doctrine deviations at z>2.0 (early warning) and z>3.0 (critical) — a sudden change in *how* an actor operates, not just event volume.
+
+### Analyst Calibration Engine
+Records falsifiable judgments — high-confidence star ratings, hypothesis CONFIRMED/REFUTED calls — and resolves them against ground truth (sensor corroboration, cross-source confirmation) on 24h/7d windows using Brier scores. The system's stated confidence gets more honest over time, not less.
+
+### Hypothesis Board
+A structured analytic reasoning workspace: OPEN → CONFIRMED / REFUTED / SUSPENDED kanban, ICD 203 confidence slider, evidence attached directly from the live feed, analyst notes exported in ICD 203 format.
+
+### Narrative Cartography & Source Network Mapping
+A force-directed propagation graph of how a narrative moved between channels, and a separate co-occurrence heatmap of which sources cluster together in disinfo events — both computed in pure Python/SVG, no D3 or networkx dependency.
+
+### Satellite Imagery Change Detection
+Before/after Sentinel-2 scene comparison for any coordinate — one click from a FIRMS fire event. Flags significant change, recommends manual review, or identifies a likely smoke/cloud signature.
+
+### SIGACT Pattern Extraction
+Regex-based extraction of MGRS grids, call signs, BDA, ZULU timestamps, weapons, and bearing/distance from raw text, with automatic sensor corroboration (FIRMS/ADS-B within 500m/30min) boosting confidence when three independent sources agree.
+
+### Temporal Replay Engine
+Scrub back to any point in time and see exactly what the intelligence picture looked like then — every panel (events, alerts, SITREP, sources) replays from that timestamp.
 
 ### Press Brief Analyzer
 Paste any press conference transcript → structured extraction: headline, key claims, threats, military signals, observed facts vs. inference, follow-up recommendations.
@@ -58,37 +88,39 @@ Paste any press conference transcript → structured extraction: headline, key c
 ## Architecture
 
 ```
-┌──────────────────────────────────────────────────────────────┐
-│                        Data Sources                          │
-│   RSS/News · Telegram · ADSB flights · AIS · Red Alert       │
-└─────────────────────────┬────────────────────────────────────┘
-                          │  async pollers
-┌─────────────────────────▼────────────────────────────────────┐
-│                   Backend  (FastAPI)                         │
-│  geocoding · classification · confidence scoring · ACLED     │
-│  taxonomy · MGRS coords · Bayesian source reliability        │
-└──────┬──────────────────┬──────────────────┬─────────────────┘
+┌───────────────────────────────────────────────────────────────────────┐
+│                              Data Sources                             │
+│  RSS/News · Telegram · ADS-B flights · AIS · NASA FIRMS · Red Alert   │
+└──────────────────────────────┬────────────────────────────────────────┘
+                                │  async pollers
+┌───────────────────────────────▼────────────────────────────────────────┐
+│                         Backend  (FastAPI)                            │
+│  geocoding · classification · confidence scoring · ACLED taxonomy     │
+│  MGRS coords · SIGACT extraction · Bayesian source reliability        │
+└──────┬──────────────────┬──────────────────┬──────────────────────────┘
        │                  │                  │
 ┌──────▼──────┐   ┌───────▼──────┐   ┌───────▼──────┐
 │ PostgreSQL  │   │    Neo4j     │   │    Redis     │
 │ events_v2   │   │ Temporal KG  │   │  WebSocket   │
-│ ACLED cols  │   │ 760+ nodes   │   │  pub/sub     │
-│ AI reports  │   │ causal graph │   │  live feed   │
+│ ACLED cols  │   │ 30-day edge  │   │  pub/sub     │
+│ AI reports  │   │ decay        │   │  live feed   │
 └─────────────┘   └──────────────┘   └──────────────┘
                           │
-┌─────────────────────────▼────────────────────────────────────┐
-│                   Reasoning Engine                           │
-│   Groq LLM (primary) → Ollama local (auto-fallback on 429)   │
-│   SITREP · Intel Trace · Contradiction detection             │
-│   Disinformation clustering · Causal chain analysis          │
-└─────────────────────────┬────────────────────────────────────┘
-                          │  REST + WebSocket
-┌─────────────────────────▼────────────────────────────────────┐
-│                  Frontend  (Next.js 15)                      │
-│  Intel Feed · Live Map · Alerts · SITREP · Graph Explorer    │
-│  Priority Panel · Press Brief · Admin · AR/RTL interface     │
-└──────────────────────────────────────────────────────────────┘
+┌─────────────────────────▼────────────────────────────────────────────┐
+│                         Reasoning Engine                              │
+│  Groq (primary) → Ollama local (auto-fallback on rate limit/error)    │
+│  SITREP · Intel Trace · escalation HMM · synchrony detection          │
+│  claim lineage · calibration scoring · doctrine profiling             │
+└─────────────────────────┬───────────────────────────────────────────┘
+                           │  REST + WebSocket
+┌─────────────────────────▼───────────────────────────────────────────┐
+│                        Frontend  (Next.js 15)                        │
+│  Intel Feed · Live Map · SITREP · Graph Explorer · Hypothesis Board   │
+│  Narrative Map · Source Network · Sat Imagery · Admin · AR/RTL        │
+└────────────────────────────────────────────────────────────────────┘
 ```
+
+A dedicated `media-hooks` service handles Whisper transcription and deepfake analysis for ingested video, kept as a separate container so it can run CPU-only on hosts without a GPU.
 
 ---
 
@@ -96,10 +128,11 @@ Paste any press conference transcript → structured extraction: headline, key c
 
 **Backend**
 - Python 3.11 · FastAPI · psycopg3
-- Neo4j — temporal knowledge graph (760+ nodes, 6 relationship types, 30-day edge decay)
+- Neo4j — temporal knowledge graph with automatic edge decay and entity disambiguation
 - PostgreSQL + PostGIS
 - Redis — WebSocket pub/sub
-- Groq API (DeepSeek-R1 / LLaMA 3) with Ollama local LLM fallback
+- Groq API (primary) with local Ollama fallback for rate limits and generation failures
+- `hmmlearn` for escalation classification; disinformation clustering, Fisher's exact test, and narrative graphs are pure Python — no scipy/networkx dependency
 
 **Frontend**
 - Next.js 15 App Router · TypeScript · Tailwind CSS
@@ -107,11 +140,10 @@ Paste any press conference transcript → structured extraction: headline, key c
 - Radix UI · WebSocket real-time feed
 
 **Infrastructure**
-- Docker Compose (9 services)
-- Caddy — reverse proxy + automatic HTTPS
-- WebAuthn / Passkey authentication
+- Docker Compose — core app (7 services) plus an optional production profile (Caddy reverse proxy, Grafana/Prometheus/Loki observability, automated backups)
+- WebAuthn / Passkey authentication with TOTP and break-glass admin recovery
 - Role-based access control: viewer / analyst / admin
-- CI/CD via GitHub Actions
+- CI/CD via GitHub Actions — builds both images and runs the backend test suite against an isolated database on every push
 
 ---
 
@@ -119,7 +151,7 @@ Paste any press conference transcript → structured extraction: headline, key c
 
 ### Prerequisites
 - Docker + Docker Compose
-- Groq API key ([free tier](https://console.groq.com))
+- Groq API key ([free tier](https://console.groq.com)) — or run fully offline with a local Ollama install (see `docker-compose.override.yml` for an Apple Silicon example)
 
 ### Setup
 
@@ -137,12 +169,16 @@ App available at `http://localhost:3000`.
 
 ```env
 # Required
-GROQ_API_KEY=your_key
-AUTH_SECRET=your_secret_key
+POSTGRES_PASSWORD=your_password
+NEO4J_PASSWORD=your_password
+AUTH_SECRET=your_min_32_char_secret
 AUTH_DEFAULT_ADMIN_USER=admin
 AUTH_DEFAULT_ADMIN_PASSWORD=your_password
 
-# Optional — live flight / maritime / alert ingestion
+# Optional — LLM reasoning (falls back to local Ollama if unset/rate-limited)
+GROQ_API_KEY=your_key
+
+# Optional — live flight / maritime / fire ingestion
 ENABLE_ADSBLOL=1
 ENABLE_AISSTREAM=1
 AISSTREAM_API_KEY=your_key
@@ -162,29 +198,37 @@ Full variable reference: see `.env.example`.
 
 | Route | What It Is |
 |-------|-----------|
-| `/v2` | Intel Feed — live events, Priority Action Panel, corroboration badges |
+| `/v2` | Mission Hub — dedicated workspaces for live ops, alert triage, and source verification |
+| `/v2/operations` | Live intel feed, real-time map, Priority Action Panel |
 | `/v2/alerts` | Confidence & ETA board — scored alerts with chain status |
-| `/v2/sitrep` | AI situation reports — causal chain, contradictions, watch items, prediction accuracy |
-| `/v2/briefs` | Operational intelligence briefs with MGRS coordinates and threat assessment |
-| `/v2/sources` | Source reliability desk — lag, quality scores, per-source OPS metrics |
-| `/v2/health` | System health — PostgreSQL, Redis, watchdog, queue stats |
-| `/v2/admin` | User management + dynamic conflict zone editor |
+| `/v2/sources` | Source reliability desk — lag, quality scores, per-source metrics |
+| `/v2/briefs` | Cinematic intelligence brief sequence with PDF export |
+| `/v2/sitrep` | AI situation reports — causal chain, contradictions, watch items, forecast |
+| `/v2/press-brief` | Press conference transcript analyzer |
 | `/v2/graph` | Neo4j knowledge graph explorer — filter by relationship type and time range |
-| `/v2/ar/...` | Full Arabic RTL interface mirroring all v2 pages |
+| `/v2/narrative` | Narrative propagation map + claim lineage tree |
+| `/v2/network` | Source co-occurrence network — disinformation cluster mapping |
+| `/v2/hypotheses` | Analyst hypothesis board with evidence attachment |
+| `/v2/imagery` | Sentinel-2 satellite change detection |
+| `/v2/card` | Interactive 3D operator access card |
+| `/v2/health` | System health — PostgreSQL, Redis, watchdog, queue stats |
+| `/v2/admin` | User role management, passkey enrollment, dynamic conflict zone editor |
+| `/v2/ar/...` | Full Arabic RTL interface mirroring the core v2 pages |
 
 ---
 
 ## Security
 
-- **WebAuthn / Passkey** — hardware key enrollment for admin accounts
+- **WebAuthn / Passkey** — hardware key enrollment for admin accounts, with TOTP and a break-glass emergency code as bootstrap/recovery paths
 - **CSRF protection** on all state-changing endpoints
-- `httponly` + `SameSite=Strict` session cookies
-- **Role-based route protection** — 34 API endpoints gated
+- `httponly` + `SameSite` session cookies, `Secure` by default
+- **Role-based route protection** across all admin and analyst-tier endpoints
 - **Audit log** on all admin actions
 - SHA-256 event IDs
-- Startup validation — backend refuses to start with weak `AUTH_SECRET` or default credentials
-- TOTP (time-based OTP) for analyst and admin roles
+- Startup validation — backend refuses to start with a weak `AUTH_SECRET` or default credentials
+- TOTP (time-based OTP) required for analyst and admin roles
 - Content-Security-Policy headers
+- Backend CI runs the full auth test suite against a genuinely isolated database on every push — never against production data
 
 ---
 
@@ -200,7 +244,7 @@ Full variable reference: see `.env.example`.
 | Red Alert (Tzeva Adom) | Civil defense (official) | 95 |
 | NASA FIRMS | Active fire (sensor) | 90 |
 
-Source weights are dynamic — analyst ratings on Intel Trace feed back into per-source reliability scores via Bayesian update.
+Source weights are dynamic — analyst ratings on Intel Trace feed back into per-source reliability scores via Bayesian update. Gold, WTI, Brent, DXY, and S&P 500 are polled every 5 minutes as contextual market signals.
 
 ---
 
@@ -210,8 +254,8 @@ Source weights are dynamic — analyst ratings on Intel Trace feed back into per
 |----------|---------------|
 | **ICD 203** | 4-level confidence scale (HIGH / MODERATE / LOW / VERY LOW) on all AI products |
 | **NATO 2×6** | Source reliability (A–F) + claim credibility (1–6) badge on every event card |
-| **ACLED taxonomy** | Full event schema compatibility — `acled_event_type`, `acled_sub_event_type`, `civilian_targeting`, `geo_precision`, `time_precision` |
-| **NATO MHC** | Every ranked recommendation shows its reasoning. Analyst suppresses, not the system. |
+| **ACLED taxonomy** | Full event schema compatibility — `acled_event_type`, `acled_sub_event_type`, `civilian_targeting` (structural, not keyword-based), `geo_precision`, `time_precision` |
+| **NATO MHC** | Every ranked recommendation shows its reasoning. The analyst suppresses; the system never decides alone. |
 
 ---
 
@@ -231,21 +275,32 @@ Key references: ACLED methodology · NATO HFM-377 · DARPA EMHAT · Endsley (199
 ```
 .
 ├── backend/
-│   ├── main.py               # FastAPI app, routes, WebSocket
-│   ├── ingestion.py          # Geocoding, classification, event normalization
-│   ├── pollers.py            # RSS, Telegram, ADSB, Red Alert, SITREP pollers
-│   ├── reasoning_engine.py   # SITREP, causal chain, contradiction detection
-│   ├── disinfo_detector.py   # Coordinated info-op signature detection
-│   ├── graph_store.py        # Neo4j temporal knowledge graph
-│   ├── v2_store.py           # PostgreSQL persistence + ACLED field mapping
-│   ├── groq_client.py        # Groq + Ollama LLM client with fallback
-│   ├── baseline_monitor.py   # EWMA behavioral anomaly detection per source
-│   ├── prediction_tracker.py # Scores SITREP predictions vs reality
-│   └── market_poller.py      # Gold, WTI, Brent, DXY, S&P500
+│   ├── main.py                  # FastAPI app, routes, WebSocket, background loops
+│   ├── ingestion.py              # Geocoding, classification, event normalization
+│   ├── pollers.py                # RSS, Telegram, ADS-B, Red Alert, SITREP pollers
+│   ├── reasoning_engine.py       # SITREP, causal chain, contradiction detection
+│   ├── escalation_classifier.py  # 6-state HMM escalation ladder per theater
+│   ├── theater_synchrony.py      # Cross-theater correlation (Fisher's exact test)
+│   ├── claim_lineage.py          # Claim propagation tree fingerprinting
+│   ├── disinfo_detector.py       # Coordinated info-op signature detection
+│   ├── doctrine_profiler.py      # Per-actor EWMA behavioral baselines
+│   ├── calibration_engine.py     # Brier-score analyst judgment tracking
+│   ├── prediction_tracker.py     # Scores SITREP predictions vs. reality
+│   ├── sigact_extractor.py       # MGRS/callsign/BDA pattern extraction
+│   ├── source_network.py         # Source co-occurrence + community detection
+│   ├── sentinel_imagery.py       # Sentinel-2 before/after change detection
+│   ├── baseline_monitor.py       # EWMA anomaly detection per source
+│   ├── graph_store.py            # Neo4j temporal knowledge graph
+│   ├── v2_store.py               # PostgreSQL persistence + ACLED field mapping
+│   ├── groq_client.py            # Groq + Ollama LLM client with fallback
+│   ├── command_intelligence.py   # Command snapshot / decision-gap synthesis
+│   └── market_poller.py          # Gold, WTI, Brent, DXY, S&P 500
 ├── frontend/
-│   └── app/v2/               # Next.js App Router pages
-├── k8s/                      # Kubernetes manifests
+│   └── app/v2/                   # Next.js App Router pages (see Pages table above)
+├── k8s/                          # Kubernetes manifests
+├── scripts/mac-setup.sh          # Apple Silicon local dev setup (native Ollama)
 ├── docker-compose.yml
+├── docker-compose.override.yml   # Local Apple Silicon dev overrides
 ├── Makefile
 └── README_K8s.md
 ```
@@ -254,12 +309,7 @@ Key references: ACLED methodology · NATO HFM-377 · DARPA EMHAT · Endsley (199
 
 ## Status
 
-Active development. Running live data.
-
-- **2,359+ events** in PostgreSQL
-- **760+ nodes** in Neo4j knowledge graph
-- **11 active source connectors**
-- Research preprint published March 2026
+Active development. Designed for continuous live ingestion, not a fixed demo dataset — event counts, graph size, and source connectors grow with uptime. Research preprint published March 2026.
 
 ---
 
